@@ -62,36 +62,6 @@ a{color:inherit;}
 .back-link-onDark{color:#9AA6BC;}
 .back-link-onDark:hover{color:#fff;}
 
-/* ---------- Site select ---------- */
-#site-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:
-  linear-gradient(180deg, var(--navy) 0%, var(--navy-2) 100%);padding:20px;}
-.site-wrap{width:100%;max-width:760px;text-align:center;}
-.site-wrap .login-mark{justify-content:center;margin-bottom:10px;}
-.site-choices{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:8px;}
-@media(max-width:640px){.site-choices{grid-template-columns:repeat(2,1fr);}}
-@media(max-width:400px){.site-choices{grid-template-columns:1fr;}}
-.site-card{background:var(--card);border-radius:14px;padding:26px 16px;box-shadow:0 20px 60px rgba(0,0,0,0.35);cursor:pointer;text-align:center;border:2px solid transparent;transition:all .15s;}
-.site-card:hover{border-color:var(--amber);transform:translateY(-2px);}
-.site-card .sc-ic{width:48px;height:48px;border-radius:11px;background:var(--navy);color:var(--amber);display:flex;align-items:center;justify-content:center;font-size:22px;margin:0 auto 12px;}
-.site-card h3{font-size:15px;margin-bottom:3px;}
-.site-card p{font-size:11.5px;color:var(--muted);}
-
-/* ---------- Portal select ---------- */
-#portal-screen{min-height:100vh;display:none;align-items:center;justify-content:center;background:
-  linear-gradient(180deg, var(--navy) 0%, var(--navy-2) 100%);padding:20px;}
-.portal-wrap{width:100%;max-width:640px;text-align:center;}
-.portal-wrap .login-mark{justify-content:center;margin-bottom:10px;}
-.portal-title{font-family:var(--display);font-size:22px;font-weight:700;color:#fff;margin-bottom:6px;}
-.portal-sub{font-size:13px;color:#9AA6BC;margin-bottom:30px;}
-.portal-choices{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
-@media(max-width:560px){.portal-choices{grid-template-columns:1fr;}}
-.portal-card{background:var(--card);border-radius:14px;padding:28px 22px;box-shadow:0 20px 60px rgba(0,0,0,0.35);cursor:pointer;text-align:left;border:2px solid transparent;transition:all .15s;}
-.portal-card:hover{border-color:var(--amber);transform:translateY(-2px);}
-.portal-card .pc-ic{width:44px;height:44px;border-radius:10px;background:var(--navy);color:var(--amber);display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:14px;}
-.portal-card h3{font-size:16.5px;margin-bottom:6px;}
-.portal-card p{font-size:12.5px;color:var(--muted);line-height:1.5;}
-.portal-card .pc-go{margin-top:14px;font-size:12px;font-weight:700;color:var(--amber-dark);}
-
 /* ---------- App shell ---------- */
 #app{display:none;min-height:100vh;}
 .shell{display:flex;min-height:100vh;}
@@ -243,62 +213,17 @@ tr:last-child td{border-bottom:none;}
 </head>
 <body>
 
-<div id="site-screen">
-  <div class="site-wrap">
-    <div class="login-mark">
-      <div class="box">SM</div>
-      <div>
-        <div class="title" style="color:#fff;">Supplies Management</div>
-        <div class="sub" style="color:#9AA6BC;">Asset &amp; Consumable Control</div>
-      </div>
-    </div>
-    <div class="portal-title">Choose your site</div>
-    <div class="portal-sub">Select the warehouse you're working from.</div>
-    <div class="site-choices" id="site-choices"></div>
-  </div>
-</div>
-
-<div id="portal-screen">
-  <div class="portal-wrap">
-    <div class="back-link back-link-onDark" onclick="backToSiteSelect()">&#8592; Choose a different site</div>
-    <div class="login-mark">
-      <div class="box">SM</div>
-      <div>
-        <div class="title" style="color:#fff;">Supplies Management</div>
-        <div class="sub" style="color:#9AA6BC;" id="portal-site-sub">Asset &amp; Consumable Control</div>
-      </div>
-    </div>
-    <div class="portal-title">Choose your portal</div>
-    <div class="portal-sub">Select where you'd like to sign in.</div>
-    <div class="portal-choices">
-      <div class="portal-card" onclick="choosePortal('supplies')">
-        <div class="pc-ic">&#9673;</div>
-        <h3>Supplies Portal</h3>
-        <p>For the central supplies office — manage receiving, issuance, requests, cycle counts, repairs, incoming department returns, and system settings.</p>
-        <div class="pc-go">Sign in &#8594;</div>
-      </div>
-      <div class="portal-card" onclick="choosePortal('department')">
-        <div class="pc-ic">&#127970;</div>
-        <h3>Department Portal</h3>
-        <p>For department staff — confirm supplies received from Supplies, issue items within your department, and return items back to Supplies.</p>
-        <div class="pc-go">Sign in &#8594;</div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div id="login-screen" style="display:none;">
+<div id="login-screen">
   <div class="login-card">
-    <div class="back-link" onclick="backToPortalSelect()">&#8592; Choose a different portal</div>
     <div class="login-mark">
       <div class="box">SM</div>
       <div>
-        <div class="title" id="login-portal-title">Supplies Management</div>
-        <div class="sub" id="login-portal-sub">Asset &amp; Consumable Control</div>
+        <div class="title">Supplies Management</div>
+        <div class="sub">Asset &amp; Consumable Control</div>
       </div>
     </div>
     <h2>Sign in</h2>
-    <p class="lead" id="login-lead">Enter your credentials to access the system.</p>
+    <p class="lead">Enter your username and password to continue.</p>
     <div id="login-error-slot"></div>
     <div class="field">
       <label>Username</label>
@@ -309,7 +234,6 @@ tr:last-child td{border-bottom:none;}
       <input id="login-password" type="password" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()">
     </div>
     <button class="btn btn-primary btn-block" onclick="doLogin()">Sign in</button>
-    <div class="login-hint" id="login-hint-slot"></div>
   </div>
 </div>
 
@@ -354,6 +278,12 @@ tr:last-child td{border-bottom:none;}
   </div>
 </div>
 
+<!-- SheetJS: lets CSV/Excel import (SKU, Department, Supplier, Accountability,
+     Logins, Employees) also accept .xlsx/.xls files, including ones with
+     formulas — cells are read using their last-calculated value, not the
+     formula text. If this fails to load (e.g. offline), CSV import still
+     works; only .xlsx/.xls uploads are affected. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 /* ============================= STATE / STORAGE ============================= */
 /* Standalone fallback: window.storage only exists inside the Claude Artifact
@@ -404,21 +334,20 @@ if(!window.storage){
 const STORE_KEY = 'sms_erp_state_v1';
 const UI_SESSION_KEY = 'sms_erp_ui_session_v1';
 let DB = null;
-let session = null; // {id, username, fullName, role, portal, department}
+let session = null; // {id, username, fullName, role, portal, department, site}
 let route = 'dashboard';
 let subroute = '';
-let portalMode = null; // 'supplies' | 'department'
-let selectedSite = null; // chosen warehouse, e.g. 'SOC5'
+let portalMode = null; // 'supplies' | 'department' — derived from the logged-in account
 
-/* Keeps the current page (site, portal, logged-in user, and the exact
-   screen/tab open) across an actual browser refresh (F5 / reload), so
-   reloading the tab lands back where you were instead of resetting all
-   the way to site selection / login. Cleared on logout, and scoped to
-   sessionStorage so it naturally clears when the browser tab is closed. */
+/* Keeps the logged-in user and the exact screen/tab open across an actual
+   browser refresh (F5 / reload), so reloading the tab lands back where you
+   were instead of resetting all the way to the login screen. Cleared on
+   logout, and scoped to sessionStorage so it naturally clears when the
+   browser tab is closed. */
 function saveUiSession(){
   try{
     if(!session){ sessionStorage.removeItem(UI_SESSION_KEY); return; }
-    sessionStorage.setItem(UI_SESSION_KEY, JSON.stringify({selectedSite, portalMode, session, route, subroute}));
+    sessionStorage.setItem(UI_SESSION_KEY, JSON.stringify({portalMode, session, route, subroute}));
   }catch(e){ /* sessionStorage unavailable — refresh will just restart at login */ }
 }
 function clearUiSession(){
@@ -615,7 +544,7 @@ function downloadCSV(filename, headers, rows){
 function dlBtn(fnName){ return `<button class="btn btn-sm dl-btn" onclick="${fnName}()" title="Download CSV">&#8615; Download</button>`; }
 /* ============================= CSV IMPORT ============================= */
 function importBtn(fnName, headerHint){
-  return `<label class="btn btn-sm" style="margin:0;" title="Expected columns: ${esc(headerHint)}">&#8613; Import CSV<input type="file" accept=".csv,text/csv" style="display:none;" onchange="${fnName}(this)"></label>`;
+  return `<label class="btn btn-sm" style="margin:0;" title="Expected columns: ${esc(headerHint)}. Accepts .csv or Excel (.xlsx/.xls) — formulas are read as their calculated value.">&#8613; Import<input type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none;" onchange="${fnName}(this)"></label>`;
 }
 function readFileAsText(file){
   return new Promise((resolve, reject)=>{
@@ -623,6 +552,14 @@ function readFileAsText(file){
     reader.onload = ()=>resolve(reader.result);
     reader.onerror = ()=>reject(reader.error);
     reader.readAsText(file);
+  });
+}
+function readFileAsArrayBuffer(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>resolve(reader.result);
+    reader.onerror = ()=>reject(reader.error);
+    reader.readAsArrayBuffer(file);
   });
 }
 function parseCSVText(text){
@@ -664,16 +601,33 @@ function csvField(row, names){
   }
   return '';
 }
+/* Reads .csv, .xlsx, or .xls files into the same row-object shape either way.
+   For Excel files (via the SheetJS library loaded above), each cell is read
+   as its last-calculated value — so a column built with a formula (e.g.
+   =CONCAT(...) for a full name, or =A2&"-"&B2 for a username) imports the
+   result of the formula, not the formula text itself. */
 async function importCsvRows(inputEl){
   const file = inputEl.files && inputEl.files[0] ? inputEl.files[0] : null;
   inputEl.value = '';
   if(!file) return null;
+  const isExcel = /\.(xlsx|xls)$/i.test(file.name) || /spreadsheetml|ms-excel/i.test(file.type||'');
   try{
+    if(isExcel){
+      if(typeof XLSX === 'undefined'){ toast('Excel import isn\'t available right now — the spreadsheet library didn\'t load. Try saving as CSV instead.'); return null; }
+      const buf = await readFileAsArrayBuffer(file);
+      const wb = XLSX.read(buf, {type:'array'});
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      if(!sheet){ toast('That workbook has no sheets to read.'); return null; }
+      // header:1 + raw:false returns each row as an array of the DISPLAYED / CALCULATED
+      // value for every cell — formula cells resolve to their result, not the formula.
+      const rows = XLSX.utils.sheet_to_json(sheet, {header:1, raw:false, defval:''});
+      return csvRowsToObjects(rows.map(r=>r.map(v=>v===null||v===undefined?'':String(v))));
+    }
     const text = await readFileAsText(file);
     return csvRowsToObjects(parseCSVText(text));
   }catch(e){
-    console.error('CSV read error', e);
-    toast('Could not read that CSV file.');
+    console.error('Import read error', e);
+    toast('Could not read that file — make sure it\'s a valid CSV or Excel file.');
     return null;
   }
 }
@@ -754,70 +708,19 @@ function stockStatusRow(s){
 function empInfo(opsId){ return DB.employees.find(e=>e.opsId.toUpperCase()===String(opsId||'').toUpperCase()); }
 function nextCode(prefix,counterKey){ DB.counters[counterKey]++; return prefix+'-'+DB.counters[counterKey]; }
 
-/* ============================= SITE SELECT ============================= */
-const SITE_ICONS = {'SOC5':'&#8962;','SOC6':'&#8962;','SOC8':'&#8962;','SOC9':'&#8962;'};
-function renderSiteScreen(){
-  const wrap = document.getElementById('site-choices');
-  if(!wrap) return;
-  wrap.innerHTML = DB.warehouses.map(w=>`
-    <div class="site-card" onclick="chooseSite('${esc(w)}')">
-      <div class="sc-ic">${SITE_ICONS[w]||'&#8962;'}</div>
-      <h3>${esc(w)}</h3>
-      <p>Warehouse site</p>
-    </div>`).join('');
-}
-function chooseSite(name){
-  selectedSite = name;
-  document.getElementById('site-screen').style.display='none';
-  document.getElementById('portal-screen').style.display='flex';
-  const sub = document.getElementById('portal-site-sub');
-  if(sub) sub.textContent = 'Site: '+name;
-}
-function backToSiteSelect(){
-  selectedSite = null;
-  portalMode = null;
-  renderSiteScreen();
-  document.getElementById('portal-screen').style.display='none';
-  document.getElementById('site-screen').style.display='flex';
-}
-
 /* ============================= AUTH ============================= */
-function choosePortal(mode){
-  portalMode = mode;
-  document.getElementById('portal-screen').style.display='none';
-  document.getElementById('login-screen').style.display='flex';
-  document.getElementById('login-error-slot').innerHTML='';
-  document.getElementById('login-username').value='';
-  document.getElementById('login-password').value='';
-  if(mode==='supplies'){
-    document.getElementById('login-portal-title').textContent='Supplies Portal';
-    document.getElementById('login-portal-sub').textContent='Central supplies office sign-in';
-    document.getElementById('login-lead').textContent='Enter your Supplies Portal credentials to continue.';
-    document.getElementById('login-hint-slot').innerHTML='';
-  }else{
-    document.getElementById('login-portal-title').textContent='Department Portal';
-    document.getElementById('login-portal-sub').textContent='Department staff sign-in';
-    document.getElementById('login-lead').textContent='Enter your Department Portal credentials to continue.';
-    document.getElementById('login-hint-slot').innerHTML='';
-  }
-  document.getElementById('login-username').focus();
-}
-function backToPortalSelect(){
-  portalMode = null;
-  document.getElementById('login-screen').style.display='none';
-  document.getElementById('portal-screen').style.display='flex';
-}
 async function doLogin(){
   const u = document.getElementById('login-username').value.trim();
   const p = document.getElementById('login-password').value;
   const slot = document.getElementById('login-error-slot');
   slot.innerHTML='';
-  const found = DB.users.find(x=>x.username.toLowerCase()===u.toLowerCase() && x.password===p && x.portal===portalMode);
+  const found = DB.users.find(x=>x.username.toLowerCase()===u.toLowerCase() && x.password===p);
   if(!found){
-    slot.innerHTML = '<div class="login-error">Incorrect username or password for this portal. Try again.</div>';
+    slot.innerHTML = '<div class="login-error">Incorrect username or password. Try again.</div>';
     return;
   }
-  session = {id:found.id, username:found.username, fullName:found.fullName, role:found.role, portal:found.portal, department:found.department||null, site:selectedSite};
+  portalMode = found.portal; // derived from the account itself — no separate portal picker
+  session = {id:found.id, username:found.username, fullName:found.fullName, role:found.role, portal:found.portal, department:found.department||null, site:found.site||null};
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
   if(portalMode==='department'){
@@ -837,9 +740,9 @@ function doLogout(){
   document.getElementById('login-username').value='';
   document.getElementById('login-password').value='';
   document.getElementById('login-error-slot').innerHTML='';
-  document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='none';
-  document.getElementById('portal-screen').style.display='flex';
+  document.getElementById('login-screen').style.display='flex';
+  document.getElementById('login-username').focus();
 }
 
 /* ============================= NAV / SHELL ============================= */
@@ -3064,18 +2967,24 @@ async function importAcctCsv(inputEl){
 }
 function settingsAccessHtml(){
   return `<div class="card">
-    <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department), Password, Department (if role=department), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
-    <div class="card-sub">Staff and Admin logins sign in via the Supplies Portal. Department logins sign in via the Department Portal and are scoped to one department.</div>
+    <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department), Password, Site/SOC (if role=admin or staff), Department (if role=department), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
+    <div class="card-sub">Every login signs in with just a username and password — no portal or site picker. Set the role (and, for Staff/Admin, which SOC they work out of; for Department, which department) right here when creating the login.</div>
     <div class="form-row3">
       <div class="field"><label>Full name</label><input id="new-user-name" placeholder="Full name"></div>
       <div class="field"><label>Username</label><input id="new-user-username" placeholder="username"></div>
-      <div class="field"><label>Role</label><select id="new-user-role" onchange="toggleNewUserDept()"><option value="staff">Staff (Supplies Portal)</option><option value="admin">Admin (Supplies Portal)</option><option value="department">Department (Department Portal)</option></select></div>
+      <div class="field"><label>Role</label><select id="new-user-role" onchange="toggleNewUserDept()"><option value="staff">Staff</option><option value="admin">Admin</option><option value="department">Department</option></select></div>
     </div>
     <div class="form-row" id="new-user-dept-wrap" style="display:none;">
       <div class="field"><label>Department</label><select id="new-user-dept">${DB.departments.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
       <div class="field"><label>Password</label><input id="new-user-pass-dept" type="text" placeholder="Set a password"></div>
     </div>
-    <div class="field" id="new-user-pass-wrap"><label>Password</label><input id="new-user-pass" type="text" placeholder="Set a password"></div>
+    <div class="form-row" id="new-user-site-wrap">
+      <div class="field"><label>Site (SOC)</label><select id="new-user-site">
+        <option value="">— Not site-specific —</option>
+        ${DB.warehouses.map(w=>`<option value="${esc(w)}">${esc(w)}</option>`).join('')}
+      </select></div>
+      <div class="field" id="new-user-pass-wrap"><label>Password</label><input id="new-user-pass" type="text" placeholder="Set a password"></div>
+    </div>
     <div id="new-user-staff-scope-wrap" style="display:none;">
       <div class="section-title">Access scope</div>
       <div class="card-sub" style="margin-bottom:10px;">Optional — limit this staff login's visibility to specific SKUs, departments, and accountable persons. Leave a selector empty for full access on that dimension.</div>
@@ -3089,11 +2998,11 @@ function settingsAccessHtml(){
   </div>
   <div class="card">
     <h3>System users (${DB.users.length})</h3>
-    <div class="tbl-wrap"><table><tr><th>Full name</th><th>Username</th><th>Portal</th><th>Role</th><th>Department</th><th>Access scope</th><th></th></tr>
+    <div class="tbl-wrap"><table><tr><th>Full name</th><th>Username</th><th>Portal</th><th>Role</th><th>Department / Site</th><th>Access scope</th><th></th></tr>
       ${DB.users.map(u=>`<tr><td>${esc(u.fullName)}</td><td class="mono">${esc(u.username)}</td>
       <td>${u.portal==='department'?'Department':'Supplies'}</td>
       <td><span class="badge ${u.role==='admin'?'badge-admin':(u.role==='department'?'badge-department':'badge-staff')}">${u.role.toUpperCase()}</span></td>
-      <td>${esc(u.department||'—')}</td>
+      <td>${esc(u.department || u.site || '—')}</td>
       <td>${userScopeCell(u)}</td>
       <td>${u.id===session.id?'<span class="small-note">current user</span>':`<button class="icon-btn" onclick="deleteUser(${u.id})">&times;</button>`}</td></tr>`).join('')}
     </table></div>
@@ -3128,7 +3037,7 @@ function toggleNewUserDept(){
   const isDept = role === 'department';
   const isStaff = role === 'staff';
   document.getElementById('new-user-dept-wrap').style.display = isDept ? 'grid' : 'none';
-  document.getElementById('new-user-pass-wrap').style.display = isDept ? 'none' : 'block';
+  document.getElementById('new-user-site-wrap').style.display = isDept ? 'none' : 'grid';
   const scopeWrap = document.getElementById('new-user-staff-scope-wrap');
   if(scopeWrap) scopeWrap.style.display = isStaff ? 'block' : 'none';
 }
@@ -3140,12 +3049,14 @@ async function addUser(){
   const isStaff = role === 'staff';
   const pass = isDept ? document.getElementById('new-user-pass-dept').value : document.getElementById('new-user-pass').value;
   const department = isDept ? document.getElementById('new-user-dept').value : undefined;
+  const site = !isDept ? document.getElementById('new-user-site').value : undefined;
   if(!fullName||!username||!pass){ toast('Fill out all fields.'); return; }
   if(DB.users.find(u=>u.username.toLowerCase()===username.toLowerCase())){ toast('That username is taken.'); return; }
   const id = Math.max(0,...DB.users.map(u=>u.id))+1;
   const portal = isDept ? 'department' : 'supplies';
   const newUser = {id, username, password:pass, role, fullName, portal};
   if(isDept) newUser.department = department;
+  if(site) newUser.site = site;
   if(isStaff){
     newUser.skuScope = Array.from(document.getElementById('new-user-sku-scope').selectedOptions).map(o=>o.value);
     newUser.departmentScope = Array.from(document.getElementById('new-user-dept-scope').selectedOptions).map(o=>o.value);
@@ -3198,28 +3109,56 @@ async function importEmployeeCsv(inputEl){
   toast('Imported '+added+' employee'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/duplicate/unknown department).'):'.'));
   renderSettings();
 }
+function normalizeRole(raw){
+  const r = String(raw||'').trim().toLowerCase();
+  if(!r) return '';
+  if(r==='admin' || r.includes('admin')) return 'admin';
+  if(r==='department' || r.includes('department') || r.includes('dept')) return 'department';
+  if(r==='staff' || r.includes('staff')) return 'staff';
+  return '';
+}
 async function importUserCsv(inputEl){
   const rows = await importCsvRows(inputEl);
   if(!rows) return;
-  let added = 0, skipped = 0;
-  rows.forEach(row=>{
-    const fullName = csvField(row, ['Full Name','Name']).trim();
-    const username = csvField(row, ['Username']).trim();
-    let role = csvField(row, ['Role']).trim().toLowerCase();
-    const password = csvField(row, ['Password']).trim();
-    const deptRaw = csvField(row, ['Department']).trim();
-    if(!['admin','staff','department'].includes(role)){ skipped++; return; }
-    if(!fullName || !username || !password){ skipped++; return; }
-    if(DB.users.find(u=>u.username.toLowerCase()===username.toLowerCase())){ skipped++; return; }
+  let added = 0;
+  const problems = [];
+  rows.forEach((row, idx)=>{
+    const rowNum = idx+2; // header is row 1, data starts at row 2
+    const fullName = csvField(row, ['Full Name','Fullname','Name']).trim();
+    const username = csvField(row, ['Username','User Name','Login']).trim();
+    const roleRaw = csvField(row, ['Role','Portal Role']).trim();
+    const role = normalizeRole(roleRaw);
+    const password = csvField(row, ['Password','Pass']).trim();
+    const deptRaw = csvField(row, ['Department','Dept']).trim();
+    const siteRaw = csvField(row, ['Site','SOC','Warehouse']).trim();
+    if(!fullName || !username || !password){
+      problems.push('Row '+rowNum+': missing full name, username, or password.');
+      return;
+    }
+    if(!role){
+      problems.push('Row '+rowNum+': role "'+(roleRaw||'(blank)')+'" isn\'t recognized — use admin, staff, or department.');
+      return;
+    }
+    if(DB.users.find(u=>u.username.toLowerCase()===username.toLowerCase())){
+      problems.push('Row '+rowNum+': username "'+username+'" already exists.');
+      return;
+    }
     let department;
     if(role==='department'){
       department = DB.departments.find(d=>d.toLowerCase()===deptRaw.toLowerCase());
-      if(!department){ skipped++; return; }
+      if(!department){
+        problems.push('Row '+rowNum+': department "'+(deptRaw||'(blank)')+'" doesn\'t match any department on file.');
+        return;
+      }
     }
     const id = Math.max(0,...DB.users.map(u=>u.id),0)+1;
     const portal = role==='department' ? 'department' : 'supplies';
     const newUser = {id, username, password, role, fullName, portal};
     if(department) newUser.department = department;
+    if(role!=='department' && siteRaw){
+      const site = DB.warehouses.find(w=>w.toLowerCase()===siteRaw.toLowerCase());
+      if(site) newUser.site = site;
+    }
     if(role==='staff'){
       const splitScope = v => v.split(';').map(x=>x.trim()).filter(x=>x);
       const skuScopeRaw = splitScope(csvField(row, ['SKU Scope']));
@@ -3233,7 +3172,19 @@ async function importUserCsv(inputEl){
     added++;
   });
   if(added){ await saveDB(); }
-  toast('Imported '+added+' login'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/invalid/duplicate).'):'.'));
+  if(problems.length){
+    showModal(`
+      <h3>Import results</h3>
+      <p style="font-size:13.5px;color:var(--muted);margin:8px 0 14px;line-height:1.5;">Imported <b>${added}</b> login${added===1?'':'s'}. ${problems.length} row${problems.length===1?'':'s'} skipped — here's why:</p>
+      <div style="max-height:300px;overflow-y:auto;font-size:12.5px;line-height:1.8;border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:#fbfbfc;">
+        ${problems.slice(0,60).map(m=>`<div>&bull; ${esc(m)}</div>`).join('')}
+        ${problems.length>60?'<div class="small-note" style="margin-top:6px;">…and '+(problems.length-60)+' more row'+(problems.length-60===1?'':'s')+'.</div>':''}
+      </div>
+      <div class="footer-actions"><button class="btn btn-primary" onclick="closeModal()">Close</button></div>
+    `);
+  } else {
+    toast('Imported '+added+' login'+(added===1?'':'s')+'.');
+  }
   renderSettings();
 }
 
@@ -3244,13 +3195,10 @@ async function importUserCsv(inputEl){
   if(saved && saved.session){
     const stillExists = DB.users.find(u=>u.id===saved.session.id);
     if(stillExists){
-      selectedSite = saved.selectedSite || null;
       portalMode = saved.portalMode || stillExists.portal || 'supplies';
-      session = {id:stillExists.id, username:stillExists.username, fullName:stillExists.fullName, role:stillExists.role, portal:stillExists.portal, department:stillExists.department||null, site:selectedSite};
+      session = {id:stillExists.id, username:stillExists.username, fullName:stillExists.fullName, role:stillExists.role, portal:stillExists.portal, department:stillExists.department||null, site:stillExists.site||null};
       route = saved.route || (portalMode==='department' ? 'ddashboard' : 'dashboard');
       subroute = saved.subroute || '';
-      document.getElementById('site-screen').style.display='none';
-      document.getElementById('portal-screen').style.display='none';
       document.getElementById('login-screen').style.display='none';
       document.getElementById('app').style.display='block';
       renderShell();
@@ -3260,7 +3208,7 @@ async function importUserCsv(inputEl){
     }
     clearUiSession();
   }
-  renderSiteScreen();
+  document.getElementById('login-username').focus();
 })();
 </script>
 </body>
