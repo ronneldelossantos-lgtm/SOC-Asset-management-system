@@ -423,33 +423,17 @@ function defaultDB(){
       {opsId:'OPS-1003', fullName:'Pedro Reyes', department:'IT Department'},
       {opsId:'OPS-1004', fullName:'Ana Lim', department:'HR Department'}
     ],
-    sku: [
-      {sku:'AST-0001', description:'Dell Latitude 5420 Laptop', type:'Asset', uom:'unit', assetCondition:'Repairable'},
-      {sku:'AST-0002', description:'HP LaserJet Pro M404 Printer', type:'Asset', uom:'unit', assetCondition:'Repairable'},
-      {sku:'AST-0003', description:'Ergonomic Office Chair', type:'Asset', uom:'unit', assetCondition:'Repairable'},
-      {sku:'AST-0004', description:'27" LED Monitor', type:'Asset', uom:'unit', assetCondition:'Repairable'},
-      {sku:'AST-0005', description:'Steel Filing Cabinet', type:'Asset', uom:'unit', assetCondition:'Repairable'},
-      {sku:'CON-0001', description:'Bond Paper A4 (Ream)', type:'Consumable', uom:'ream'},
-      {sku:'CON-0002', description:'Ballpoint Pen (Black)', type:'Consumable', uom:'pc'},
-      {sku:'CON-0003', description:'Toner Cartridge HP 85A', type:'Consumable', uom:'pc'},
-      {sku:'CON-0004', description:'Sticky Notes 3x3', type:'Consumable', uom:'pad'},
-      {sku:'CON-0005', description:'USB Flash Drive 32GB', type:'Consumable', uom:'pc'}
-    ],
+    sku: [],
     departments: ['IT Department','Finance Department','HR Department','Operations','Admin / Warehouse'],
+    suppliers: ['ABC Trading Corp','Office Depot Philippines','TechSource Solutions'],
     warehouses: ['SOC5','SOC6','SOC8','SOC9','SOC Cache'],
     accountability: [
       {name:'Maria Santos', email:'maria.santos@company.com'},
       {name:'Pedro Reyes', email:'pedro.reyes@company.com'},
       {name:'Ana Lim', email:'ana.lim@company.com'}
     ],
-    stock: {
-      'AST-0001':15,'AST-0002':6,'AST-0003':20,'AST-0004':10,'AST-0005':9,
-      'CON-0001':120,'CON-0002':500,'CON-0003':8,'CON-0004':60,'CON-0005':40
-    },
-    reorderPoint: {
-      'AST-0001':4,'AST-0002':2,'AST-0003':5,'AST-0004':4,'AST-0005':3,
-      'CON-0001':40,'CON-0002':100,'CON-0003':10,'CON-0004':20,'CON-0005':15
-    },
+    stock: {},
+    reorderPoint: {},
     requests: [],
     receiving: [],
     issuance: [],
@@ -471,6 +455,8 @@ function migrateDB(){
   if(!DB.deptIssuance) DB.deptIssuance = [];
   if(!DB.notifications) DB.notifications = [];
   if(!DB.warehouses || !DB.warehouses.length) DB.warehouses = ['SOC5','SOC6','SOC8','SOC9','SOC Cache'];
+  if(!DB.suppliers) DB.suppliers = [];
+  (DB.receiving||[]).forEach(r=>{ if(r.from && !DB.suppliers.includes(r.from)) DB.suppliers.push(r.from); });
   if(DB.accountability.length && typeof DB.accountability[0] === 'string'){
     DB.accountability = DB.accountability.map(n=>({name:n, email:''}));
   }
@@ -605,6 +591,70 @@ function downloadCSV(filename, headers, rows){
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
 }
 function dlBtn(fnName){ return `<button class="btn btn-sm dl-btn" onclick="${fnName}()" title="Download CSV">&#8615; Download</button>`; }
+/* ============================= CSV IMPORT ============================= */
+function importBtn(fnName, headerHint){
+  return `<label class="btn btn-sm" style="margin:0;" title="Expected columns: ${esc(headerHint)}">&#8613; Import CSV<input type="file" accept=".csv,text/csv" style="display:none;" onchange="${fnName}(this)"></label>`;
+}
+function readFileAsText(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>resolve(reader.result);
+    reader.onerror = ()=>reject(reader.error);
+    reader.readAsText(file);
+  });
+}
+function parseCSVText(text){
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  const s = String(text||'').replace(/^\uFEFF/, '');
+  for(let i=0;i<s.length;i++){
+    const c = s[i];
+    if(inQuotes){
+      if(c === '"'){
+        if(s[i+1] === '"'){ field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else {
+      if(c === '"') inQuotes = true;
+      else if(c === ','){ row.push(field); field=''; }
+      else if(c === '\r'){ /* skip, \n handles the break */ }
+      else if(c === '\n'){ row.push(field); rows.push(row); row=[]; field=''; }
+      else field += c;
+    }
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  return rows.filter(r => !(r.length===1 && r[0].trim()===''));
+}
+function csvRowsToObjects(rows){
+  if(!rows.length) return [];
+  const headers = rows[0].map(h=>String(h||'').trim());
+  return rows.slice(1).map(r=>{
+    const obj={};
+    headers.forEach((h,i)=>{ obj[h] = (r[i]!==undefined ? String(r[i]).trim() : ''); });
+    return obj;
+  }).filter(o=>Object.values(o).some(v=>v!==''));
+}
+function csvField(row, names){
+  const keys = Object.keys(row);
+  for(const name of names){
+    const k = keys.find(k=>k.toLowerCase().trim()===name.toLowerCase());
+    if(k!==undefined) return row[k];
+  }
+  return '';
+}
+async function importCsvRows(inputEl){
+  const file = inputEl.files && inputEl.files[0] ? inputEl.files[0] : null;
+  inputEl.value = '';
+  if(!file) return null;
+  try{
+    const text = await readFileAsText(file);
+    return csvRowsToObjects(parseCSVText(text));
+  }catch(e){
+    console.error('CSV read error', e);
+    toast('Could not read that CSV file.');
+    return null;
+  }
+}
 function fmtDate(d){ const dt = d?new Date(d):new Date(); return dt.toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}); }
 function fmtDateTime(d){ const dt = d?new Date(d):new Date(); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' · '+dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
 function fmtDateOrBlank(d){ return d ? fmtDate(d) : ''; }
@@ -721,12 +771,12 @@ function choosePortal(mode){
     document.getElementById('login-portal-title').textContent='Supplies Portal';
     document.getElementById('login-portal-sub').textContent='Central supplies office sign-in';
     document.getElementById('login-lead').textContent='Enter your Supplies Portal credentials to continue.';
-    document.getElementById('login-hint-slot').innerHTML='Demo accounts — admin: <code>admin</code> / <code>admin123</code> &nbsp;·&nbsp; staff: <code>staff</code> / <code>staff123</code>';
+    document.getElementById('login-hint-slot').innerHTML='';
   }else{
     document.getElementById('login-portal-title').textContent='Department Portal';
     document.getElementById('login-portal-sub').textContent='Department staff sign-in';
     document.getElementById('login-lead').textContent='Enter your Department Portal credentials to continue.';
-    document.getElementById('login-hint-slot').innerHTML='Demo accounts — IT Dept: <code>dept.it</code> / <code>dept123</code> &nbsp;·&nbsp; HR Dept: <code>dept.hr</code> / <code>dept123</code>';
+    document.getElementById('login-hint-slot').innerHTML='';
   }
   document.getElementById('login-username').focus();
 }
@@ -1054,6 +1104,7 @@ function dashConsumable(){
 
 /* ============================= REQUEST MODULE ============================= */
 let reqDraftItems = [];
+let recvDraftItems = [];
 function renderRequest(){
   const c = document.getElementById('content');
   const tab = subroute || 'new';
@@ -1732,37 +1783,54 @@ function renderReceiving(){
     <div id="recv-body"></div>
   `;
   document.getElementById('recv-body').innerHTML = tab==='new' ? receivingFormHtml() : receivingListHtml();
+  if(tab==='new'){ refreshRecvItemsTable(); }
 }
 function receivingFormHtml(){
   return `
   <div class="card">
     <h3>Receive incoming supplies</h3>
-    <div class="card-sub">Enter the SKU code to auto-fill item details, then confirm quantity and source.</div>
+    <div class="card-sub">Add one or more SKUs to this delivery, then receive them all together.</div>
+    <div class="section-title">Add item</div>
     <div class="form-row3">
-      <div class="field"><label>SKU code</label><input id="recv-sku" placeholder="e.g. AST-0001" oninput="recvSkuLookup()"></div>
+      <div class="field"><label>SKU code</label><input id="recv-sku" placeholder="e.g. AST-0001" oninput="recvSkuLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}"></div>
       <div class="field"><label>Item description</label><input id="recv-desc" class="autofill" disabled></div>
       <div class="field"><label>Type of supply</label><input id="recv-type" class="autofill" disabled></div>
     </div>
-    <div class="form-row3">
+    <div class="form-row">
       <div class="field"><label>UOM</label><input id="recv-uom" class="autofill" disabled></div>
-      <div class="field"><label>From (supplier / source)</label><input id="recv-from" placeholder="e.g. ABC Trading Corp"></div>
-      <div class="field"><label>Quantity received</label><input id="recv-qty" type="number" min="1" placeholder="0"></div>
+      <div class="field"><label>Quantity received</label><input id="recv-qty" type="number" min="1" placeholder="0" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}"></div>
     </div>
-    <div class="field"><label>Transmittal / delivery receipt</label>
-      <input type="file" id="recv-file">
-      <div class="hint">Attach the delivery receipt or transmittal document (stored as filename reference in this prototype).</div>
+    <div id="recv-sku-hint" class="hint"></div>
+    <div class="footer-actions" style="margin-top:6px;">
+      <button class="btn" onclick="scanReceive()">&#128247; Scan to add</button>
+      <button class="btn btn-amber" onclick="addRecvItem()">+ Add to batch</button>
+    </div>
+
+    <div class="section-title">Items in this delivery</div>
+    <div id="recv-items-table"></div>
+
+    <div class="section-title">Delivery details</div>
+    <div class="form-row">
+      <div class="field"><label>From (supplier / source)</label><select id="recv-from">${DB.suppliers.length ? DB.suppliers.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('') : '<option value="">No suppliers set up — add one in Settings &rarr; Supplier</option>'}</select></div>
+      <div class="field"><label>Transmittal / delivery receipt</label>
+        <input type="file" id="recv-file">
+        <div class="hint">Attach the delivery receipt or transmittal document — applied to every item in this batch.</div>
+      </div>
     </div>
     <div class="footer-actions">
-      <button class="btn" onclick="scanReceive()">&#128247; Scan to receive</button>
-      <button class="btn btn-primary" onclick="manualReceive()">Manual receive</button>
+      <button class="btn" onclick="recvDraftItems=[];refreshRecvItemsTable();">Clear batch</button>
+      <button class="btn btn-primary" onclick="submitReceiving()">Receive batch</button>
     </div>
   </div>`;
 }
 function recvSkuLookup(){
-  const info = skuInfo(document.getElementById('recv-sku').value);
+  const v = document.getElementById('recv-sku').value;
+  const info = skuInfo(v);
   document.getElementById('recv-desc').value = info?info.description:'';
   document.getElementById('recv-type').value = info?info.type:'';
   document.getElementById('recv-uom').value = info?info.uom:'';
+  const hintEl = document.getElementById('recv-sku-hint');
+  if(hintEl) hintEl.innerHTML = info ? '' : (v?'SKU not found in master list.':'');
 }
 function scanReceive(){
   showModal(`
@@ -1778,7 +1846,29 @@ function scanReceive(){
 function confirmScanReceive(){
   const code = document.getElementById('scan-code-input').value.trim();
   closeModal();
-  if(code){ document.getElementById('recv-sku').value = code; recvSkuLookup(); toast('Scanned '+code+'. Confirm quantity and receive.'); }
+  if(code){ document.getElementById('recv-sku').value = code; recvSkuLookup(); toast('Scanned '+code+'. Enter quantity and add to batch.'); }
+}
+function addRecvItem(){
+  const sku = document.getElementById('recv-sku').value.trim();
+  const info = skuInfo(sku);
+  const qty = Number(document.getElementById('recv-qty').value);
+  if(!info){ toast('Enter a valid SKU code first.'); return; }
+  if(!qty || qty<=0){ toast('Enter a quantity greater than 0.'); return; }
+  recvDraftItems.push({sku:info.sku, description:info.description, type:info.type, uom:info.uom, qty});
+  document.getElementById('recv-sku').value=''; document.getElementById('recv-desc').value=''; document.getElementById('recv-type').value=''; document.getElementById('recv-uom').value=''; document.getElementById('recv-qty').value='';
+  const hintEl = document.getElementById('recv-sku-hint'); if(hintEl) hintEl.innerHTML='';
+  refreshRecvItemsTable();
+  const skuEl = document.getElementById('recv-sku'); if(skuEl) skuEl.focus();
+}
+function removeRecvItem(i){ recvDraftItems.splice(i,1); refreshRecvItemsTable(); }
+function refreshRecvItemsTable(){
+  const el = document.getElementById('recv-items-table');
+  if(!el) return;
+  if(recvDraftItems.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#8615;</div>No items added yet.</div>'; return; }
+  el.innerHTML = '<div class="line-items">' +
+    '<div class="li-row li-head"><span>SKU</span><span>Description</span><span>Type</span><span>Qty</span><span></span></div>' +
+    recvDraftItems.map((it,i)=>`<div class="li-row"><span class="mono">${esc(it.sku)}</span><span>${esc(it.description)}</span><span>${esc(it.type)}</span><span>${it.qty} ${esc(it.uom)}</span><span><button class="icon-btn" onclick="removeRecvItem(${i})">&times;</button></span></div>`).join('')
+  + '</div>';
 }
 function readFileAsDataURL(file){
   return new Promise((resolve, reject)=>{
@@ -1788,27 +1878,29 @@ function readFileAsDataURL(file){
     reader.readAsDataURL(file);
   });
 }
-async function manualReceive(){
-  const sku = document.getElementById('recv-sku').value.trim();
-  const info = skuInfo(sku);
+async function submitReceiving(){
+  if(recvDraftItems.length===0){ toast('Add at least one item to the batch first.'); return; }
   const from = document.getElementById('recv-from').value.trim();
-  const qty = Number(document.getElementById('recv-qty').value);
   const fileEl = document.getElementById('recv-file');
   const file = fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
-  if(!info){ toast('Enter a valid SKU code first.'); return; }
-  if(!from){ toast('Enter the source (From) field.'); return; }
-  if(!qty || qty<=0){ toast('Enter a quantity greater than 0.'); return; }
+  if(!from){ toast('Select a supplier — add one in Settings → Supplier if the list is empty.'); return; }
   if(file && file.size > 4*1024*1024){ toast('Transmittal file is too large (max 4MB).'); return; }
   let transmittalFile = '';
   if(file){
     try{ transmittalFile = await readFileAsDataURL(file); }
     catch(e){ console.error('File read error', e); toast('Could not read the attached file — receiving without it.'); }
   }
-  const id = nextCode('RCV','recv');
-  DB.receiving.push({id, sku:info.sku, description:info.description, type:info.type, uom:info.uom, from, qty, date:nowISO(), receivedBy:session.fullName, transmittal:file?file.name:'', transmittalFile});
-  DB.stock[info.sku] = (DB.stock[info.sku]||0) + qty;
+  const date = nowISO();
+  const ids = [];
+  recvDraftItems.forEach(it=>{
+    const id = nextCode('RCV','recv');
+    ids.push(id);
+    DB.receiving.push({id, sku:it.sku, description:it.description, type:it.type, uom:it.uom, from, qty:it.qty, date, receivedBy:session.fullName, transmittal:file?file.name:'', transmittalFile});
+    DB.stock[it.sku] = (DB.stock[it.sku]||0) + it.qty;
+  });
+  recvDraftItems = [];
   await saveDB();
-  toast(id+' logged — stock updated (+'+qty+' '+info.uom+').');
+  toast(ids.length+' item'+(ids.length===1?'':'s')+' logged ('+ids.join(', ')+') — stock updated.');
   navigate('receiving','list');
 }
 function viewReceivedTransmittal(id){
@@ -2675,19 +2767,20 @@ function renderSettings(){
     <div class="tabs">
       <div class="tab ${tab==='sku'?'active':''}" onclick="navigate('settings','sku')">SKU code</div>
       <div class="tab ${tab==='dept'?'active':''}" onclick="navigate('settings','dept')">Department</div>
+      <div class="tab ${tab==='supplier'?'active':''}" onclick="navigate('settings','supplier')">Supplier</div>
       ${isAdmin ? `<div class="tab ${tab==='warehouse'?'active':''}" onclick="navigate('settings','warehouse')">Warehouse</div>` : ''}
       <div class="tab ${tab==='acct'?'active':''}" onclick="navigate('settings','acct')">Accountability</div>
       ${isAdmin ? `<div class="tab ${tab==='access'?'active':''}" onclick="navigate('settings','access')">Access</div>` : ''}
     </div>
     <div id="set-body"></div>
   `;
-  const map = {sku:settingsSkuHtml, dept:()=>settingsListHtml('departments','Department'), warehouse:()=>settingsListHtml('warehouses','Warehouse'), acct:settingsAccountabilityHtml, access:settingsAccessHtml};
+  const map = {sku:settingsSkuHtml, dept:()=>settingsListHtml('departments','Department',true), supplier:()=>settingsListHtml('suppliers','Supplier',true), warehouse:()=>settingsListHtml('warehouses','Warehouse',false), acct:settingsAccountabilityHtml, access:settingsAccessHtml};
   const renderer = ((tab==='access' || tab==='warehouse') && !isAdmin) ? settingsSkuHtml : (map[tab]||settingsSkuHtml);
   document.getElementById('set-body').innerHTML = renderer();
 }
 function settingsSkuHtml(){
   return `<div class="card">
-    <h3>Add SKU code</h3>
+    <div class="list-head"><h3>Add SKU code</h3>${importBtn('importSkuCsv', 'SKU, Description, Type (Asset/Consumable), UOM, Qty (optional)')}</div>
     <div class="form-row3">
       <div class="field"><label>SKU code</label><input id="new-sku-code" placeholder="e.g. CON-0006"></div>
       <div class="field"><label>Item description</label><input id="new-sku-desc" placeholder="Item name"></div>
@@ -2699,6 +2792,7 @@ function settingsSkuHtml(){
         <div class="hint" id="new-sku-qty-hint" style="display:none;">Consumables must start at 0 — bring in stock through Receiving.</div>
       </div>
     </div>
+    <div class="hint">Or import several at once — <b>Import CSV</b> above accepts columns: SKU, Description, Type, UOM, Qty (optional; ignored for consumables).</div>
     <div class="footer-actions"><button class="btn btn-primary" onclick="addSku()">Add SKU</button></div>
   </div>
   <div class="card">
@@ -2803,9 +2897,31 @@ function deleteSku(sku){
     renderSettings();
   });
 }
-function settingsListHtml(key, label){
+async function importSkuCsv(inputEl){
+  const rows = await importCsvRows(inputEl);
+  if(!rows) return;
+  let added = 0, skipped = 0;
+  rows.forEach(row=>{
+    const sku = csvField(row, ['SKU','SKU Code']).trim();
+    const desc = csvField(row, ['Description','Item Description']).trim();
+    let type = csvField(row, ['Type']).trim();
+    const uom = csvField(row, ['UOM']).trim();
+    const qtyRaw = csvField(row, ['Qty','Quantity','On Hand','Initial on-hand qty']).trim();
+    type = /^asset$/i.test(type) ? 'Asset' : (/^consumable$/i.test(type) ? 'Consumable' : '');
+    if(!sku || !desc || !type || !uom || skuInfo(sku)){ skipped++; return; }
+    const qty = type==='Consumable' ? 0 : (Number(qtyRaw)||0);
+    DB.sku.push({sku, description:desc, type, uom, assetCondition: type==='Asset' ? 'Repairable' : undefined, safetyStockDays: 7});
+    DB.stock[sku] = qty;
+    DB.reorderPoint[sku] = 0;
+    added++;
+  });
+  if(added){ await saveDB(); }
+  toast('Imported '+added+' SKU'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/duplicate/invalid).'):'.'));
+  renderSettings();
+}
+function settingsListHtml(key, label, allowCsv){
   return `<div class="card">
-    <h3>Add ${label.toLowerCase()}</h3>
+    <div class="list-head"><h3>Add ${label.toLowerCase()}</h3>${allowCsv ? importBtn('importListCsv_'+key, label+' (single column)') : ''}</div>
     <div style="display:flex;gap:10px;">
       <input id="new-list-val" placeholder="${label} name" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;">
       <button class="btn btn-primary" onclick="addListVal('${key}')">Add</button>
@@ -2827,6 +2943,22 @@ async function addListVal(key){
   toast('Added.');
   renderSettings();
 }
+async function importListCsv_departments(inputEl){ await importListCsv('departments', inputEl); }
+async function importListCsv_suppliers(inputEl){ await importListCsv('suppliers', inputEl); }
+async function importListCsv(key, inputEl){
+  const rows = await importCsvRows(inputEl);
+  if(!rows) return;
+  let added = 0, skipped = 0;
+  rows.forEach(row=>{
+    const v = csvField(row, ['Department','Supplier','Name','Value']).trim() || Object.values(row)[0].trim();
+    if(!v || DB[key].includes(v)){ skipped++; return; }
+    DB[key].push(v);
+    added++;
+  });
+  if(added){ await saveDB(); }
+  toast('Imported '+added+' entr'+(added===1?'y':'ies')+(skipped?(', skipped '+skipped+' (blank/duplicate).'):'.'));
+  renderSettings();
+}
 async function removeListVal(key, i){
   DB[key].splice(i,1);
   await saveDB();
@@ -2835,7 +2967,7 @@ async function removeListVal(key, i){
 }
 function settingsAccountabilityHtml(){
   return `<div class="card">
-    <h3>Add accountable person</h3>
+    <div class="list-head"><h3>Add accountable person</h3>${importBtn('importAcctCsv', 'Full Name, Email (optional)')}</div>
     <div class="card-sub">Accountability is tied to a named person, not just a role — this person is selectable at Issuance.</div>
     <div class="form-row">
       <div class="field"><label>Full name</label><input id="new-acct-name" placeholder="Full name"></div>
@@ -2891,9 +3023,24 @@ function removeAccountability(i){
     renderSettings();
   });
 }
+async function importAcctCsv(inputEl){
+  const rows = await importCsvRows(inputEl);
+  if(!rows) return;
+  let added = 0, skipped = 0;
+  rows.forEach(row=>{
+    const name = csvField(row, ['Full Name','Name']).trim();
+    const email = csvField(row, ['Email']).trim();
+    if(!name || DB.accountability.some(a=>a.name.toLowerCase()===name.toLowerCase())){ skipped++; return; }
+    DB.accountability.push({name, email});
+    added++;
+  });
+  if(added){ await saveDB(); }
+  toast('Imported '+added+' person'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (blank/duplicate name).'):'.'));
+  renderSettings();
+}
 function settingsAccessHtml(){
   return `<div class="card">
-    <h3>Add a login</h3>
+    <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department), Password, Department (if role=department), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
     <div class="card-sub">Staff and Admin logins sign in via the Supplies Portal. Department logins sign in via the Department Portal and are scoped to one department.</div>
     <div class="form-row3">
       <div class="field"><label>Full name</label><input id="new-user-name" placeholder="Full name"></div>
@@ -2928,7 +3075,7 @@ function settingsAccessHtml(){
     </table></div>
   </div>
   <div class="card">
-    <h3>Add employee (for Received-by lookup)</h3>
+    <div class="list-head"><h3>Add employee (for Received-by lookup)</h3>${importBtn('importEmployeeCsv', 'Ops ID, Full Name, Department (must match an existing department)')}</div>
     <div class="form-row3">
       <div class="field"><label>Ops ID</label><input id="new-emp-ops" placeholder="e.g. OPS-1005"></div>
       <div class="field"><label>Full name</label><input id="new-emp-name" placeholder="Full name"></div>
@@ -3008,6 +3155,61 @@ async function removeEmployee(i){
   DB.employees.splice(i,1);
   await saveDB();
   toast('Employee removed.');
+  renderSettings();
+}
+async function importEmployeeCsv(inputEl){
+  const rows = await importCsvRows(inputEl);
+  if(!rows) return;
+  let added = 0, skipped = 0;
+  rows.forEach(row=>{
+    const opsId = csvField(row, ['Ops ID','OpsId','Ops Id']).trim();
+    const fullName = csvField(row, ['Full Name','Name']).trim();
+    const deptRaw = csvField(row, ['Department']).trim();
+    const dept = DB.departments.find(d=>d.toLowerCase()===deptRaw.toLowerCase());
+    if(!opsId || !fullName || !dept || empInfo(opsId)){ skipped++; return; }
+    DB.employees.push({opsId, fullName, department:dept});
+    added++;
+  });
+  if(added){ await saveDB(); }
+  toast('Imported '+added+' employee'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/duplicate/unknown department).'):'.'));
+  renderSettings();
+}
+async function importUserCsv(inputEl){
+  const rows = await importCsvRows(inputEl);
+  if(!rows) return;
+  let added = 0, skipped = 0;
+  rows.forEach(row=>{
+    const fullName = csvField(row, ['Full Name','Name']).trim();
+    const username = csvField(row, ['Username']).trim();
+    let role = csvField(row, ['Role']).trim().toLowerCase();
+    const password = csvField(row, ['Password']).trim();
+    const deptRaw = csvField(row, ['Department']).trim();
+    if(!['admin','staff','department'].includes(role)){ skipped++; return; }
+    if(!fullName || !username || !password){ skipped++; return; }
+    if(DB.users.find(u=>u.username.toLowerCase()===username.toLowerCase())){ skipped++; return; }
+    let department;
+    if(role==='department'){
+      department = DB.departments.find(d=>d.toLowerCase()===deptRaw.toLowerCase());
+      if(!department){ skipped++; return; }
+    }
+    const id = Math.max(0,...DB.users.map(u=>u.id),0)+1;
+    const portal = role==='department' ? 'department' : 'supplies';
+    const newUser = {id, username, password, role, fullName, portal};
+    if(department) newUser.department = department;
+    if(role==='staff'){
+      const splitScope = v => v.split(';').map(x=>x.trim()).filter(x=>x);
+      const skuScopeRaw = splitScope(csvField(row, ['SKU Scope']));
+      const deptScopeRaw = splitScope(csvField(row, ['Department Scope']));
+      const acctScopeRaw = splitScope(csvField(row, ['Accountability Scope']));
+      newUser.skuScope = skuScopeRaw.filter(v=>skuInfo(v));
+      newUser.departmentScope = deptScopeRaw.filter(v=>DB.departments.includes(v));
+      newUser.accountabilityScope = acctScopeRaw.filter(v=>DB.accountability.some(a=>a.name===v));
+    }
+    DB.users.push(newUser);
+    added++;
+  });
+  if(added){ await saveDB(); }
+  toast('Imported '+added+' login'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/invalid/duplicate).'):'.'));
   renderSettings();
 }
 
