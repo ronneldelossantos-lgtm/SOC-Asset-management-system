@@ -402,12 +402,34 @@ if(!window.storage){
   };
 }
 const STORE_KEY = 'sms_erp_state_v1';
+const UI_SESSION_KEY = 'sms_erp_ui_session_v1';
 let DB = null;
 let session = null; // {id, username, fullName, role, portal, department}
 let route = 'dashboard';
 let subroute = '';
 let portalMode = null; // 'supplies' | 'department'
 let selectedSite = null; // chosen warehouse, e.g. 'SOC5'
+
+/* Keeps the current page (site, portal, logged-in user, and the exact
+   screen/tab open) across an actual browser refresh (F5 / reload), so
+   reloading the tab lands back where you were instead of resetting all
+   the way to site selection / login. Cleared on logout, and scoped to
+   sessionStorage so it naturally clears when the browser tab is closed. */
+function saveUiSession(){
+  try{
+    if(!session){ sessionStorage.removeItem(UI_SESSION_KEY); return; }
+    sessionStorage.setItem(UI_SESSION_KEY, JSON.stringify({selectedSite, portalMode, session, route, subroute}));
+  }catch(e){ /* sessionStorage unavailable — refresh will just restart at login */ }
+}
+function clearUiSession(){
+  try{ sessionStorage.removeItem(UI_SESSION_KEY); }catch(e){}
+}
+function loadUiSession(){
+  try{
+    const raw = sessionStorage.getItem(UI_SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
 
 function defaultDB(){
   return {
@@ -809,6 +831,7 @@ async function doLogin(){
 }
 function doLogout(){
   stopAutoRefresh();
+  clearUiSession();
   session = null;
   portalMode = null;
   document.getElementById('login-username').value='';
@@ -900,6 +923,7 @@ function navigate(r, sub){
   const fallback = portalMode==='department' ? renderDeptDashboard : renderDashboard;
   (map[r]||fallback)();
   renderNotifBell();
+  if(session) saveUiSession();
 }
 
 /* ============================= NOTIFICATIONS ============================= */
@@ -3216,6 +3240,26 @@ async function importUserCsv(inputEl){
 /* ============================= INIT ============================= */
 (async function init(){
   await loadDB();
+  const saved = loadUiSession();
+  if(saved && saved.session){
+    const stillExists = DB.users.find(u=>u.id===saved.session.id);
+    if(stillExists){
+      selectedSite = saved.selectedSite || null;
+      portalMode = saved.portalMode || stillExists.portal || 'supplies';
+      session = {id:stillExists.id, username:stillExists.username, fullName:stillExists.fullName, role:stillExists.role, portal:stillExists.portal, department:stillExists.department||null, site:selectedSite};
+      route = saved.route || (portalMode==='department' ? 'ddashboard' : 'dashboard');
+      subroute = saved.subroute || '';
+      document.getElementById('site-screen').style.display='none';
+      document.getElementById('portal-screen').style.display='none';
+      document.getElementById('login-screen').style.display='none';
+      document.getElementById('app').style.display='block';
+      renderShell();
+      navigate(route, subroute);
+      startAutoRefresh();
+      return;
+    }
+    clearUiSession();
+  }
   renderSiteScreen();
 })();
 </script>
