@@ -284,16 +284,86 @@ tr:last-child td{border-bottom:none;}
      formula text. If this fails to load (e.g. offline), CSV import still
      works; only .xlsx/.xls uploads are affected. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script>
 /* ============================= STATE / STORAGE ============================= */
-/* Standalone fallback: window.storage only exists inside the Claude Artifact
-   viewer. When this file is opened directly in a browser (double-clicked,
-   hosted on a plain web server, etc.) that API is missing, which previously
-   caused every save to fail silently ("Could not save — changes may be
-   lost"). This polyfill makes the same window.storage.get/set/delete/list
-   calls work against the browser's own localStorage instead, so the app
-   is fully functional standalone. If the real window.storage API is present
-   (i.e. running inside a Claude artifact), it is left untouched. */
+/* Shared cloud storage: this file is hosted as a plain static page (not
+   inside the Claude Artifact viewer), so there's no built-in window.storage
+   backend. Without one, saved data — including newly created user accounts —
+   only lived in the current browser's localStorage, which meant a user who
+   signed up on one device/browser was completely invisible on any other
+   device, even with the correct username and password.
+
+   This block points window.storage at Firebase Firestore (project:
+   spx-soc-asset-management) instead, so the same get/set/delete/list calls
+   the rest of the app already makes now read/write one shared document that
+   every device and browser sees. If Firebase fails to load (offline, ad
+   blocker, blocked domain), it falls back to the old localStorage-only
+   behavior further below so the app still works solo rather than breaking. */
+if(!window.storage){
+  const firebaseConfig = {
+    apiKey: "AIzaSyC9NknHkluFaWdqQnZWW5--HreG-w7fTZ8",
+    authDomain: "spx-soc-asset-management.firebaseapp.com",
+    projectId: "spx-soc-asset-management",
+    storageBucket: "spx-soc-asset-management.firebasestorage.app",
+    messagingSenderId: "261426364010",
+    appId: "1:261426364010:web:e0dc8203a4a07c98099413"
+  };
+
+  let fsDB = null;
+  try{
+    if(typeof firebase !== 'undefined'){
+      const fbApp = firebase.initializeApp(firebaseConfig);
+      fsDB = firebase.firestore(fbApp);
+    }
+  }catch(e){
+    console.warn('Firebase init failed, will fall back to local-only storage:', e);
+  }
+
+  if(fsDB){
+    const COLLECTION = 'sms_erp_storage';
+    const docRef = (key, shared) => fsDB.collection(COLLECTION).doc((shared?'shared__':'local__')+key);
+    window.storage = {
+      async get(key, shared){
+        try{
+          const snap = await docRef(key, shared).get();
+          if(!snap.exists) return null;
+          return {key, value: snap.data().value, shared: !!shared};
+        }catch(e){ console.error('storage.get failed:', e); return null; }
+      },
+      async set(key, value, shared){
+        try{
+          await docRef(key, shared).set({value, updatedAt: Date.now()});
+          return {key, value, shared: !!shared};
+        }catch(e){ console.error('storage.set failed:', e); return null; }
+      },
+      async delete(key, shared){
+        try{
+          await docRef(key, shared).delete();
+          return {key, deleted: true, shared: !!shared};
+        }catch(e){ console.error('storage.delete failed:', e); return null; }
+      },
+      async list(prefix, shared){
+        try{
+          const snap = await fsDB.collection(COLLECTION).get();
+          const marker = (shared?'shared__':'local__');
+          const keys = [];
+          snap.forEach(doc=>{
+            if(doc.id.startsWith(marker)){
+              const short = doc.id.slice(marker.length);
+              if(!prefix || short.startsWith(prefix)) keys.push(short);
+            }
+          });
+          return {keys, prefix, shared: !!shared};
+        }catch(e){ console.error('storage.list failed:', e); return null; }
+      }
+    };
+  }
+}
+
+/* Last-resort fallback: only used if Firebase couldn't be reached above.
+   Per-browser only — does NOT sync across devices. */
 if(!window.storage){
   const LS_PREFIX = 'sms_erp_storage__';
   window.storage = {
