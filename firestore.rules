@@ -1,0 +1,11 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // This app has no Firebase Authentication — it does its own
+    // username/password check inside the client. Access is scoped to just
+    // the one collection the app uses, not opened database-wide.
+    match /sms_erp_storage/{docId} {
+      allow read, write: if true;
+    }
+  }
+}
