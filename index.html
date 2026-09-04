@@ -332,8 +332,27 @@ if(!window.storage){
           return {key, value: snap.data().value, shared: !!shared};
         }catch(e){ console.error('storage.get failed:', e); return null; }
       },
-      async set(key, value, shared){
+      async set(key, value, shared, opts){
         try{
+          if(opts && 'expectedPrevious' in opts){
+            /* Compare-and-swap inside a transaction: the whole app state is
+               one document, saved as a full overwrite, with many admins
+               potentially editing at once. Without this check, whoever saves
+               last silently wins and erases anything another admin added
+               since this client's last read — no error, just missing data.
+               A transaction (not a get-then-set check) is required to close
+               the race, since a plain check-then-write still leaves a gap
+               between the check and the write. */
+            let conflictValue;
+            await fsDB.runTransaction(async tx=>{
+              const snap = await tx.get(docRef(key, shared));
+              const cur = snap.exists ? snap.data().value : null;
+              if(cur !== opts.expectedPrevious){ conflictValue = cur; return; }
+              tx.set(docRef(key, shared), {value, updatedAt: Date.now()});
+            });
+            if(conflictValue!==undefined) return {key, shared: !!shared, conflict:true, currentValue: conflictValue};
+            return {key, value, shared: !!shared};
+          }
           await docRef(key, shared).set({value, updatedAt: Date.now()});
           return {key, value, shared: !!shared};
         }catch(e){ console.error('storage.set failed:', e); return null; }
@@ -573,7 +592,20 @@ let pollTimer = null;
 async function saveDB(){
   try{
     const json = JSON.stringify(DB);
-    await window.storage.set(STORE_KEY, json, true);
+    /* Only compare-and-swap once we actually have a known-good baseline to
+       compare against (lastKnownSnapshot is null right after a failed
+       initial load) — otherwise every save from a client in that degraded
+       state would permanently conflict against itself. */
+    const opts = lastKnownSnapshot!==null ? {expectedPrevious: lastKnownSnapshot} : undefined;
+    const res = await window.storage.set(STORE_KEY, json, true, opts);
+    if(res && res.conflict){
+      DB = res.currentValue ? JSON.parse(res.currentValue) : defaultDB();
+      migrateDB();
+      lastKnownSnapshot = res.currentValue;
+      navigate(route, subroute);
+      toast('Someone else just saved changes here — your last action was NOT saved. Please redo it.');
+      return;
+    }
     lastKnownSnapshot = json;
   }catch(e){
     console.error('Storage error', e);
