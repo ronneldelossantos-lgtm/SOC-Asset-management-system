@@ -173,6 +173,10 @@ tr:last-child td{border-bottom:none;}
 .section-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin:18px 0 10px;padding-top:14px;border-top:1px solid var(--border);}
 .section-title:first-child{margin-top:0;padding-top:0;border-top:none;}
 .hint{font-size:11.5px;color:var(--faint);margin-top:4px;}
+.suggest-dropdown{display:none;position:absolute;top:100%;left:0;right:0;z-index:20;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 20px rgba(0,0,0,0.12);max-height:220px;overflow-y:auto;margin-top:2px;}
+.suggest-item{padding:8px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--border-light,#f0f1f3);}
+.suggest-item:last-child{border-bottom:none;}
+.suggest-item:hover{background:var(--bg);}
 .toast{position:fixed;bottom:22px;right:22px;background:var(--navy);color:#fff;padding:12px 18px;border-radius:9px;font-size:13px;font-weight:500;box-shadow:0 10px 30px rgba(0,0,0,0.25);z-index:999;display:flex;align-items:center;gap:8px;animation:toastin .18s ease;}
 @keyframes toastin{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
 .line-items{border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:10px;}
@@ -855,6 +859,9 @@ const NAV_DEPT = [
   {group:'Overview', items:[
     {id:'ddashboard', label:'Dashboard', ic:'&#9673;'}
   ]},
+  {group:'Approval', items:[
+    {id:'dapprovals', label:'Approvals', ic:'&#10003;', approverOnly:true}
+  ]},
   {group:'Department Operations', items:[
     {id:'drequest', label:'Request Supplies', ic:'&#9998;'},
     {id:'dreceiving', label:'Receiving (from Supplies)', ic:'&#8615;'},
@@ -864,6 +871,7 @@ const NAV_DEPT = [
 ];
 const TITLES_DEPT = {
   ddashboard:['Dashboard','Overview of items received, issued, and returned by your department'],
+  dapprovals:['Approvals','Requests from your department that need your approval before they go to Supplies'],
   drequest:['Request Supplies','File a replenishment request with the Supplies Office'],
   dreceiving:['Receiving (from Supplies)','Confirm items sent to your department by the Supplies Portal'],
   dissuance:['Issuance','Release items to staff within your department'],
@@ -873,7 +881,7 @@ const TITLES_DEPT = {
 function renderShell(){
   const navArr = portalMode==='department' ? NAV_DEPT : NAV;
   const navHtml = navArr.map(g=>{
-    const items = g.items.filter(it=> !it.adminOnly || session.role==='admin');
+    const items = g.items.filter(it=> !it.adminOnly || session.role==='admin').filter(it=> !it.approverOnly || isDeptApprover());
     if(items.length===0) return '';
     return '<div class="nav-group-label">'+g.group+'</div>' + items.map(it=>
       '<div class="nav-item" data-route="'+it.id+'" onclick="navigate(\''+it.id+'\')"><span class="ic">'+it.ic+'</span><span>'+it.label+'</span></div>'
@@ -899,7 +907,7 @@ function navigate(r, sub){
   const map = {
     dashboard: renderDashboard, request: renderRequest, receiving: renderReceiving,
     issuance: renderIssuance, returns: renderReturns, cyclecount: renderCycleCount, repair: renderRepair, settings: renderSettings,
-    ddashboard: renderDeptDashboard, dreceiving: renderDeptReceiving, dissuance: renderDeptIssuance, dreturn: renderDeptReturn, drequest: renderRequest
+    ddashboard: renderDeptDashboard, dreceiving: renderDeptReceiving, dissuance: renderDeptIssuance, dreturn: renderDeptReturn, drequest: renderRequest, dapprovals: renderDeptApprovals
   };
   const fallback = portalMode==='department' ? renderDeptDashboard : renderDashboard;
   (map[r]||fallback)();
@@ -1080,11 +1088,15 @@ function renderRepairPipelineTable(){
 }
 function statusTag(s){
   const map = {'For Repair':'tag-forrepair','Repaired':'tag-repaired','For Backload':'tag-backload','For Disposal':'tag-disposal',
-    'Pending':'tag-pending','Rejected':'tag-rejected','Approved':'tag-approved',
+    'Pending':'tag-pending','Rejected':'tag-rejected','Approved':'tag-approved','Dept Approval':'tag-pending',
     'Preparing':'tag-preparing','Ready for Pull-out':'tag-pullout','Issued':'tag-issued','Received':'tag-approved',
     'Asset Received':'tag-approved','Added to Inventory':'tag-approved','Disposed':'tag-disposal','Backloaded':'tag-backload'};
   return `<span class="tag ${map[s]||''}">${esc(s)}</span>`;
 }
+function isDeptApprover(){
+  return DB.users.some(u=>u.department===session.department && u.approverUsername && u.approverUsername.toLowerCase()===session.username.toLowerCase());
+}
+function currentUserRecord(){ return DB.users.find(u=>u.id===session.id); }
 
 function dashConsumable(){
   const cons = DB.sku.filter(s=>s.type==='Consumable');
@@ -1139,8 +1151,8 @@ function requestFormHtml(){
     </div>
     <div class="section-title">Add item</div>
     <div class="form-row3">
-      <div class="field"><label>SKU code</label><input id="req-sku" placeholder="e.g. CON-0001" oninput="reqSkuLookup()"></div>
-      <div class="field"><label>Item description</label><input id="req-desc" class="autofill" disabled></div>
+      <div class="field" style="position:relative;"><label>Item description</label><input id="req-desc" placeholder="Type to search item…" autocomplete="off" oninput="reqDescInput()" onblur="reqDescBlur()"><div id="req-desc-suggest" class="suggest-dropdown"></div></div>
+      <div class="field"><label>SKU code</label><input id="req-sku" class="autofill" disabled placeholder="Auto-filled from item"></div>
       <div class="field"><label>Quantity</label><input id="req-qty" type="number" min="1" placeholder="0"></div>
     </div>
     <div id="req-sku-hint" class="hint"></div>
@@ -1183,18 +1195,51 @@ function toggleReqAcctManual(){
     emailEl.value = '';
   }
 }
-function reqSkuLookup(){
-  const v = document.getElementById('req-sku').value;
-  const info = skuInfo(v);
-  document.getElementById('req-desc').value = info ? info.description : '';
-  const onHandPart = portalMode==='department' ? '' : ` &middot; On hand: ${DB.stock[info?info.sku:'']||0}`;
-  document.getElementById('req-sku-hint').innerHTML = info ? `${info.type} &middot; UOM: ${info.uom}${onHandPart}` : (v?'SKU not found in master list.':'');
+function reqDescMatches(q){
+  q = String(q||'').trim().toLowerCase();
+  if(!q) return [];
+  return DB.sku.filter(s=>s.description.toLowerCase().includes(q) || s.sku.toLowerCase().includes(q)).slice(0,8);
+}
+function reqDescInput(){
+  const v = document.getElementById('req-desc').value;
+  // Typing again invalidates any previously auto-filled SKU until a suggestion is picked (or an exact match is typed).
+  document.getElementById('req-sku').value = '';
+  document.getElementById('req-sku-hint').innerHTML = '';
+  const matches = reqDescMatches(v);
+  const box = document.getElementById('req-desc-suggest');
+  if(!v.trim() || matches.length===0){ box.innerHTML=''; box.style.display='none'; return; }
+  box.innerHTML = matches.map(s=>`<div class="suggest-item" onmousedown="reqDescPick('${esc(s.sku).replace(/'/g,"\\'")}')"><span class="mono">${esc(s.sku)}</span> — ${esc(s.description)}</div>`).join('');
+  box.style.display='block';
+}
+function reqDescPick(sku){
+  const info = skuInfo(sku);
+  if(!info) return;
+  document.getElementById('req-desc').value = info.description;
+  document.getElementById('req-sku').value = info.sku;
+  const onHandPart = portalMode==='department' ? '' : ` &middot; On hand: ${DB.stock[info.sku]||0}`;
+  document.getElementById('req-sku-hint').innerHTML = `${info.type} &middot; UOM: ${info.uom}${onHandPart}`;
+  const box = document.getElementById('req-desc-suggest');
+  box.innerHTML=''; box.style.display='none';
+}
+function reqDescBlur(){
+  // Give the mousedown on a suggestion item time to register before we hide the list.
+  setTimeout(()=>{
+    const box = document.getElementById('req-desc-suggest');
+    if(box){ box.innerHTML=''; box.style.display='none'; }
+    // If what's typed exactly matches one item's description, auto-fill the SKU even without a click.
+    if(!document.getElementById('req-sku').value){
+      const v = document.getElementById('req-desc').value.trim().toLowerCase();
+      const exact = DB.sku.find(s=>s.description.toLowerCase()===v);
+      if(exact) reqDescPick(exact.sku);
+      else if(v) document.getElementById('req-sku-hint').innerHTML = 'No matching item — pick one from the suggestions.';
+    }
+  }, 150);
 }
 function addReqItem(){
   const sku = document.getElementById('req-sku').value.trim();
   const qty = Number(document.getElementById('req-qty').value);
   const info = skuInfo(sku);
-  if(!info){ toast('Enter a valid SKU code first.'); return; }
+  if(!info){ toast('Pick an item from the suggestions list first.'); return; }
   if(!qty || qty<=0){ toast('Enter a quantity greater than 0.'); return; }
   reqDraftItems.push({sku:info.sku, description:info.description, type:info.type, uom:info.uom, qty});
   document.getElementById('req-sku').value=''; document.getElementById('req-desc').value=''; document.getElementById('req-qty').value='';
@@ -1227,18 +1272,85 @@ async function submitRequest(){
   accountableEmail = document.getElementById('req-acct-email').value.trim();
   if(!accountableEmail || !isValidEmail(accountableEmail)){ toast("Enter the accountable person's working email."); return; }
   const id = nextCode('REQ','req');
+  const me = currentUserRecord();
+  const approverUsername = me ? me.approverUsername : null;
+  const initialStatus = approverUsername ? 'Dept Approval' : 'Pending';
   DB.requests.push({
     id, requestedBy: session.fullName, department: dept, items: reqDraftItems.slice(),
     accountableName, accountableEmail,
-    notes, status:'Pending', dateFiled: nowISO(), decidedBy:null, decidedDate:null
+    notes, status:initialStatus, dateFiled: nowISO(), decidedBy:null, decidedDate:null,
+    requiresApprovalFrom: approverUsername || null
   });
   reqDraftItems = [];
-  addNotification(dept+' filed a new supply request ('+id+') by '+session.fullName+'.', 'supplies', 'request', 'list');
+  if(approverUsername){
+    addNotification(session.fullName+' filed a request ('+id+') that needs your approval before it goes to Supplies.', 'department', 'dapprovals', 'list', dept);
+  } else {
+    addNotification(dept+' filed a new supply request ('+id+') by '+session.fullName+'.', 'supplies', 'request', 'list');
+  }
   await saveDB();
-  toast('Request '+id+' submitted for approval.');
+  toast(approverUsername ? 'Request '+id+' submitted for approval by '+approverUsername+'.' : 'Request '+id+' submitted for approval.');
   navigate(portalMode==='department'?'drequest':'request','list');
 }
 const REQ_NEXT_STATUS = {'Preparing':['Ready for Pull-out','Mark ready for pull-out'], 'Ready for Pull-out':['Issued','Issue request']};
+function renderDeptApprovals(){
+  const c = document.getElementById('content');
+  const rows = DB.requests.filter(r=>r.department===session.department && r.requiresApprovalFrom && r.requiresApprovalFrom.toLowerCase()===session.username.toLowerCase());
+  const pending = rows.filter(r=>r.status==='Dept Approval');
+  const decided = rows.filter(r=>r.status!=='Dept Approval');
+  c.innerHTML = `
+    <div class="card">
+      <h3>Awaiting your approval (${pending.length})</h3>
+      <div class="card-sub">Requests filed by colleagues in ${esc(session.department)} that name you as their approver. Adjust the quantity per item if needed for your assessment, then approve to send it on to the Supplies Office, or reject to stop it here.</div>
+      ${pending.length===0 ? '<div class="empty"><div class="ic">&#10003;</div>Nothing waiting on you right now.</div>' : `
+      <div class="tbl-wrap"><table>
+        <tr><th>Request #</th><th>Requested by</th><th>Items</th><th>Date filed</th><th>Notes</th><th></th></tr>
+        ${pending.map(r=>`<tr>
+          <td class="mono">${esc(r.id)}</td><td>${esc(r.requestedBy)}</td>
+          <td><div class="line-items">
+            <div class="li-row li-head"><span>SKU</span><span>Description</span><span>Requested</span><span>Qty for assessment</span></div>
+            ${r.items.map((it,i)=>`<div class="li-row"><span class="mono">${esc(it.sku)}</span><span>${esc(it.description)}</span><span>${it.qty} ${esc(it.uom)}</span><span><input type="number" min="0" id="dapq-${esc(r.id)}-${i}" value="${it.approvedQty!=null?it.approvedQty:it.qty}" style="width:80px;"></span></div>`).join('')}
+          </div></td>
+          <td>${fmtDate(r.dateFiled)}</td><td>${esc(r.notes||'—')}</td>
+          <td><button class="btn btn-sm btn-success" onclick="decideDeptApproval('${r.id}','Pending')">Approve</button>
+              <button class="btn btn-sm btn-danger" onclick="decideDeptApproval('${r.id}','Rejected')">Reject</button></td>
+        </tr>`).join('')}
+      </table></div>`}
+    </div>
+    <div class="card">
+      <h3>Previously decided (${decided.length})</h3>
+      ${decided.length===0 ? '<div class="empty"><div class="ic">&#128220;</div>Nothing decided yet.</div>' : `
+      <div class="tbl-wrap"><table>
+        <tr><th>Request #</th><th>Requested by</th><th>Date filed</th><th>Status</th></tr>
+        ${decided.slice().reverse().map(r=>`<tr><td class="mono">${esc(r.id)}</td><td>${esc(r.requestedBy)}</td><td>${fmtDate(r.dateFiled)}</td><td>${statusTag(r.status)}</td></tr>`).join('')}
+      </table></div>`}
+    </div>
+  `;
+}
+async function decideDeptApproval(id, decision){
+  const r = DB.requests.find(x=>x.id===id);
+  if(!r) return;
+  if(!r.requiresApprovalFrom || r.requiresApprovalFrom.toLowerCase()!==session.username.toLowerCase()){ toast('You are not the designated approver for this request.'); return; }
+  if(decision==='Pending'){
+    for(let i=0;i<r.items.length;i++){
+      const el = document.getElementById('dapq-'+id+'-'+i);
+      const v = el ? Number(el.value) : NaN;
+      if(!Number.isFinite(v) || v<0){ toast('Enter a valid quantity for '+r.items[i].sku+'.'); return; }
+      r.items[i].approvedQty = v;
+    }
+  }
+  r.status = decision;
+  r.deptApprovedBy = session.fullName;
+  r.deptApprovedDate = nowISO();
+  if(decision==='Pending'){
+    addNotification(r.department+' filed a new supply request ('+id+') by '+r.requestedBy+'.', 'supplies', 'request', 'list');
+    addNotification('Your request '+id+' was approved by '+session.fullName+' and sent to Supplies.', 'department', 'drequest', 'list', r.department);
+  } else {
+    addNotification('Your request '+id+' was rejected by '+session.fullName+'.', 'department', 'drequest', 'list', r.department);
+  }
+  await saveDB();
+  toast('Request '+id+' '+(decision==='Pending'?'approved and sent to Supplies.':'rejected.'));
+  renderDeptApprovals();
+}
 function requestStatusCell(r){
   // Shows visibility of both the "Issued" milestone and the department's "Received" confirmation,
   // on both the Supplies and Department portals.
@@ -1280,7 +1392,9 @@ function requestListHtml(){
           actionCell = `<button class="btn btn-sm ${tagBtnClass}" onclick="openAssetTagModal('${r.id}')">${taggedUnits<totalUnits?'Tag assets':'Edit tags'} (${taggedUnits}/${totalUnits})</button> ` + actionCell;
         }
       } else {
-        if(r.status==='Issued'){
+        if(r.status==='Dept Approval'){
+          actionCell = '<span class="small-note">Awaiting approval from '+esc(r.requiresApprovalFrom||'')+'</span>';
+        } else if(r.status==='Issued'){
           actionCell = `<button class="btn btn-sm btn-success" onclick="confirmRequestReceived('${r.id}')">Confirm Received</button>`;
         } else if(r.status==='Received'){
           actionCell = '<span class="small-note">Received by '+esc(r.receivedBy||'')+'</span>';
@@ -1682,7 +1796,7 @@ function renderIssueModal(){
     </style>
     <div class="no-print">
       <h3 style="margin:0 0 6px;">Issue request — ${esc(r.id)}</h3>
-      <div class="issue-hint">1. Print this transmittal or save it as a PDF. 2. Have the requestor sign the printed copy. 3. Upload a photo or scan of the signed copy below. 4. Click "Issued request" to finalize.</div>
+      <div class="issue-hint">1. Print this transmittal or save it as a PDF. 2. Have the requestor sign the printed copy. 3. Upload a photo or scan of the signed copy below (optional, but recommended). 4. Click "Issued request" to finalize.</div>
       <div class="issue-btnbar">
         <button class="btn btn-primary" onclick="printIssuePreview()">&#128438; Print / Save as PDF</button>
         <button class="btn" onclick="downloadIssuePreview()">&#8615; Download HTML</button>
@@ -1697,7 +1811,7 @@ function renderIssueModal(){
       </div>
       <div class="issue-btnbar">
         <button class="btn" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-success" id="issue-confirm-btn" ${issueFlowSignedFile?'':'disabled'} onclick="finalizeIssueRequest()">Issued request</button>
+        <button class="btn btn-success" id="issue-confirm-btn" onclick="finalizeIssueRequest()">Issued request</button>
       </div>
     </div>
     ${body}
@@ -1736,7 +1850,6 @@ async function handleSignedFileChange(file){
 async function finalizeIssueRequest(){
   const r = DB.requests.find(x=>x.id===issueFlowReqId);
   if(!r) return;
-  if(!issueFlowSignedFile){ toast('Upload the signed transmittal before confirming.'); return; }
   if(!requestIssuePreCheck(r)) return;
   const id = r.id;
   DB.counters.trn = (DB.counters.trn||100) + 1;
@@ -1757,8 +1870,10 @@ async function finalizeIssueRequest(){
   r.transmittalNo = transmittalNo;
   r.issuedBy = session.fullName;
   r.issuedDate = nowISO();
-  r.signedTransmittalFile = issueFlowSignedFile.dataUrl;
-  r.signedTransmittalName = issueFlowSignedFile.name;
+  if(issueFlowSignedFile){
+    r.signedTransmittalFile = issueFlowSignedFile.dataUrl;
+    r.signedTransmittalName = issueFlowSignedFile.name;
+  }
   r.status = 'Issued';
   r.lastUpdatedBy = session.fullName;
   r.lastUpdatedDate = nowISO();
@@ -2234,7 +2349,7 @@ function openRepairCompleteModal(id, action){
     <div class="card-sub mono">${esc(r.id)} &middot; ${esc(r.sku)} &middot; ${esc(r.assetTagging)}</div>
     <div class="field" style="margin-top:14px;"><label>Upload transmittal</label>
       <input type="file" id="repair-transmittal-file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png">
-      <div class="hint">A transmittal file (PDF, JPEG, or PNG) is required before marking this asset as ${isDispose?'disposed':'backloaded'}.</div>
+      <div class="hint">A transmittal file (PDF, JPEG, or PNG) is optional, but recommended, before marking this asset as ${isDispose?'disposed':'backloaded'}.</div>
     </div>
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -2247,13 +2362,14 @@ async function finalizeRepairAction(id, action){
   if(!r) return;
   const fileEl = document.getElementById('repair-transmittal-file');
   const file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
-  if(!file){ toast('Upload a transmittal file (PDF, JPEG, or PNG) before continuing.'); return; }
-  if(!repairTransmittalFileValid(file)){ toast('Transmittal must be a PDF, JPEG, or PNG file.'); return; }
-  if(file.size > 4*1024*1024){ toast('Transmittal file is too large (max 4MB).'); return; }
-  let transmittalFileData = '';
-  try{ transmittalFileData = await readFileAsDataURL(file); }
-  catch(e){ console.error('File read error', e); toast('Could not read the transmittal file — try again.'); return; }
-  r.transmittalFile = file.name; r.transmittalFileData = transmittalFileData;
+  if(file){
+    if(!repairTransmittalFileValid(file)){ toast('Transmittal must be a PDF, JPEG, or PNG file.'); return; }
+    if(file.size > 4*1024*1024){ toast('Transmittal file is too large (max 4MB).'); return; }
+    let transmittalFileData = '';
+    try{ transmittalFileData = await readFileAsDataURL(file); }
+    catch(e){ console.error('File read error', e); toast('Could not read the transmittal file — try again.'); return; }
+    r.transmittalFile = file.name; r.transmittalFileData = transmittalFileData;
+  }
   if(action==='dispose'){
     r.status = 'Disposed';
     r.disposedBy = session.fullName; r.disposedDate = nowISO();
@@ -2935,9 +3051,31 @@ function settingsListHtml(key, label, allowCsv){
   <div class="card">
     <h3>${label} list (${DB[key].length})</h3>
     <div class="tbl-wrap"><table><tr><th>${label}</th><th></th></tr>
-      ${DB[key].map((v,i)=>`<tr><td>${esc(v)}</td><td><button class="icon-btn" onclick="removeListVal('${key}',${i})">&times;</button></td></tr>`).join('')}
+      ${DB[key].map((v,i)=>`<tr><td>${esc(v)}</td><td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditListVal('${key}',${i})">Edit</button> <button class="icon-btn" onclick="removeListVal('${key}',${i})">&times;</button></td></tr>`).join('')}
     </table></div>
   </div>`;
+}
+function openEditListVal(key, i){
+  const val = DB[key][i];
+  if(val==null) return;
+  showModal(`
+    <h3>Edit value</h3>
+    <div class="field"><label>Name</label><input id="edit-list-val" value="${esc(val)}"></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveListValEdit('${key}',${i})">Save changes</button>
+    </div>
+  `);
+}
+async function saveListValEdit(key, i){
+  const v = document.getElementById('edit-list-val').value.trim();
+  if(!v){ toast('Enter a value first.'); return; }
+  if(DB[key].some((x,idx)=>idx!==i && x===v)){ toast('That value already exists.'); return; }
+  DB[key][i] = v;
+  await saveDB();
+  closeModal();
+  toast('Updated.');
+  renderSettings();
 }
 async function addListVal(key){
   const v = document.getElementById('new-list-val').value.trim();
@@ -3052,9 +3190,10 @@ function settingsAccessHtml(){
       <div class="field"><label>Username</label><input id="new-user-username" placeholder="username"></div>
       <div class="field"><label>Role</label><select id="new-user-role" onchange="toggleNewUserDept()"><option value="staff">Staff</option><option value="admin">Admin</option><option value="department">Department</option></select></div>
     </div>
-    <div class="form-row" id="new-user-dept-wrap" style="display:none;">
-      <div class="field"><label>Department</label><select id="new-user-dept">${DB.departments.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
+    <div class="form-row3" id="new-user-dept-wrap" style="display:none;">
+      <div class="field"><label>Department</label><select id="new-user-dept" onchange="refreshNewUserApproverOptions()">${DB.departments.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
       <div class="field"><label>Password</label><input id="new-user-pass-dept" type="text" placeholder="Set a password"></div>
+      <div class="field"><label>Requires approval from</label><select id="new-user-approver"><option value="">— No additional approval —</option></select></div>
     </div>
     <div class="form-row" id="new-user-site-wrap">
       <div class="field"><label>Site (SOC)</label><select id="new-user-site">
@@ -3080,9 +3219,9 @@ function settingsAccessHtml(){
       ${DB.users.map(u=>`<tr><td>${esc(u.fullName)}</td><td class="mono">${esc(u.username)}</td>
       <td>${u.portal==='department'?'Department':'Supplies'}</td>
       <td><span class="badge ${u.role==='admin'?'badge-admin':(u.role==='department'?'badge-department':'badge-staff')}">${u.role.toUpperCase()}</span></td>
-      <td>${esc(u.department || u.site || '—')}</td>
+      <td>${esc(u.department || u.site || '—')}${u.approverUsername?`<div class="small-note">Needs approval from: ${esc(u.approverUsername)}</div>`:''}</td>
       <td>${userScopeCell(u)}</td>
-      <td>${u.id===session.id?'<span class="small-note">current user</span>':`<button class="icon-btn" onclick="deleteUser(${u.id})">&times;</button>`}</td></tr>`).join('')}
+      <td style="white-space:nowrap;">${u.id===session.id?'<span class="small-note">current user</span>':`<button class="btn btn-sm" onclick="openEditUser(${u.id})">Edit</button> <button class="icon-btn" onclick="deleteUser(${u.id})">&times;</button>`}</td></tr>`).join('')}
     </table></div>
   </div>
   <div class="card">
@@ -3098,7 +3237,7 @@ function settingsAccessHtml(){
     <h3>Employee directory (${DB.employees.length})</h3>
     <div class="tbl-wrap"><table><tr><th>Ops ID</th><th>Full name</th><th>Department</th><th></th></tr>
       ${DB.employees.map((e,i)=>`<tr><td class="mono">${esc(e.opsId)}</td><td>${esc(e.fullName)}</td><td>${esc(e.department)}</td>
-      <td><button class="icon-btn" onclick="removeEmployee(${i})">&times;</button></td></tr>`).join('')}
+      <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditEmployee(${i})">Edit</button> <button class="icon-btn" onclick="removeEmployee(${i})">&times;</button></td></tr>`).join('')}
     </table></div>
   </div>`;
 }
@@ -3110,6 +3249,14 @@ function userScopeCell(u){
   if(u.accountabilityScope && u.accountabilityScope.length) parts.push('<div><span class="small-note">Accountability:</span> '+esc(u.accountabilityScope.join(', '))+'</div>');
   return parts.length ? parts.join('') : '<span class="small-note">Full access</span>';
 }
+function refreshNewUserApproverOptions(){
+  const sel = document.getElementById('new-user-approver');
+  if(!sel) return;
+  const dept = document.getElementById('new-user-dept').value;
+  const candidates = DB.users.filter(u=>u.role==='department' && u.department===dept);
+  sel.innerHTML = '<option value="">— No additional approval —</option>' +
+    candidates.map(u=>`<option value="${esc(u.username)}">${esc(u.fullName)} (${esc(u.username)})</option>`).join('');
+}
 function toggleNewUserDept(){
   const role = document.getElementById('new-user-role').value;
   const isDept = role === 'department';
@@ -3118,6 +3265,7 @@ function toggleNewUserDept(){
   document.getElementById('new-user-site-wrap').style.display = isDept ? 'none' : 'grid';
   const scopeWrap = document.getElementById('new-user-staff-scope-wrap');
   if(scopeWrap) scopeWrap.style.display = isStaff ? 'block' : 'none';
+  if(isDept) refreshNewUserApproverOptions();
 }
 async function addUser(){
   const fullName = document.getElementById('new-user-name').value.trim();
@@ -3134,6 +3282,11 @@ async function addUser(){
   const portal = isDept ? 'department' : 'supplies';
   const newUser = {id, username, password:pass, role, fullName, portal};
   if(isDept) newUser.department = department;
+  if(isDept){
+    const approverSel = document.getElementById('new-user-approver');
+    const approverUsername = approverSel ? approverSel.value : '';
+    if(approverUsername) newUser.approverUsername = approverUsername;
+  }
   if(site) newUser.site = site;
   if(isStaff){
     newUser.skuScope = Array.from(document.getElementById('new-user-sku-scope').selectedOptions).map(o=>o.value);
@@ -3143,6 +3296,92 @@ async function addUser(){
   DB.users.push(newUser);
   await saveDB();
   toast('Login added.');
+  renderSettings();
+}
+function openEditUser(id){
+  const u = DB.users.find(x=>x.id===id);
+  if(!u) return;
+  const isDept = u.role==='department';
+  const isStaff = u.role==='staff';
+  const deptFieldsHtml = isDept ? `
+    <div class="field"><label>Department</label><select id="edit-user-dept" onchange="refreshEditUserApproverOptions(${id})">${DB.departments.map(d=>`<option ${d===u.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+    <div class="field"><label>Requires approval from</label><select id="edit-user-approver"></select></div>
+  ` : `
+    <div class="field"><label>Site (SOC)</label><select id="edit-user-site">
+      <option value="" ${!u.site?'selected':''}>— Not site-specific —</option>
+      ${DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===u.site?'selected':''}>${esc(w)}</option>`).join('')}
+    </select></div>
+  `;
+  const scopeHtml = isStaff ? `
+    <div class="section-title">Access scope</div>
+    <div class="card-sub" style="margin-bottom:10px;">Optional — limit this staff login's visibility. Leave a selector empty for full access on that dimension.</div>
+    <div class="form-row3">
+      <div class="field"><label>SKU code</label><select id="edit-user-sku-scope" multiple size="6">${DB.sku.map(s=>`<option value="${esc(s.sku)}" ${(u.skuScope||[]).includes(s.sku)?'selected':''}>${esc(s.sku)} — ${esc(s.description)}</option>`).join('')}</select></div>
+      <div class="field"><label>Department</label><select id="edit-user-dept-scope" multiple size="6">${DB.departments.map(d=>`<option value="${esc(d)}" ${(u.departmentScope||[]).includes(d)?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+      <div class="field"><label>Accountability</label><select id="edit-user-acct-scope" multiple size="6">${DB.accountability.map(a=>`<option value="${esc(a.name)}" ${(u.accountabilityScope||[]).includes(a.name)?'selected':''}>${esc(a.name)}</option>`).join('')}</select></div>
+    </div>
+  ` : '';
+  showModal(`
+    <h3>Edit user</h3>
+    <div class="card-sub">Role is fixed once created — remove and re-add the login to change it. Leave password blank to keep the current one.</div>
+    <div class="form-row">
+      <div class="field"><label>Full name</label><input id="edit-user-name" value="${esc(u.fullName)}"></div>
+      <div class="field"><label>Username</label><input id="edit-user-username" value="${esc(u.username)}"></div>
+    </div>
+    <div class="form-row">
+      ${deptFieldsHtml}
+      <div class="field"><label>New password (optional)</label><input id="edit-user-pass" type="text" placeholder="Leave blank to keep current"></div>
+    </div>
+    ${scopeHtml}
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveUserEdit(${id})">Save changes</button>
+    </div>
+  `);
+  if(isDept) refreshEditUserApproverOptions(id);
+}
+function refreshEditUserApproverOptions(id){
+  const sel = document.getElementById('edit-user-approver');
+  const deptSel = document.getElementById('edit-user-dept');
+  if(!sel || !deptSel) return;
+  const u = DB.users.find(x=>x.id===id);
+  const dept = deptSel.value;
+  const candidates = DB.users.filter(x=>x.role==='department' && x.department===dept && x.id!==id);
+  sel.innerHTML = '<option value="">— No additional approval —</option>' +
+    candidates.map(x=>`<option value="${esc(x.username)}" ${u && u.approverUsername===x.username?'selected':''}>${esc(x.fullName)} (${esc(x.username)})</option>`).join('');
+}
+async function saveUserEdit(id){
+  const u = DB.users.find(x=>x.id===id);
+  if(!u) return;
+  const fullName = document.getElementById('edit-user-name').value.trim();
+  const username = document.getElementById('edit-user-username').value.trim();
+  const pass = document.getElementById('edit-user-pass').value;
+  if(!fullName || !username){ toast('Full name and username are required.'); return; }
+  if(DB.users.some(x=>x.id!==id && x.username.toLowerCase()===username.toLowerCase())){ toast('That username is taken.'); return; }
+  const oldUsername = u.username;
+  u.fullName = fullName;
+  u.username = username;
+  if(oldUsername.toLowerCase()!==username.toLowerCase()){
+    DB.users.forEach(x=>{ if(x.approverUsername && x.approverUsername.toLowerCase()===oldUsername.toLowerCase()) x.approverUsername = username; });
+    DB.requests.forEach(r=>{ if(r.requiresApprovalFrom && r.requiresApprovalFrom.toLowerCase()===oldUsername.toLowerCase()) r.requiresApprovalFrom = username; });
+  }
+  if(pass) u.password = pass;
+  if(u.role==='department'){
+    u.department = document.getElementById('edit-user-dept').value;
+    const approverUsername = document.getElementById('edit-user-approver').value;
+    if(approverUsername) u.approverUsername = approverUsername; else delete u.approverUsername;
+  } else {
+    const site = document.getElementById('edit-user-site').value;
+    if(site) u.site = site; else delete u.site;
+    if(u.role==='staff'){
+      u.skuScope = Array.from(document.getElementById('edit-user-sku-scope').selectedOptions).map(o=>o.value);
+      u.departmentScope = Array.from(document.getElementById('edit-user-dept-scope').selectedOptions).map(o=>o.value);
+      u.accountabilityScope = Array.from(document.getElementById('edit-user-acct-scope').selectedOptions).map(o=>o.value);
+    }
+  }
+  await saveDB();
+  closeModal();
+  toast('User updated.');
   renderSettings();
 }
 function deleteUser(id){
@@ -3162,6 +3401,36 @@ async function addEmployee(){
   DB.employees.push({opsId, fullName, department});
   await saveDB();
   toast('Employee added.');
+  renderSettings();
+}
+function openEditEmployee(i){
+  const e = DB.employees[i];
+  if(!e) return;
+  showModal(`
+    <h3>Edit employee</h3>
+    <div class="form-row3">
+      <div class="field"><label>Ops ID</label><input id="edit-emp-ops" value="${esc(e.opsId)}"></div>
+      <div class="field"><label>Full name</label><input id="edit-emp-name" value="${esc(e.fullName)}"></div>
+      <div class="field"><label>Department</label><select id="edit-emp-dept">${DB.departments.map(d=>`<option ${d===e.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+    </div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEmployeeEdit(${i})">Save changes</button>
+    </div>
+  `);
+}
+async function saveEmployeeEdit(i){
+  const e = DB.employees[i];
+  if(!e) return;
+  const opsId = document.getElementById('edit-emp-ops').value.trim();
+  const fullName = document.getElementById('edit-emp-name').value.trim();
+  const department = document.getElementById('edit-emp-dept').value;
+  if(!opsId || !fullName){ toast('Fill out Ops ID and full name.'); return; }
+  if(DB.employees.some((x,idx)=>idx!==i && x.opsId.toUpperCase()===opsId.toUpperCase())){ toast('That Ops ID already exists.'); return; }
+  e.opsId = opsId; e.fullName = fullName; e.department = department;
+  await saveDB();
+  closeModal();
+  toast('Employee updated.');
   renderSettings();
 }
 async function removeEmployee(i){
