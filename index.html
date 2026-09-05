@@ -866,7 +866,7 @@ const NAV_DEPT = [
     {id:'drequest', label:'Request Supplies', ic:'&#9998;'},
     {id:'dreceiving', label:'Receiving (from Supplies)', ic:'&#8615;'},
     {id:'dissuance', label:'Issuance', ic:'&#8613;'},
-    {id:'dreturn', label:'Return', ic:'&#8617;'}
+    {id:'dreturn', label:'Return Supplies (Damaged/Good working)', ic:'&#8617;'}
   ]}
 ];
 const TITLES_DEPT = {
@@ -875,7 +875,7 @@ const TITLES_DEPT = {
   drequest:['Request Supplies','File a replenishment request with the Supplies Office'],
   dreceiving:['Receiving (from Supplies)','Confirm items sent to your department by the Supplies Portal'],
   dissuance:['Issuance','Release items to staff within your department'],
-  dreturn:['Return','Return asset or consumable items back to Supplies']
+  dreturn:['Return Supplies (Damaged/Good working)','Return asset or consumable items back to Supplies']
 };
 
 function renderShell(){
@@ -2873,7 +2873,7 @@ function deptReturnListHtml(){
       <td>${r.condition==='Damaged'?'<span class="tag tag-rejected">Damaged</span>':'<span class="tag tag-ok">Good</span>'}</td>
       <td style="font-weight:700;">${r.qty} ${esc(r.uom)}</td>
       <td>${returnIRCell(r)}</td>
-      <td>${r.status==='Received'?'<span class="tag tag-approved">Received by Supplies</span>':'<span class="tag tag-pending">Pending pickup</span>'}</td>
+      <td>${r.status==='Received'?'<span class="tag tag-approved">Received by Supplies</span>':'<span class="tag tag-pending">Hand over to Supplies</span>'}</td>
       <td>${fmtDate(r.dateReturned)}</td>
     </tr>`).join('') + '</table></div></div>';
 }
