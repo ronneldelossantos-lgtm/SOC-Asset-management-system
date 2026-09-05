@@ -716,6 +716,7 @@ async function importCsvRows(inputEl){
 function fmtDate(d){ const dt = d?new Date(d):new Date(); return dt.toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}); }
 function fmtDateTime(d){ const dt = d?new Date(d):new Date(); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' · '+dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
 function fmtDateOrBlank(d){ return d ? fmtDate(d) : ''; }
+function fmtDateTimeOrBlank(d){ return d ? fmtDateTime(d) : ''; }
 function assetTagsArr(it){
   if(Array.isArray(it.assetTagging)) return it.assetTagging;
   if(typeof it.assetTagging === 'string') return it.assetTagging ? it.assetTagging.split(',').map(t=>t.trim()).filter(t=>t) : [];
@@ -1303,14 +1304,14 @@ function renderDeptApprovals(){
       <div class="card-sub">Requests filed by colleagues in ${esc(session.department)} that name you as their approver. Adjust the quantity per item if needed for your assessment, then approve to send it on to the Supplies Office, or reject to stop it here.</div>
       ${pending.length===0 ? '<div class="empty"><div class="ic">&#10003;</div>Nothing waiting on you right now.</div>' : `
       <div class="tbl-wrap"><table>
-        <tr><th>Request #</th><th>Requested by</th><th>Items</th><th>Date filed</th><th>Notes</th><th></th></tr>
+        <tr><th>Request #</th><th>Requested by</th><th>Items</th><th>Date/Time filed</th><th>Notes</th><th></th></tr>
         ${pending.map(r=>`<tr>
           <td class="mono">${esc(r.id)}</td><td>${esc(r.requestedBy)}</td>
           <td><div class="line-items">
             <div class="li-row li-head"><span>SKU</span><span>Description</span><span>Requested</span><span>Qty for assessment</span></div>
             ${r.items.map((it,i)=>`<div class="li-row"><span class="mono">${esc(it.sku)}</span><span>${esc(it.description)}</span><span>${it.qty} ${esc(it.uom)}</span><span><input type="number" min="0" id="dapq-${esc(r.id)}-${i}" value="${it.approvedQty!=null?it.approvedQty:it.qty}" style="width:80px;"></span></div>`).join('')}
           </div></td>
-          <td>${fmtDate(r.dateFiled)}</td><td>${esc(r.notes||'—')}</td>
+          <td>${fmtDateTime(r.dateFiled)}</td><td>${esc(r.notes||'—')}</td>
           <td><button class="btn btn-sm btn-success" onclick="decideDeptApproval('${r.id}','Pending')">Approve</button>
               <button class="btn btn-sm btn-danger" onclick="decideDeptApproval('${r.id}','Rejected')">Reject</button></td>
         </tr>`).join('')}
@@ -1320,8 +1321,8 @@ function renderDeptApprovals(){
       <h3>Previously decided (${decided.length})</h3>
       ${decided.length===0 ? '<div class="empty"><div class="ic">&#128220;</div>Nothing decided yet.</div>' : `
       <div class="tbl-wrap"><table>
-        <tr><th>Request #</th><th>Requested by</th><th>Date filed</th><th>Status</th></tr>
-        ${decided.slice().reverse().map(r=>`<tr><td class="mono">${esc(r.id)}</td><td>${esc(r.requestedBy)}</td><td>${fmtDate(r.dateFiled)}</td><td>${statusTag(r.status)}</td></tr>`).join('')}
+        <tr><th>Request #</th><th>Requested by</th><th>Date/Time filed</th><th>Status</th></tr>
+        ${decided.slice().reverse().map(r=>`<tr><td class="mono">${esc(r.id)}</td><td>${esc(r.requestedBy)}</td><td>${fmtDateTime(r.dateFiled)}</td><td>${statusTag(r.status)}</td></tr>`).join('')}
       </table></div>`}
     </div>
   `;
@@ -1364,7 +1365,7 @@ function requestListHtml(){
   const header = `<div class="list-head"><h3>${portalMode==='department'?'My department requests':'All requests'} (${rows.length})</h3>${dlBtn('exportRequests')}</div>`;
   if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#9998;</div>No requests filed yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th>Request #</th><th>Requested by</th><th>Department</th><th>Items</th><th>Accountable person</th><th>Date filed</th><th>Status</th><th>Transmittal</th><th></th></tr>' +
+    '<tr><th>Request #</th><th>Requested by</th><th>Department</th><th>Items</th><th>Accountable person</th><th>Date/Time filed</th><th>Status</th><th>Transmittal</th><th></th></tr>' +
     rows.slice().reverse().map(r=>{
       let actionCell = '';
       if(portalMode==='supplies'){
@@ -1420,7 +1421,7 @@ function requestListHtml(){
         return esc(it.sku)+' — '+esc(it.description)+' &times;'+it.qty+' <span style="'+(short?'color:var(--danger);font-weight:600;':'color:var(--muted);')+'">(on hand: '+onHand+')</span>'+tagStr;
       }).join('<br>')}</div></td>
       <td>${esc(r.accountableName||'—')}<div class="small-note">${esc(r.accountableEmail||'')}</div></td>
-      <td>${fmtDate(r.dateFiled)}</td><td>${requestStatusCell(r)}</td>
+      <td>${fmtDateTime(r.dateFiled)}</td><td>${requestStatusCell(r)}</td>
       <td>${transmittalCell}</td>
       <td>${actionCell}</td>
     </tr>`;
@@ -1649,13 +1650,13 @@ function exportRequests(){
     r.items.map(it=>it.sku+' x'+it.qty).join('; '),
     r.items.filter(it=>it.type==='Asset' && assetTagsArr(it).some(t=>t)).map(it=>it.sku+': '+assetTagsArr(it).filter(t=>t).join(', ')).join(' | '),
     r.accountableName||'', r.accountableEmail||'',
-    fmtDateOrBlank(r.dateFiled), r.status,
+    fmtDateTimeOrBlank(r.dateFiled), r.status,
     r.decidedBy||r.approvedBy||'', fmtDateOrBlank(r.decidedDate||r.approvedDate),
     r.issuedBy||'', fmtDateOrBlank(r.issuedDate),
     r.transmittalNo||'',
     r.receivedBy||'', fmtDateOrBlank(r.receivedDate)
   ]);
-  downloadCSV('requests.csv', ['Request #','Requested by','Department','Items','Item asset tags','Accountable person','Accountable email','Date filed','Status','Approved/Rejected by','Approved/Rejected date','Issued by','Date issued','Transmittal No','Received by','Date received'], rows);
+  downloadCSV('requests.csv', ['Request #','Requested by','Department','Items','Item asset tags','Accountable person','Accountable email','Date/Time filed','Status','Approved/Rejected by','Approved/Rejected date','Issued by','Date issued','Transmittal No','Received by','Date received'], rows);
 }
 async function confirmRequestReceived(id){
   const r = DB.requests.find(x=>x.id===id);
@@ -2267,6 +2268,12 @@ async function saveRepair(){
 }
 const REPAIR_EDITABLE_STATUSES = ['For Repair','Repaired','For Backload','For Disposal'];
 const REPAIR_TERMINAL_STATUSES = ['Added to Inventory','Disposed','Backloaded'];
+function repairStatusDisplay(r){
+  if(REPAIR_TERMINAL_STATUSES.includes(r.status)){
+    return '<span class="tag tag-approved">Complete</span><div class="small-note">'+esc(r.status)+'</div>';
+  }
+  return statusTag(r.status);
+}
 function classificationToRepairStatus(cls){
   if(cls==='Disposable') return 'For Disposal';
   if(cls==='Backload') return 'For Backload';
@@ -2280,7 +2287,7 @@ function repairActionCell(r){
     : `<span class="small-note">${esc(r.status)}</span>`;
   if(session.role!=='admin' && session.role!=='staff') return updateCell;
   let actionBtn = '';
-  if(r.status==='Repaired') actionBtn = `<button class="btn btn-sm btn-success" onclick="repairAddToInventory('${r.id}')">Add to Inventory</button>`;
+  if(r.status==='Repaired') actionBtn = `<button class="btn btn-sm btn-success" onclick="openRepairCompleteModal('${r.id}','inventory')">Add to Inventory</button>`;
   else if(r.status==='For Disposal') actionBtn = `<button class="btn btn-sm btn-danger" onclick="openRepairCompleteModal('${r.id}','dispose')">Dispose</button>`;
   else if(r.status==='For Backload') actionBtn = `<button class="btn btn-sm" onclick="openRepairCompleteModal('${r.id}','backload')">Backloaded</button>`;
   return updateCell + (actionBtn ? '<div style="margin-top:6px;">'+actionBtn+'</div>' : '');
@@ -2292,7 +2299,7 @@ function repairListHtml(){
     '<tr><th>Ref #</th><th>Asset tagging</th><th>SKU</th><th>Item</th><th>Date received</th><th>Status</th><th>Remarks</th><th>Transmittal</th><th>Update / Action</th></tr>' +
     DB.repairs.slice().reverse().map(r=>`<tr>
       <td class="mono">${esc(r.id)}</td><td class="mono">${esc(r.assetTagging)}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
-      <td>${fmtDate(r.dateReceived)}</td><td>${statusTag(r.status)}</td><td>${esc(r.remarks||'—')}</td>
+      <td>${fmtDate(r.dateReceived)}</td><td>${repairStatusDisplay(r)}</td><td>${esc(r.remarks||'—')}</td>
       <td>${repairTransmittalCell(r)}</td>
       <td>${repairActionCell(r)}</td>
     </tr>`).join('') + '</table></div></div>';
@@ -2322,17 +2329,6 @@ function removeIssuedAsset(tag){
   if(!tag) return;
   DB.issuance = DB.issuance.filter(i=> !(i.assetTagging && i.assetTagging.toUpperCase()===String(tag).toUpperCase()));
 }
-async function repairAddToInventory(id){
-  if(session.role!=='admin' && session.role!=='staff') return;
-  const r = DB.repairs.find(x=>x.id===id);
-  if(!r) return;
-  DB.stock[r.sku] = (DB.stock[r.sku]||0) + 1;
-  r.status = 'Added to Inventory';
-  r.inventoryBy = session.fullName; r.inventoryDate = nowISO();
-  await saveDB();
-  toast(r.id+' added back to inventory (+1 '+r.sku+').');
-  navigate('repair','list');
-}
 const REPAIR_TRANSMITTAL_EXT = ['.pdf','.jpg','.jpeg','.png'];
 function repairTransmittalFileValid(file){
   if(!file) return false;
@@ -2344,16 +2340,21 @@ function openRepairCompleteModal(id, action){
   const r = DB.repairs.find(x=>x.id===id);
   if(!r) return;
   const isDispose = action==='dispose';
+  const isInventory = action==='inventory';
+  const title = isInventory ? 'Confirm add to inventory' : (isDispose ? 'Confirm disposal' : 'Confirm backload');
+  const btnClass = isInventory ? 'btn-success' : (isDispose ? 'btn-danger' : 'btn-primary');
+  const btnLabel = isInventory ? 'Confirm add to inventory' : (isDispose ? 'Confirm dispose' : 'Confirm backloaded');
+  const actionWord = isInventory ? 'added back to inventory' : (isDispose ? 'disposed' : 'backloaded');
   showModal(`
-    <h3>${isDispose?'Confirm disposal':'Confirm backload'}</h3>
+    <h3>${title}</h3>
     <div class="card-sub mono">${esc(r.id)} &middot; ${esc(r.sku)} &middot; ${esc(r.assetTagging)}</div>
     <div class="field" style="margin-top:14px;"><label>Upload transmittal</label>
       <input type="file" id="repair-transmittal-file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png">
-      <div class="hint">A transmittal file (PDF, JPEG, or PNG) is optional, but recommended, before marking this asset as ${isDispose?'disposed':'backloaded'}.</div>
+      <div class="hint">A transmittal file (PDF, JPEG, or PNG) is optional, but recommended, before marking this asset as ${actionWord}.</div>
     </div>
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn ${isDispose?'btn-danger':'btn-primary'}" onclick="finalizeRepairAction('${esc(id)}','${action}')">${isDispose?'Confirm dispose':'Confirm backloaded'}</button>
+      <button class="btn ${btnClass}" onclick="finalizeRepairAction('${esc(id)}','${action}')">${btnLabel}</button>
     </div>
   `);
 }
@@ -2370,7 +2371,14 @@ async function finalizeRepairAction(id, action){
     catch(e){ console.error('File read error', e); toast('Could not read the transmittal file — try again.'); return; }
     r.transmittalFile = file.name; r.transmittalFileData = transmittalFileData;
   }
-  if(action==='dispose'){
+  if(action==='inventory'){
+    DB.stock[r.sku] = (DB.stock[r.sku]||0) + 1;
+    r.status = 'Added to Inventory';
+    r.inventoryBy = session.fullName; r.inventoryDate = nowISO();
+    await saveDB();
+    closeModal();
+    toast(r.id+' added back to inventory (+1 '+r.sku+').');
+  } else if(action==='dispose'){
     r.status = 'Disposed';
     r.disposedBy = session.fullName; r.disposedDate = nowISO();
     removeIssuedAsset(r.assetTagging);
