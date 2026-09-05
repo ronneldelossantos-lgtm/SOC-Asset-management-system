@@ -2278,7 +2278,7 @@ function repairActionCell(r){
         ${REPAIR_EDITABLE_STATUSES.map(s=>`<option ${s===r.status?'selected':''}>${s}</option>`).join('')}
       </select>`
     : `<span class="small-note">${esc(r.status)}</span>`;
-  if(session.role!=='admin') return updateCell;
+  if(session.role!=='admin' && session.role!=='staff') return updateCell;
   let actionBtn = '';
   if(r.status==='Repaired') actionBtn = `<button class="btn btn-sm btn-success" onclick="repairAddToInventory('${r.id}')">Add to Inventory</button>`;
   else if(r.status==='For Disposal') actionBtn = `<button class="btn btn-sm btn-danger" onclick="openRepairCompleteModal('${r.id}','dispose')">Dispose</button>`;
@@ -2323,7 +2323,7 @@ function removeIssuedAsset(tag){
   DB.issuance = DB.issuance.filter(i=> !(i.assetTagging && i.assetTagging.toUpperCase()===String(tag).toUpperCase()));
 }
 async function repairAddToInventory(id){
-  if(session.role!=='admin') return;
+  if(session.role!=='admin' && session.role!=='staff') return;
   const r = DB.repairs.find(x=>x.id===id);
   if(!r) return;
   DB.stock[r.sku] = (DB.stock[r.sku]||0) + 1;
@@ -2340,7 +2340,7 @@ function repairTransmittalFileValid(file){
   return REPAIR_TRANSMITTAL_EXT.some(ext=>name.endsWith(ext));
 }
 function openRepairCompleteModal(id, action){
-  if(session.role!=='admin') return;
+  if(session.role!=='admin' && session.role!=='staff') return;
   const r = DB.repairs.find(x=>x.id===id);
   if(!r) return;
   const isDispose = action==='dispose';
