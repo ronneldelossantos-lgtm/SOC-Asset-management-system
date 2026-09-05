@@ -563,6 +563,11 @@ function confirmAction(message, onConfirm){
 let saving = false;
 let lastKnownSnapshot = null;
 let pollTimer = null;
+/* Set true around any action that reads a file (await) before saving to the
+   shared DB — e.g. finalizeRepairAction. While true, pollForUpdates will not
+   swap out the in-memory DB object, so an in-flight edit can't be silently
+   dropped by an auto-refresh landing mid-action. */
+let actionInFlight = false;
 async function saveDB(){
   try{
     const json = JSON.stringify(DB);
@@ -589,7 +594,7 @@ function isFormScreenActive(){
   return formSubroutes[route] && subroute===formSubroutes[route];
 }
 async function pollForUpdates(){
-  if(!session) return;
+  if(!session || actionInFlight) return;
   try{
     const res = await window.storage.get(STORE_KEY, true);
     if(!res || res.value===lastKnownSnapshot) return;
@@ -2359,23 +2364,34 @@ function openRepairCompleteModal(id, action){
   `);
 }
 async function finalizeRepairAction(id, action){
-  const r = DB.repairs.find(x=>x.id===id);
+  let r = DB.repairs.find(x=>x.id===id);
   if(!r) return;
   const fileEl = document.getElementById('repair-transmittal-file');
   const file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+  let transmittalFile, transmittalFileData;
+  actionInFlight = true;
   if(file){
-    if(!repairTransmittalFileValid(file)){ toast('Transmittal must be a PDF, JPEG, or PNG file.'); return; }
-    if(file.size > 4*1024*1024){ toast('Transmittal file is too large (max 4MB).'); return; }
-    let transmittalFileData = '';
+    if(!repairTransmittalFileValid(file)){ toast('Transmittal must be a PDF, JPEG, or PNG file.'); actionInFlight = false; return; }
+    if(file.size > 4*1024*1024){ toast('Transmittal file is too large (max 4MB).'); actionInFlight = false; return; }
     try{ transmittalFileData = await readFileAsDataURL(file); }
-    catch(e){ console.error('File read error', e); toast('Could not read the transmittal file — try again.'); return; }
-    r.transmittalFile = file.name; r.transmittalFileData = transmittalFileData;
+    catch(e){ console.error('File read error', e); toast('Could not read the transmittal file — try again.'); actionInFlight = false; return; }
+    transmittalFile = file.name;
   }
+  /* The file read above can take a moment, and the shared DB may have been
+     refreshed by auto-poll while we were waiting (a new DB object replaces
+     the old one). Re-find the record in whatever is CURRENT now, instead of
+     writing onto the stale object captured before the await — otherwise the
+     status change below is applied to a detached copy and silently lost on
+     save, even though the record still looks "processed" to the user. */
+  r = DB.repairs.find(x=>x.id===id);
+  if(!r){ actionInFlight = false; toast('This record changed elsewhere — please reopen it and try again.'); closeModal(); navigate('repair','list'); return; }
+  if(file){ r.transmittalFile = transmittalFile; r.transmittalFileData = transmittalFileData; }
   if(action==='inventory'){
     DB.stock[r.sku] = (DB.stock[r.sku]||0) + 1;
     r.status = 'Added to Inventory';
     r.inventoryBy = session.fullName; r.inventoryDate = nowISO();
     await saveDB();
+    actionInFlight = false;
     closeModal();
     toast(r.id+' added back to inventory (+1 '+r.sku+').');
   } else if(action==='dispose'){
@@ -2383,6 +2399,7 @@ async function finalizeRepairAction(id, action){
     r.disposedBy = session.fullName; r.disposedDate = nowISO();
     removeIssuedAsset(r.assetTagging);
     await saveDB();
+    actionInFlight = false;
     closeModal();
     toast(r.id+' marked disposed and removed from issued assets.');
   } else {
@@ -2390,6 +2407,7 @@ async function finalizeRepairAction(id, action){
     r.backloadBy = session.fullName; r.backloadDate = nowISO();
     removeIssuedAsset(r.assetTagging);
     await saveDB();
+    actionInFlight = false;
     closeModal();
     toast(r.id+' marked backloaded and removed from issued assets.');
   }
