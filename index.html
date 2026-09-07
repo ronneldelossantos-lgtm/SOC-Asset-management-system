@@ -344,8 +344,27 @@ if(!window.storage){
           return {key, value: snap.data().value, shared: !!shared};
         }catch(e){ console.error('storage.get failed:', e); return null; }
       },
-      async set(key, value, shared){
+      async set(key, value, shared, opts){
         try{
+          if(opts && 'expectedPrevious' in opts){
+            /* Compare-and-swap inside a transaction: the whole app state is
+               one document, saved as a full overwrite, with many admins
+               potentially editing at once. Without this check, whoever saves
+               last silently wins and erases anything another admin added
+               since this client's last read — no error, just missing data.
+               A transaction (not a get-then-set check) is required to close
+               the race, since a plain check-then-write still leaves a gap
+               between the check and the write. */
+            let conflictValue;
+            await fsDB.runTransaction(async tx=>{
+              const snap = await tx.get(docRef(key, shared));
+              const cur = snap.exists ? snap.data().value : null;
+              if(cur !== opts.expectedPrevious){ conflictValue = cur; return; }
+              tx.set(docRef(key, shared), {value, updatedAt: Date.now()});
+            });
+            if(conflictValue!==undefined) return {key, shared: !!shared, conflict:true, currentValue: conflictValue};
+            return {key, value, shared: !!shared};
+          }
           await docRef(key, shared).set({value, updatedAt: Date.now()});
           return {key, value, shared: !!shared};
         }catch(e){ console.error('storage.set failed:', e); return null; }
@@ -413,6 +432,36 @@ if(!window.storage){
     }
   };
 }
+/* Detects a tab left open across a deploy. Every data-safety fix in this
+   file (the loadDB retry, the saveDB conflict guard) only protects a tab
+   from the moment it loads onward — a tab already open in memory keeps
+   running whatever JS it started with, forever, until the page is actually
+   reloaded. That made a stale, already-open admin tab able to silently
+   overwrite the shared data using pre-fix logic even after a fix shipped.
+   This compares this tab's own Last-Modified (set by the browser at load
+   time) against what Hosting is serving right now, and puts up a banner
+   that can't be missed instead of relying on someone remembering to
+   refresh. */
+const PAGE_LOAD_MODIFIED = document.lastModified;
+let staleVersionBannerShown = false;
+async function checkForNewVersion(){
+  if(staleVersionBannerShown) return;
+  try{
+    const res = await fetch(location.pathname, {method:'HEAD', cache:'no-store'});
+    const serverModified = res.headers.get('Last-Modified');
+    if(serverModified && serverModified !== PAGE_LOAD_MODIFIED){
+      staleVersionBannerShown = true;
+      const bar = document.createElement('div');
+      bar.id = 'stale-version-banner';
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:var(--amber);color:var(--navy);padding:10px 16px;font-size:13px;font-weight:700;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,0.25);';
+      bar.innerHTML = 'This tab is running an outdated version of the app — please save any in-progress work, then reload. '
+        + '<button style="margin-left:10px;padding:6px 14px;border-radius:6px;border:1px solid var(--navy);background:var(--navy);color:#fff;font-weight:700;cursor:pointer;" onclick="location.reload()">Reload now</button>';
+      document.body.prepend(bar);
+    }
+  }catch(e){ /* offline or blocked — harmless, next interval retries */ }
+}
+setInterval(checkForNewVersion, 60000);
+
 const STORE_KEY = 'sms_erp_state_v1';
 const UI_SESSION_KEY = 'sms_erp_ui_session_v1';
 let DB = null;
@@ -511,17 +560,41 @@ function migrateDB(){
   });
 }
 
+/* Retries once before giving up: a transient read error (a momentary
+   network blip, or a security-rules propagation delay right after Firestore
+   is first set up) must never be treated the same as "no data exists yet" —
+   doing so used to fall through to defaultDB() and immediately overwrite the
+   shared document, silently wiping every real user/record. Only an actually
+   empty document (res === null with no error) seeds defaults.
+   IMPORTANT: this function (and saveDB() below) has already been reverted
+   back to the unsafe version once by a direct edit that started from an
+   older local copy of this file instead of `git pull`-ing first. If you're
+   about to replace this file wholesale, pull latest first — overwriting
+   this logic silently re-enables real data loss for every user. */
 async function loadDB(){
-  try{
-    const res = await window.storage.get(STORE_KEY, true);
-    DB = res ? JSON.parse(res.value) : defaultDB();
-    migrateDB();
-    lastKnownSnapshot = res ? res.value : JSON.stringify(DB);
-    if(!res) await saveDB();
-  }catch(e){
-    DB = defaultDB();
-    await saveDB();
+  let res, lastErr;
+  for(let attempt=0; attempt<2; attempt++){
+    try{
+      res = await window.storage.get(STORE_KEY, true);
+      lastErr = null;
+      break;
+    }catch(e){
+      lastErr = e;
+      if(attempt===0) await new Promise(r=>setTimeout(r,1000));
+    }
   }
+  if(lastErr){
+    console.error('loadDB: could not reach shared storage, using local defaults without overwriting shared data', lastErr);
+    DB = defaultDB();
+    migrateDB();
+    lastKnownSnapshot = null;
+    toast('Could not reach shared storage — showing local defaults. Reload once connection is back.');
+    return;
+  }
+  DB = res ? JSON.parse(res.value) : defaultDB();
+  migrateDB();
+  lastKnownSnapshot = res ? res.value : JSON.stringify(DB);
+  if(!res) await saveDB();
 }
 
 function showModal(html){
@@ -571,12 +644,41 @@ let actionInFlight = false;
 async function saveDB(){
   try{
     const json = JSON.stringify(DB);
-    await window.storage.set(STORE_KEY, json, true);
+    /* Only compare-and-swap once we actually have a known-good baseline to
+       compare against (lastKnownSnapshot is null right after a failed
+       initial load) — otherwise every save from a client in that degraded
+       state would permanently conflict against itself. */
+    const opts = lastKnownSnapshot!==null ? {expectedPrevious: lastKnownSnapshot} : undefined;
+    const res = await window.storage.set(STORE_KEY, json, true, opts);
+    if(res && res.conflict){
+      DB = res.currentValue ? JSON.parse(res.currentValue) : defaultDB();
+      migrateDB();
+      lastKnownSnapshot = res.currentValue;
+      navigate(route, subroute);
+      toast('Someone else just saved changes here — your last action was NOT saved. Please redo it.');
+      logAudit('save_conflict_rejected', {});
+      return;
+    }
     lastKnownSnapshot = json;
   }catch(e){
     console.error('Storage error', e);
     toast('Could not save — changes may be lost.');
   }
+}
+
+/* Append-only forensic trail for account changes — kept separate from the
+   one big app-state document (same collection, distinct key prefix, so no
+   rules/collection changes are needed) specifically so that "an account
+   went missing" can be answered with certainty (who, what, when) instead
+   of guessed at from gaps in the user-id sequence, as happened here.
+   Best-effort only: a logging failure must never block the real action. */
+async function logAudit(action, detail){
+  try{
+    const key = 'audit__'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+    await window.storage.set(key, JSON.stringify({
+      action, detail, actor: session?session.username:'(not logged in)', at: Date.now()
+    }), true);
+  }catch(e){ console.error('logAudit failed (non-fatal):', e); }
 }
 
 /* ============================= LIVE AUTO-REFRESH ============================= */
@@ -3321,6 +3423,7 @@ async function addUser(){
   }
   DB.users.push(newUser);
   await saveDB();
+  logAudit('user_added', {id, username, role});
   toast('Login added.');
   renderSettings();
 }
@@ -3406,14 +3509,17 @@ async function saveUserEdit(id){
     }
   }
   await saveDB();
+  logAudit('user_edited', {id, oldUsername, newUsername: username});
   closeModal();
   toast('User updated.');
   renderSettings();
 }
 function deleteUser(id){
+  const target = DB.users.find(u=>u.id===id);
   confirmAction('Remove this user?', async ()=>{
     DB.users = DB.users.filter(u=>u.id!==id);
     await saveDB();
+    logAudit('user_deleted', {id, username: target?target.username:'(unknown)'});
     toast('User removed.');
     renderSettings();
   });
@@ -3544,7 +3650,7 @@ async function importUserCsv(inputEl){
     DB.users.push(newUser);
     added++;
   });
-  if(added){ await saveDB(); }
+  if(added){ await saveDB(); logAudit('user_import', {added, skipped:problems.length}); }
   if(problems.length){
     showModal(`
       <h3>Import results</h3>
