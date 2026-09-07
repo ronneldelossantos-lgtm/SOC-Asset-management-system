@@ -1243,7 +1243,7 @@ function renderRequest(){
     <div id="req-body"></div>
   `;
   document.getElementById('req-body').innerHTML = tab==='new' ? requestFormHtml() : requestListHtml();
-  if(tab==='new'){ refreshReqItemsTable(); toggleReqAcctManual(); }
+  if(tab==='new'){ refreshReqItemsTable(); }
 }
 function requestFormHtml(){
   const deptField = portalMode==='department'
@@ -1272,16 +1272,11 @@ function requestFormHtml(){
     <div class="section-title">Accountability</div>
     <div class="card-sub" style="margin-bottom:10px;">Who will be accountable for these items once issued. This is used to auto-register the issuance record when the request is completed.</div>
     <div class="form-row">
-      <div class="field"><label>Accountable person</label>
-        <select id="req-acct-select" onchange="toggleReqAcctManual()">
-          ${DB.accountability.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('')}
-          <option value="__manual__">Other — enter manually</option>
-        </select>
+      <div class="field" style="position:relative;"><label>Accountable person</label>
+        <input id="req-acct-name" placeholder="Type name…" autocomplete="off" oninput="reqAcctInput()" onblur="reqAcctBlur()">
+        <div id="req-acct-suggest" class="suggest-dropdown"></div>
       </div>
       <div class="field" id="req-acct-email-wrap"><label>Accountable person — working email</label><input id="req-acct-email" type="email" placeholder="name@company.com"></div>
-    </div>
-    <div class="form-row" id="req-acct-manual-wrap" style="display:none;">
-      <div class="field"><label>Accountable person — full name</label><input id="req-acct-manual-name" placeholder="Full name"></div>
     </div>
 
     <div class="field" style="margin-top:14px;"><label>Notes / justification</label><textarea id="req-notes" rows="2" placeholder="Optional notes for the approver"></textarea></div>
@@ -1291,17 +1286,32 @@ function requestFormHtml(){
     </div>
   </div>`;
 }
-function toggleReqAcctManual(){
-  const sel = document.getElementById('req-acct-select').value;
-  const manual = sel === '__manual__';
-  document.getElementById('req-acct-manual-wrap').style.display = manual ? 'grid' : 'none';
-  const emailEl = document.getElementById('req-acct-email');
-  if(!manual){
-    const found = DB.accountability.find(a=>a.name===sel);
-    emailEl.value = found ? (found.email||'') : '';
-  } else {
-    emailEl.value = '';
-  }
+function reqAcctMatches(q){
+  q = String(q||'').trim().toLowerCase();
+  if(!q) return [];
+  return DB.accountability.filter(a=>a.name.toLowerCase().includes(q)).slice(0,8);
+}
+function reqAcctInput(){
+  const v = document.getElementById('req-acct-name').value;
+  const matches = reqAcctMatches(v);
+  const box = document.getElementById('req-acct-suggest');
+  if(!v.trim() || matches.length===0){ box.innerHTML=''; box.style.display='none'; return; }
+  box.innerHTML = matches.map(a=>`<div class="suggest-item" onmousedown="reqAcctPick('${esc(a.name).replace(/'/g,"\\'")}')">${esc(a.name)}${a.email?' <span class="small-note">'+esc(a.email)+'</span>':''}</div>`).join('');
+  box.style.display='block';
+}
+function reqAcctPick(name){
+  const found = DB.accountability.find(a=>a.name===name);
+  if(!found) return;
+  document.getElementById('req-acct-name').value = found.name;
+  document.getElementById('req-acct-email').value = found.email||'';
+  const box = document.getElementById('req-acct-suggest');
+  box.innerHTML=''; box.style.display='none';
+}
+function reqAcctBlur(){
+  setTimeout(()=>{
+    const box = document.getElementById('req-acct-suggest');
+    if(box){ box.innerHTML=''; box.style.display='none'; }
+  }, 150);
 }
 function reqDescMatches(q){
   q = String(q||'').trim().toLowerCase();
@@ -1369,15 +1379,10 @@ async function submitRequest(){
   if(reqDraftItems.length===0){ toast('Add at least one item before submitting.'); return; }
   const dept = portalMode==='department' ? session.department : document.getElementById('req-dept').value;
   const notes = document.getElementById('req-notes').value;
-  const acctSel = document.getElementById('req-acct-select').value;
-  let accountableName, accountableEmail;
-  if(acctSel==='__manual__'){
-    accountableName = document.getElementById('req-acct-manual-name').value.trim();
-    if(!accountableName){ toast("Enter the accountable person's full name."); return; }
-  }else{
-    accountableName = acctSel;
-  }
-  accountableEmail = document.getElementById('req-acct-email').value.trim();
+  const acctName = document.getElementById('req-acct-name').value.trim();
+  if(!acctName){ toast("Enter the accountable person's full name."); return; }
+  const accountableName = acctName;
+  const accountableEmail = document.getElementById('req-acct-email').value.trim();
   if(!accountableEmail || !isValidEmail(accountableEmail)){ toast("Enter the accountable person's working email."); return; }
   const id = nextCode('REQ','req');
   const me = currentUserRecord();
@@ -1472,7 +1477,7 @@ function requestListHtml(){
   const header = `<div class="list-head"><h3>${portalMode==='department'?'My department requests':'All requests'} (${rows.length})</h3>${dlBtn('exportRequests')}</div>`;
   if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#9998;</div>No requests filed yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th>Request #</th><th>Requested by</th><th>Department</th><th>Items</th><th>Accountable person</th><th>Date/Time filed</th><th>Status</th><th>Transmittal</th><th></th></tr>' +
+    '<tr><th>Request #</th><th>Requested by</th><th>Department</th><th>Items</th><th>Accountable person</th><th>Date/Time filed</th><th>Status</th><th>Transmittal</th><th></th>'+(session.role==='admin'?'<th></th>':'')+'</tr>' +
     rows.slice().reverse().map(r=>{
       let actionCell = '';
       if(portalMode==='supplies'){
@@ -1531,8 +1536,58 @@ function requestListHtml(){
       <td>${fmtDateTime(r.dateFiled)}</td><td>${requestStatusCell(r)}</td>
       <td>${transmittalCell}</td>
       <td>${actionCell}</td>
+      ${session.role==='admin'?`<td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditRequest('${esc(r.id)}')">Edit</button> <button class="icon-btn" onclick="deleteRequest('${esc(r.id)}')">&times;</button></td>`:''}
     </tr>`;
     }).join('') + '</table></div></div>';
+}
+function openEditRequest(id){
+  if(session.role!=='admin') return;
+  const r = DB.requests.find(x=>x.id===id);
+  if(!r) return;
+  const stockAffecting = ['Issued','Received'].includes(r.status);
+  showModal(`
+    <h3>Edit request ${esc(r.id)}</h3>
+    <div class="card-sub">Editing here only changes the request record itself — it does not touch any Issuance log entries or stock already created from it.</div>
+    <div class="form-row" style="margin-top:14px;">
+      <div class="field"><label>Accountable person — full name</label><input id="edit-req-acct-name" value="${esc(r.accountableName||'')}"></div>
+      <div class="field"><label>Accountable person — email</label><input id="edit-req-acct-email" value="${esc(r.accountableEmail||'')}"></div>
+    </div>
+    <div class="field"><label>Notes / justification</label><textarea id="edit-req-notes" rows="2">${esc(r.notes||'')}</textarea></div>
+    ${stockAffecting?'<div class="hint">This request has already been issued — item quantities cannot be changed here. Use the Issuance log to correct issued quantities.</div>':''}
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveRequestEdit('${esc(id)}')">Save changes</button>
+    </div>
+  `);
+}
+async function saveRequestEdit(id){
+  const r = DB.requests.find(x=>x.id===id);
+  if(!r) return;
+  const accountableName = document.getElementById('edit-req-acct-name').value.trim();
+  const accountableEmail = document.getElementById('edit-req-acct-email').value.trim();
+  const notes = document.getElementById('edit-req-notes').value;
+  if(!accountableName){ toast("Enter the accountable person's full name."); return; }
+  if(!accountableEmail || !isValidEmail(accountableEmail)){ toast("Enter a valid working email."); return; }
+  r.accountableName = accountableName; r.accountableEmail = accountableEmail; r.notes = notes;
+  await saveDB();
+  closeModal();
+  toast('Request updated.');
+  navigate(portalMode==='department'?'drequest':'request','list');
+}
+function deleteRequest(id){
+  if(session.role!=='admin') return;
+  const r = DB.requests.find(x=>x.id===id);
+  if(!r) return;
+  const stockAffecting = ['Issued','Received'].includes(r.status);
+  const warning = stockAffecting
+    ? 'Delete '+r.id+'? This request has already been issued — deleting it will NOT reverse the related Issuance log entries or stock. Remove those separately from the Issuance log if needed.'
+    : 'Delete '+r.id+'? This cannot be undone.';
+  confirmAction(warning, async ()=>{
+    DB.requests = DB.requests.filter(x=>x.id!==id);
+    await saveDB();
+    toast('Request deleted.');
+    navigate(portalMode==='department'?'drequest':'request','list');
+  });
 }
 function openAssetTagModal(id){
   const r = DB.requests.find(x=>x.id===id);
@@ -2146,16 +2201,61 @@ function returnIRCell(r){
   return '<span class="small-note">—</span>';
 }
 function receivingListHtml(){
+  const isAdmin = session.role==='admin';
   const header = `<div class="list-head"><h3>Receiving log (${DB.receiving.length})</h3>${dlBtn('exportReceiving')}</div>`;
   if(DB.receiving.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#8615;</div>No receiving transactions logged yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th>Ref #</th><th>SKU</th><th>Item</th><th>Type</th><th>From</th><th>Qty</th><th>Date</th><th>Received by</th><th>Transmittal</th></tr>' +
+    '<tr><th>Ref #</th><th>SKU</th><th>Item</th><th>Type</th><th>From</th><th>Qty</th><th>Date</th><th>Received by</th><th>Transmittal</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
     DB.receiving.slice().reverse().map(r=>`<tr>
       <td class="mono">${esc(r.id)}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
       <td>${r.type==='Asset'?'<span class="tag tag-asset">Asset</span>':'<span class="tag tag-consumable">Consumable</span>'}</td>
       <td>${esc(r.from)}</td><td style="font-weight:700;">${r.qty} ${esc(r.uom)}</td><td>${fmtDate(r.date)}</td>
       <td>${esc(r.receivedBy)}</td><td>${r.transmittalFile?(`<a href="javascript:void(0)" onclick="viewReceivedTransmittal('${esc(r.id)}')" style="color:var(--info);font-weight:600;text-decoration:underline;cursor:pointer;">&#128206; ${esc(r.transmittal||'View file')}</a>`):(r.transmittal?('&#128206; '+esc(r.transmittal)):'<span class="small-note">—</span>')}</td>
+      ${isAdmin?`<td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditReceiving('${esc(r.id)}')">Edit</button> <button class="icon-btn" onclick="deleteReceiving('${esc(r.id)}')">&times;</button></td>`:''}
     </tr>`).join('') + '</table></div></div>';
+}
+function openEditReceiving(id){
+  if(session.role!=='admin') return;
+  const r = DB.receiving.find(x=>x.id===id);
+  if(!r) return;
+  showModal(`
+    <h3>Edit receiving record</h3>
+    <div class="card-sub mono">${esc(r.id)} &middot; ${esc(r.sku)} &middot; ${esc(r.description)}</div>
+    <div class="form-row" style="margin-top:14px;">
+      <div class="field"><label>From (Supplier)</label><select id="edit-recv-from">${DB.suppliers.map(s=>`<option ${s===r.from?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div class="field"><label>Quantity</label><input type="number" min="0" id="edit-recv-qty" value="${r.qty}"></div>
+    </div>
+    <div class="hint">Changing the quantity will adjust current stock for ${esc(r.sku)} by the difference.</div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveReceivingEdit('${esc(id)}')">Save changes</button>
+    </div>
+  `);
+}
+async function saveReceivingEdit(id){
+  const r = DB.receiving.find(x=>x.id===id);
+  if(!r) return;
+  const from = document.getElementById('edit-recv-from').value;
+  const qty = Number(document.getElementById('edit-recv-qty').value);
+  if(!Number.isFinite(qty) || qty<0){ toast('Enter a valid quantity.'); return; }
+  const delta = qty - r.qty;
+  if(delta!==0) DB.stock[r.sku] = (DB.stock[r.sku]||0) + delta;
+  r.from = from; r.qty = qty;
+  await saveDB();
+  closeModal();
+  toast('Receiving record updated.');
+  navigate('receiving','list');
+}
+function deleteReceiving(id){
+  const r = DB.receiving.find(x=>x.id===id);
+  if(!r) return;
+  confirmAction('Delete '+r.id+'? This will also remove the '+r.qty+' '+r.uom+' it added to the stock of '+r.sku+'.', async ()=>{
+    DB.stock[r.sku] = (DB.stock[r.sku]||0) - r.qty;
+    DB.receiving = DB.receiving.filter(x=>x.id!==id);
+    await saveDB();
+    toast('Receiving record deleted.');
+    navigate('receiving','list');
+  });
 }
 function exportReceiving(){
   const rows = DB.receiving.map(r=>[r.id,r.sku,r.description,r.type,r.from,r.qty,r.uom,fmtDate(r.date),r.receivedBy,r.transmittal||'']);
@@ -2212,15 +2312,66 @@ function exportIssuance(){
   downloadCSV('issuance-log.csv', ['Ref #','Transmittal','Source request','SKU','Item','Type','Qty','UOM','Department','Accountability','Accountability email','Asset tag','Issued by','Date issued','Dept received','Dept received by','Dept received date'], rows);
 }
 function issuanceListHtml(){
+  const isAdmin = session.role==='admin';
   if(DB.issuance.length===0) return '<div class="card"><div class="empty"><div class="ic">&#8613;</div>No issuance transactions yet — these are created automatically when a request is issued.</div></div>';
   return '<div class="card"><div class="tbl-wrap"><table>' +
-    '<tr><th>Ref #</th><th>Transmittal</th><th>Source request</th><th>SKU</th><th>Item</th><th>Qty</th><th>Dept</th><th>Accountability</th><th>Asset tag</th><th>Date</th></tr>' +
+    '<tr><th>Ref #</th><th>Transmittal</th><th>Source request</th><th>SKU</th><th>Item</th><th>Qty</th><th>Dept</th><th>Accountability</th><th>Asset tag</th><th>Date</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
     DB.issuance.slice().reverse().map(r=>`<tr>
       <td class="mono">${esc(r.id)}</td><td class="mono">${r.sourceRequestId&&r.transmittalNo?`<button class="btn btn-sm" onclick="openTransmittal('${esc(r.sourceRequestId)}')">${esc(r.transmittalNo)}</button>`:esc(r.transmittalNo||'—')}</td><td class="mono">${esc(r.sourceRequestId||'—')}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
       <td style="font-weight:700;">${r.qty} ${esc(r.uom)}</td><td>${esc(r.department)}</td><td>${esc(r.accountability)}<div class="small-note">${esc(r.accountabilityEmail||'')}</div></td>
       <td class="mono">${esc(r.assetTagging||'—')}</td>
       <td>${fmtDate(r.date)}</td>
+      ${isAdmin?`<td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditIssuance('${esc(r.id)}')">Edit</button> <button class="icon-btn" onclick="deleteIssuance('${esc(r.id)}')">&times;</button></td>`:''}
     </tr>`).join('') + '</table></div></div>';
+}
+function openEditIssuance(id){
+  if(session.role!=='admin') return;
+  const r = DB.issuance.find(x=>x.id===id);
+  if(!r) return;
+  showModal(`
+    <h3>Edit issuance record</h3>
+    <div class="card-sub mono">${esc(r.id)} &middot; ${esc(r.sku)} &middot; ${esc(r.description)}</div>
+    <div class="form-row" style="margin-top:14px;">
+      <div class="field"><label>Department</label><select id="edit-iss-dept">${DB.departments.map(d=>`<option ${d===r.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+      <div class="field"><label>Quantity</label><input type="number" min="0" id="edit-iss-qty" value="${r.qty}"></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Accountable person</label><input id="edit-iss-acct" value="${esc(r.accountability||'')}"></div>
+      <div class="field"><label>Accountable email</label><input id="edit-iss-acct-email" value="${esc(r.accountabilityEmail||'')}"></div>
+    </div>
+    <div class="hint">Changing the quantity will adjust current stock for ${esc(r.sku)} in the opposite direction (issuing more takes more out of stock).</div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveIssuanceEdit('${esc(id)}')">Save changes</button>
+    </div>
+  `);
+}
+async function saveIssuanceEdit(id){
+  const r = DB.issuance.find(x=>x.id===id);
+  if(!r) return;
+  const department = document.getElementById('edit-iss-dept').value;
+  const qty = Number(document.getElementById('edit-iss-qty').value);
+  const accountability = document.getElementById('edit-iss-acct').value.trim();
+  const accountabilityEmail = document.getElementById('edit-iss-acct-email').value.trim();
+  if(!Number.isFinite(qty) || qty<0){ toast('Enter a valid quantity.'); return; }
+  const delta = qty - r.qty;
+  if(delta!==0) DB.stock[r.sku] = (DB.stock[r.sku]||0) - delta;
+  r.department = department; r.qty = qty; r.accountability = accountability; r.accountabilityEmail = accountabilityEmail;
+  await saveDB();
+  closeModal();
+  toast('Issuance record updated.');
+  navigate('issuance','list');
+}
+function deleteIssuance(id){
+  const r = DB.issuance.find(x=>x.id===id);
+  if(!r) return;
+  confirmAction('Delete '+r.id+'? This will restore '+r.qty+' '+r.uom+' back to the stock of '+r.sku+'.', async ()=>{
+    DB.stock[r.sku] = (DB.stock[r.sku]||0) + r.qty;
+    DB.issuance = DB.issuance.filter(x=>x.id!==id);
+    await saveDB();
+    toast('Issuance record deleted.');
+    navigate('issuance','list');
+  });
 }
 
 /* ============================= CYCLE COUNT MODULE ============================= */
@@ -2553,10 +2704,11 @@ function returnsIncomingHtml(){
     </tr>`).join('') + '</table></div></div>';
 }
 function returnsLogHtml(){
+  const isAdmin = session.role==='admin';
   const header = `<div class="list-head"><h3>Returns log (${DB.returns.length})</h3>${dlBtn('exportReturns')}</div>`;
   if(DB.returns.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#8617;</div>No returns logged yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th>Ref #</th><th>Department</th><th>SKU</th><th>Item</th><th>Category</th><th>Condition</th><th>Classification</th><th>Qty</th><th>IR</th><th>Status</th><th>Returned by</th><th>Date returned</th><th>Received by</th></tr>' +
+    '<tr><th>Ref #</th><th>Department</th><th>SKU</th><th>Item</th><th>Category</th><th>Condition</th><th>Classification</th><th>Qty</th><th>IR</th><th>Status</th><th>Returned by</th><th>Date returned</th><th>Received by</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
     DB.returns.slice().reverse().map(r=>`<tr>
       <td class="mono">${esc(r.id)}</td><td>${esc(r.department)}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
       <td>${r.category==='Asset'?'<span class="tag tag-asset">Asset</span>':'<span class="tag tag-consumable">Consumable</span>'}</td>
@@ -2566,7 +2718,58 @@ function returnsLogHtml(){
       <td>${returnIRCell(r)}</td>
       <td>${r.status==='Pending'?'<span class="tag tag-pending">Pending</span>':statusTag(r.status)}</td>
       <td>${esc(r.returnedBy)}</td><td>${fmtDate(r.dateReturned)}</td><td>${esc(r.receivedBy||'—')}</td>
+      ${isAdmin?`<td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditReturn('${esc(r.id)}')">Edit</button> <button class="icon-btn" onclick="deleteReturn('${esc(r.id)}')">&times;</button></td>`:''}
     </tr>`).join('') + '</table></div></div>';
+}
+function openEditReturn(id){
+  if(session.role!=='admin') return;
+  const r = DB.returns.find(x=>x.id===id);
+  if(!r) return;
+  showModal(`
+    <h3>Edit return record</h3>
+    <div class="card-sub mono">${esc(r.id)} &middot; ${esc(r.sku)} &middot; ${esc(r.description)}</div>
+    <div class="form-row" style="margin-top:14px;">
+      <div class="field"><label>Quantity</label><input type="number" min="0" id="edit-ret-qty" value="${r.qty}"></div>
+      <div class="field"><label>Remarks</label><input id="edit-ret-remarks" value="${esc(r.remarks||'')}"></div>
+    </div>
+    ${(r.condition==='Good' && (r.status==='Received'||r.status==='Asset Received')) ? `<div class="hint">This was received as Good condition — changing the quantity will adjust current stock for ${esc(r.sku)} by the difference.</div>` : `<div class="hint">Condition/status can't be changed here. For a Damaged item, any linked repair register entry is not updated automatically.</div>`}
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveReturnEdit('${esc(id)}')">Save changes</button>
+    </div>
+  `);
+}
+async function saveReturnEdit(id){
+  const r = DB.returns.find(x=>x.id===id);
+  if(!r) return;
+  const qty = Number(document.getElementById('edit-ret-qty').value);
+  const remarks = document.getElementById('edit-ret-remarks').value.trim();
+  if(!Number.isFinite(qty) || qty<0){ toast('Enter a valid quantity.'); return; }
+  const stockAffecting = r.condition==='Good' && (r.status==='Received'||r.status==='Asset Received');
+  if(stockAffecting){
+    const delta = qty - r.qty;
+    if(delta!==0) DB.stock[r.sku] = (DB.stock[r.sku]||0) + delta;
+  }
+  r.qty = qty; r.remarks = remarks;
+  await saveDB();
+  closeModal();
+  toast('Return record updated.');
+  navigate('returns','log');
+}
+function deleteReturn(id){
+  const r = DB.returns.find(x=>x.id===id);
+  if(!r) return;
+  const stockAffecting = r.condition==='Good' && (r.status==='Received'||r.status==='Asset Received');
+  const warning = stockAffecting
+    ? 'Delete '+r.id+'? This will remove the '+r.qty+' '+r.uom+' it added back to the stock of '+r.sku+'.'
+    : 'Delete '+r.id+'? Note: if this was routed to the Repair register, that entry will NOT be removed automatically.';
+  confirmAction(warning, async ()=>{
+    if(stockAffecting) DB.stock[r.sku] = (DB.stock[r.sku]||0) - r.qty;
+    DB.returns = DB.returns.filter(x=>x.id!==id);
+    await saveDB();
+    toast('Return record deleted.');
+    navigate('returns','log');
+  });
 }
 function exportReturns(){
   const rows = DB.returns.map(r=>[r.id,r.department,r.sku,r.description,r.category,r.condition,r.qty,r.uom,r.status,r.returnedBy,fmtDate(r.dateReturned),r.receivedBy||'']);
