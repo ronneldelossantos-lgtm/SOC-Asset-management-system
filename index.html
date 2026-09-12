@@ -714,6 +714,53 @@ async function saveDB(){
     toast('Could not save — changes may be lost.');
   }
 }
+/* Same shared-document save as saveDB(), but resilient to a *benign*
+   self-collision: two saves fired back-to-back from this same tab (e.g.
+   adding several employees in quick succession) can race, since the second
+   save's expectedPrevious was captured before the first one's write
+   committed. Plain saveDB() treats that exactly like a real conflict with
+   another admin — it discards the in-memory change and shows "your last
+   action was NOT saved," which silently drops the second edit. Here,
+   instead of giving up on the first conflict, we pull the fresh document,
+   re-apply the caller's intended change on top of it via mutate(), and
+   retry — only falling back to the same user-facing conflict message (and
+   giving up) if that keeps failing across every attempt, which by then is
+   far more likely a genuine concurrent edit from someone else.
+   actionInFlight blocks the 4s auto-refresh poll from swapping out DB out
+   from under us for the same reason it already does around other
+   multi-step saves (see the flag's definition above). */
+async function saveDBWithRetry(mutate, maxAttempts){
+  maxAttempts = maxAttempts || 4;
+  actionInFlight = true;
+  try{
+    for(let attempt=0; attempt<maxAttempts; attempt++){
+      try{
+        const json = JSON.stringify(DB);
+        const opts = lastKnownSnapshot!==null ? {expectedPrevious: lastKnownSnapshot} : undefined;
+        const res = await window.storage.set(STORE_KEY, json, true, opts);
+        if(res && res.conflict){
+          DB = res.currentValue ? JSON.parse(res.currentValue) : defaultDB();
+          migrateDB();
+          lastKnownSnapshot = res.currentValue;
+          mutate();
+          continue;
+        }
+        lastKnownSnapshot = json;
+        return true;
+      }catch(e){
+        console.error('Storage error', e);
+        toast('Could not save — changes may be lost.');
+        return false;
+      }
+    }
+    navigate(route, subroute);
+    toast('Someone else just saved changes here — your last action was NOT saved. Please redo it.');
+    logAudit('save_conflict_rejected', {});
+    return false;
+  } finally {
+    actionInFlight = false;
+  }
+}
 
 /* Append-only forensic trail for account changes — kept separate from the
    one big app-state document (same collection, distinct key prefix, so no
@@ -4000,9 +4047,12 @@ async function addEmployee(){
   const department = document.getElementById('new-emp-dept').value.trim();
   if(!opsId||!fullName){ toast('Fill out Ops ID and full name.'); return; }
   if(empInfo(opsId)){ toast('That Ops ID already exists.'); return; }
-  DB.employees.push({opsId, fullName, agency, department});
-  await saveDB();
-  toast('Employee added.');
+  const rec = {opsId, fullName, agency, department};
+  DB.employees.push(rec);
+  const ok = await saveDBWithRetry(()=>{
+    if(!empInfo(opsId)) DB.employees.push(rec);
+  });
+  if(ok) toast('Employee added.');
   renderSettings();
 }
 function openEditEmployee(i){
@@ -4033,34 +4083,52 @@ async function saveEmployeeEdit(i){
   const department = document.getElementById('edit-emp-dept').value.trim();
   if(!opsId || !fullName){ toast('Fill out Ops ID and full name.'); return; }
   if(DB.employees.some((x,idx)=>idx!==i && x.opsId.toUpperCase()===opsId.toUpperCase())){ toast('That Ops ID already exists.'); return; }
-  e.opsId = opsId; e.fullName = fullName; e.agency = agency; e.department = department;
-  await saveDB();
+  const originalOpsId = e.opsId;
+  const applyEdit = ()=>{
+    const target = DB.employees.find(x=>x.opsId.toUpperCase()===originalOpsId.toUpperCase());
+    if(target){ target.opsId = opsId; target.fullName = fullName; target.agency = agency; target.department = department; }
+    else DB.employees.push({opsId, fullName, agency, department});
+  };
+  applyEdit();
+  const ok = await saveDBWithRetry(applyEdit);
   closeModal();
-  toast('Employee updated.');
+  if(ok) toast('Employee updated.');
   renderSettings();
 }
 async function removeEmployee(i){
   const e = DB.employees[i];
   if(!e) return;
+  const opsId = e.opsId;
   DB.employees.splice(i,1);
-  await saveDB();
-  toast('Employee removed.');
+  const ok = await saveDBWithRetry(()=>{
+    const idx = DB.employees.findIndex(x=>x.opsId.toUpperCase()===opsId.toUpperCase());
+    if(idx>-1) DB.employees.splice(idx,1);
+  });
+  if(ok) toast('Employee removed.');
   renderSettings();
 }
 async function importEmployeeCsv(inputEl){
   const rows = await importCsvRows(inputEl);
   if(!rows) return;
   let added = 0, skipped = 0;
+  const newRecs = [];
   rows.forEach(row=>{
     const opsId = csvField(row, ['Ops ID','OpsId','Ops Id']).trim();
     const fullName = csvField(row, ['Full Name','Name']).trim();
     const agency = csvField(row, ['Agency']).trim();
     const department = csvField(row, ['Department']).trim();
-    if(!opsId || !fullName || !department || empInfo(opsId)){ skipped++; return; }
-    DB.employees.push({opsId, fullName, agency, department});
+    if(!opsId || !fullName || !department || empInfo(opsId) || newRecs.some(r=>r.opsId.toUpperCase()===opsId.toUpperCase())){ skipped++; return; }
+    const rec = {opsId, fullName, agency, department};
+    newRecs.push(rec);
+    DB.employees.push(rec);
     added++;
   });
-  if(added){ await saveDB(); }
+  if(added){
+    const ok = await saveDBWithRetry(()=>{
+      newRecs.forEach(rec=>{ if(!empInfo(rec.opsId)) DB.employees.push(rec); });
+    });
+    if(!ok){ renderSettings(); return; }
+  }
   toast('Imported '+added+' employee'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/duplicate).'):'.'));
   renderSettings();
 }
