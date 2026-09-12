@@ -81,7 +81,19 @@ a{color:inherit;}
 .nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;color:#fff;font-size:13px;font-weight:500;cursor:pointer;margin-bottom:2px;border-left:3px solid transparent;transition:all .12s;}
 .nav-item:hover{background:rgba(255,255,255,0.06);color:#fff;}
 .nav-item.active{background:rgba(247,127,0,0.14);color:#fff;border-left-color:var(--amber);}
-.nav-item .ic{width:18px;text-align:center;font-size:14px;}
+.nav-item .ic{width:18px;text-align:center;font-size:14px;flex-shrink:0;}
+.nav-item .nav-label{flex:1;min-width:0;}
+.nav-group{margin-bottom:2px;}
+.nav-parent .nav-chevron{flex-shrink:0;font-size:9px;color:#8891A3;transition:transform .15s ease;}
+.nav-parent.open .nav-chevron{transform:rotate(180deg);}
+.nav-parent.has-active:not(.open){color:#fff;}
+.nav-parent.has-active:not(.open) .ic{color:var(--amber);}
+.nav-children{overflow:hidden;padding-left:4px;}
+.nav-child{display:flex;align-items:center;padding:8px 12px 8px 32px;border-radius:8px;color:#B7BECC;font-size:12.5px;font-weight:500;cursor:pointer;margin-bottom:1px;border-left:3px solid transparent;transition:all .12s;position:relative;}
+.nav-child::before{content:'';position:absolute;left:19px;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.1);}
+.nav-child:last-child::before{bottom:50%;}
+.nav-child:hover{background:rgba(255,255,255,0.06);color:#fff;}
+.nav-child.active{background:rgba(247,127,0,0.14);color:#fff;border-left-color:var(--amber);font-weight:600;}
 .side-foot{padding:14px 18px;border-top:1px solid rgba(255,255,255,0.08);}
 .side-user{display:flex;align-items:center;gap:9px;margin-bottom:10px;}
 .side-user .av{width:30px;height:30px;border-radius:50%;background:var(--navy-3);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;}
@@ -116,6 +128,11 @@ a{color:inherit;}
 .badge-admin{background:#EFE6FB;color:#6B3FA0;}
 .badge-staff{background:var(--info-bg);color:var(--info);}
 .badge-department{background:var(--success-bg);color:var(--success);}
+.badge-hub{background:var(--warn-bg);color:var(--warn);}
+.proc-access-wrap{display:flex;flex-wrap:wrap;gap:8px 16px;padding:10px 12px;background:#fbfbfc;border:1px solid var(--border);border-radius:8px;}
+.proc-access-item{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:500;color:var(--ink);}
+.proc-access-item input{margin:0;}
+.proc-badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:600;background:var(--bg);border:1px solid var(--border);color:var(--muted);margin:1px 3px 1px 0;}
 .content{padding:24px 28px 60px;}
 
 .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px 22px;margin-bottom:18px;}
@@ -173,6 +190,16 @@ tr:last-child td{border-bottom:none;}
 .section-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin:18px 0 10px;padding-top:14px;border-top:1px solid var(--border);}
 .section-title:first-child{margin-top:0;padding-top:0;border-top:none;}
 .hint{font-size:11.5px;color:var(--faint);margin-top:4px;}
+.hint.hint-error{color:var(--danger);}
+.hint.hint-active{color:var(--info);}
+.scan-divider{height:1px;background:var(--border);margin:18px 0;}
+.scan-field input:disabled{background:#FAFBFC;color:var(--muted);}
+.alloc-bar-row{display:flex;align-items:center;gap:10px;margin-bottom:9px;font-size:12.5px;}
+.alloc-bar-label{width:150px;flex-shrink:0;color:var(--ink);font-weight:600;}
+.alloc-bar-track{flex:1;height:10px;background:#EEF0F3;border-radius:6px;overflow:hidden;}
+.alloc-bar-fill{height:100%;border-radius:6px;background:var(--navy-3);}
+.alloc-bar-fill.remaining{background:var(--success);}
+.alloc-bar-value{width:110px;text-align:right;flex-shrink:0;color:var(--muted);}
 .suggest-dropdown{display:none;position:absolute;top:100%;left:0;right:0;z-index:20;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 20px rgba(0,0,0,0.12);max-height:220px;overflow-y:auto;margin-top:2px;}
 .suggest-item{padding:8px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--border-light,#f0f1f3);}
 .suggest-item:last-child{border-bottom:none;}
@@ -183,7 +210,7 @@ tr:last-child td{border-bottom:none;}
 .li-row{display:grid;grid-template-columns:110px 1fr 90px 90px 34px;gap:10px;padding:9px 10px;align-items:center;border-bottom:1px solid var(--border);font-size:12.5px;}
 .li-row:last-child{border-bottom:none;}
 .li-head{background:#FAFBFC;font-size:10.5px;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);font-weight:700;}
-.icon-btn{width:26px;height:26px;border-radius:6px;border:1px solid var(--border);background:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--muted);}
+.icon-btn{width:26px;height:26px;border-radius:6px;border:1px solid var(--border);background:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:13px;color:var(--muted);}
 .icon-btn:hover{background:var(--danger-bg);color:var(--danger);border-color:var(--danger-bd);}
 .icon-btn-view{width:26px;height:26px;border-radius:6px;border:1px solid var(--border);background:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:13px;color:var(--muted);cursor:pointer;text-decoration:none;}
 .icon-btn-view:hover{background:var(--info-bg);color:var(--info);border-color:var(--info-bd);}
@@ -229,7 +256,6 @@ tr:last-child td{border-bottom:none;}
       <div class="login-logo-wrap"><img class="login-logo" src="data:image/jpeg;base64,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" alt="SPX Express"></div>
       <div class="login-brand-text">
         <div class="title">SOC Supplies Management System</div>
-        <div class="sub">Assets &amp; Consumables</div>
       </div>
     </div>
     <div class="login-card">
@@ -469,6 +495,7 @@ let session = null; // {id, username, fullName, role, portal, department, site}
 let route = 'dashboard';
 let subroute = '';
 let portalMode = null; // 'supplies' | 'department' — derived from the logged-in account
+let navGroupOpen = {}; // {[dropdownGroupId]: true/false} — which sidebar process dropdowns are expanded
 
 /* Keeps the logged-in user and the exact screen/tab open across an actual
    browser refresh (F5 / reload), so reloading the tab lands back where you
@@ -497,18 +524,20 @@ function defaultDB(){
       {id:1, username:'admin', password:'admin123', role:'admin', fullName:'System Administrator', portal:'supplies'},
       {id:2, username:'staff', password:'staff123', role:'staff', fullName:'Juan Dela Cruz', portal:'supplies'},
       {id:3, username:'dept.it', password:'dept123', role:'department', fullName:'Pedro Reyes', portal:'department', department:'IT Department'},
-      {id:4, username:'dept.hr', password:'dept123', role:'department', fullName:'Ana Lim', portal:'department', department:'HR Department'}
+      {id:4, username:'dept.hr', password:'dept123', role:'department', fullName:'Ana Lim', portal:'department', department:'HR Department'},
+      {id:5, username:'hub', password:'hub123', role:'hub', fullName:'Mark Santos', portal:'supplies', processAccess:['itassets','cageloading','parcelretrieval']}
     ],
     employees: [
-      {opsId:'OPS-1001', fullName:'Juan Dela Cruz', department:'Operations'},
-      {opsId:'OPS-1002', fullName:'Maria Santos', department:'Finance Department'},
-      {opsId:'OPS-1003', fullName:'Pedro Reyes', department:'IT Department'},
-      {opsId:'OPS-1004', fullName:'Ana Lim', department:'HR Department'}
+      {opsId:'OPS-1001', fullName:'Juan Dela Cruz', agency:'Direct Hire', department:'Operations'},
+      {opsId:'OPS-1002', fullName:'Maria Santos', agency:'Direct Hire', department:'Finance Department'},
+      {opsId:'OPS-1003', fullName:'Pedro Reyes', agency:'Direct Hire', department:'IT Department'},
+      {opsId:'OPS-1004', fullName:'Ana Lim', agency:'Direct Hire', department:'HR Department'}
     ],
     sku: [],
-    departments: ['IT Department','Finance Department','HR Department','Operations','Admin / Warehouse'],
+    departments: ['IT Department','Finance Department','HR Department','Operations','Admin / Warehouse','SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'],
     suppliers: ['ABC Trading Corp','Office Depot Philippines','TechSource Solutions'],
     warehouses: ['SOC5','SOC6','SOC8','SOC9','SOC Cache'],
+    sortingStations: ['Station 1','Station 2','Station 3','Station 4'],
     accountability: [
       {name:'Maria Santos', email:'maria.santos@company.com'},
       {name:'Pedro Reyes', email:'pedro.reyes@company.com'},
@@ -525,7 +554,14 @@ function defaultDB(){
     returns: [],
     deptIssuance: [],
     notifications: [],
-    counters: {req:100, recv:100, iss:100, rep:100, trn:100, ret:100, di:100}
+    cages: [],
+    pdas: [],
+    pdaLogs: [],
+    pdaAllocations: {},
+    pdaDeptBuckets: ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'],
+    departmentSoc: {},
+    parcels: [],
+    counters: {req:100, recv:100, iss:100, rep:100, trn:100, ret:100, di:100, cg:100, pl:100}
   };
 }
 
@@ -538,6 +574,19 @@ function migrateDB(){
   if(!DB.notifications) DB.notifications = [];
   if(!DB.warehouses || !DB.warehouses.length) DB.warehouses = ['SOC5','SOC6','SOC8','SOC9','SOC Cache'];
   if(!DB.suppliers) DB.suppliers = [];
+  if(!DB.sortingStations || !DB.sortingStations.length) DB.sortingStations = ['Station 1','Station 2','Station 3','Station 4'];
+  if(!DB.cages) DB.cages = [];
+  if(!DB.pdas) DB.pdas = [];
+  DB.pdas.forEach(p=>{ if(p.soc===undefined) p.soc=''; if(p.exceptionStatus===undefined) p.exceptionStatus=''; });
+  if(!DB.pdaLogs) DB.pdaLogs = [];
+  if(!DB.pdaAllocations) DB.pdaAllocations = {};
+  if(!DB.pdaDeptBuckets || !DB.pdaDeptBuckets.length) DB.pdaDeptBuckets = ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'];
+  if(!DB.parcels) DB.parcels = [];
+  if(!DB.counters.cg) DB.counters.cg = 100;
+  if(!DB.counters.pl) DB.counters.pl = 100;
+  if(!DB.departments) DB.departments = [];
+  if(!DB.departmentSoc) DB.departmentSoc = {};
+  ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'].forEach(d=>{ if(!DB.departments.includes(d)) DB.departments.push(d); });
   (DB.receiving||[]).forEach(r=>{ if(r.from && !DB.suppliers.includes(r.from)) DB.suppliers.push(r.from); });
   if(DB.accountability.length && typeof DB.accountability[0] === 'string'){
     DB.accountability = DB.accountability.map(n=>({name:n, email:''}));
@@ -910,7 +959,7 @@ async function doLogin(){
     return;
   }
   portalMode = found.portal; // derived from the account itself — no separate portal picker
-  session = {id:found.id, username:found.username, fullName:found.fullName, role:found.role, portal:found.portal, department:found.department||null, site:found.site||null};
+  session = {id:found.id, username:found.username, fullName:found.fullName, role:found.role, portal:found.portal, department:found.department||null, site:found.site||null, processAccess:found.processAccess||null};
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
   if(portalMode==='department'){
@@ -936,17 +985,78 @@ function doLogout(){
 }
 
 /* ============================= NAV / SHELL ============================= */
+// The 4 business processes that access can be scoped to. A user's processAccess
+// array (staff/hub roles only) lists which of these keys they may use; admins
+// and users with no processAccess set (legacy accounts) get full access.
+const PROCESS_LIST = [
+  {key:'supplies', label:'Supplies (Asset & Consumables)'},
+  {key:'itassets', label:'IT Assets'},
+  {key:'cageloading', label:'Cage Loading'},
+  {key:'parcelretrieval', label:'Parcel Retrieval'}
+];
+const ROUTE_PROCESS = {
+  request:'supplies', receiving:'supplies', issuance:'supplies', returns:'supplies', cyclecount:'supplies', repair:'supplies',
+  itassets:'itassets', cageloading:'cageloading', parcelretrieval:'parcelretrieval'
+};
+function processLabel(key){ const p = PROCESS_LIST.find(x=>x.key===key); return p ? p.label : key; }
+function userHasProcess(u, key){
+  if(!u) return false;
+  if(u.role==='admin' || u.role==='department') return true;
+  if(!u.processAccess || u.processAccess.length===0) return true; // not configured — legacy/full access
+  return u.processAccess.includes(key);
+}
+function sessionHasProcess(key){ return userHasProcess(session, key); }
+// ------------------------- SOC (site) data segmentation -------------------------
+// Every transactional record carries a `soc` field — the site (from DB.warehouses,
+// e.g. SOC5/SOC6/...) it belongs to. Admins always see everything. Staff/Hub logins
+// only see records tagged with their own site, plus any legacy/untagged records
+// (soc==='' ) that predate this feature and are treated as shared.
+function currentSoc(){ return (session && session.site) ? session.site : ''; }
+function socOf(recSoc){ return recSoc ? `<span class="small-note">${esc(recSoc)}</span>` : '<span class="small-note">—</span>'; }
+function socVisible(recSoc){
+  if(!session) return true;
+  if(session.role==='admin' || session.role==='department') return true;
+  if(!recSoc) return true;
+  return recSoc === session.site;
+}
+function socFilter(arr){ return (arr||[]).filter(x=>socVisible(x.soc)); }
+function roleBadgeClass(role){
+  if(role==='admin') return 'badge-admin';
+  if(role==='department') return 'badge-department';
+  if(role==='hub') return 'badge-hub';
+  return 'badge-staff';
+}
+
+// Each top-level group is one of the 4 business processes (plus Overview/Administration).
+// A group's "items" are either a plain link ({id,label,ic}) or a collapsible
+// dropdown ({id,label,ic,children:[{id,sub,label}]}) — the dropdown's children
+// are that process's different modules, reached via navigate(route, subroute).
 const NAV = [
   {group:'Overview', items:[
     {id:'dashboard', label:'Dashboard', ic:'&#9673;'}
   ]},
-  {group:'Operations', items:[
-    {id:'request', label:'Request', ic:'&#9998;'},
-    {id:'receiving', label:'Receiving', ic:'&#8615;'},
-    {id:'issuance', label:'Issuance / Accountability', ic:'&#8613;'},
-    {id:'returns', label:'Department Returns', ic:'&#8617;'},
-    {id:'cyclecount', label:'Cycle Count', ic:'&#8635;'},
-    {id:'repair', label:'Repair & Maintenance', ic:'&#9874;'}
+  {group:'Processes', items:[
+    {type:'dropdown', id:'proc-supplies', processKey:'supplies', label:'Supplies (Asset & Consumables)', ic:'&#128230;', children:[
+      {id:'request', sub:'', label:'Request'},
+      {id:'receiving', sub:'', label:'Receiving'},
+      {id:'issuance', sub:'', label:'Issuance / Accountability'},
+      {id:'returns', sub:'', label:'Department Returns'},
+      {id:'cyclecount', sub:'', label:'Cycle Count'},
+      {id:'repair', sub:'', label:'Repair & Maintenance'}
+    ]},
+    {type:'dropdown', id:'proc-itassets', processKey:'itassets', label:'IT Assets', ic:'&#128187;', children:[
+      {id:'itassets', sub:'scan', label:'PDA Issuance'},
+      {id:'itassets', sub:'masterlist', label:'PDA Masterlist'},
+      {id:'itassets', sub:'log', label:'Dashboard'}
+    ]},
+    {type:'dropdown', id:'proc-cageloading', processKey:'cageloading', label:'Cage Loading', ic:'&#128666;', children:[
+      {id:'cageloading', sub:'new', label:'Load Cage'},
+      {id:'cageloading', sub:'list', label:'Cage Log'}
+    ]},
+    {type:'dropdown', id:'proc-parcelretrieval', processKey:'parcelretrieval', label:'Parcel Retrieval', ic:'&#128233;', children:[
+      {id:'parcelretrieval', sub:'scan', label:'Retrieve'},
+      {id:'parcelretrieval', sub:'list', label:'Retrieval Log'}
+    ]}
   ]},
   {group:'Administration', items:[
     {id:'settings', label:'Settings', ic:'&#9881;'}
@@ -960,6 +1070,9 @@ const TITLES = {
   returns:['Department Returns','Receive items returned by departments back into inventory'],
   cyclecount:['Cycle Count','Reconcile physical counts against system stock'],
   repair:['Repair & Maintenance','Track damaged assets through repair status'],
+  cageloading:['Cage Loading','Scan items into a cage and dispatch it to its destination'],
+  itassets:['IT Assets','Scan a PDA\'s serial number to issue or return it'],
+  parcelretrieval:['Parcel Retrieval','Scan parcels retrieved from each sack sorting station'],
   settings:['Settings','Manage master data and system access']
 };
 
@@ -986,14 +1099,38 @@ const TITLES_DEPT = {
   dreturn:['Return Supplies (Damaged/Good working)','Return asset or consumable items back to Supplies']
 };
 
+function navChildHtml(it, ch){
+  const isActive = route===ch.id && subroute===(ch.sub||'');
+  return '<div class="nav-item nav-child'+(isActive?' active':'')+'" data-route="'+ch.id+'" data-sub="'+(ch.sub||'')+'" onclick="navigate(\''+ch.id+'\',\''+(ch.sub||'')+'\')">'+ch.label+'</div>';
+}
+function navItemHtml(it){
+  if(it.type==='dropdown'){
+    const isOpen = !!navGroupOpen[it.id];
+    const hasActive = it.children.some(ch=>ch.id===route);
+    return '<div class="nav-group">'
+      + '<div class="nav-item nav-parent'+(isOpen?' open':'')+(hasActive?' has-active':'')+'" onclick="toggleNavGroup(\''+it.id+'\')">'
+        + '<span class="ic">'+it.ic+'</span><span class="nav-label">'+it.label+'</span><span class="nav-chevron">&#9662;</span>'
+      + '</div>'
+      + '<div class="nav-children" style="'+(isOpen?'':'display:none;')+'">'
+        + it.children.map(ch=>navChildHtml(it,ch)).join('')
+      + '</div>'
+    + '</div>';
+  }
+  const isActive = route===it.id;
+  return '<div class="nav-item'+(isActive?' active':'')+'" data-route="'+it.id+'" onclick="navigate(\''+it.id+'\')"><span class="ic">'+it.ic+'</span><span class="nav-label">'+it.label+'</span></div>';
+}
 function renderShell(){
   const navArr = portalMode==='department' ? NAV_DEPT : NAV;
+  // Auto-expand whichever process dropdown contains the current route.
+  navArr.forEach(g=>{
+    (g.items||[]).forEach(it=>{
+      if(it.type==='dropdown' && it.children.some(ch=>ch.id===route)) navGroupOpen[it.id] = true;
+    });
+  });
   const navHtml = navArr.map(g=>{
-    const items = g.items.filter(it=> !it.adminOnly || session.role==='admin').filter(it=> !it.approverOnly || isDeptApprover());
+    const items = g.items.filter(it=> !it.adminOnly || session.role==='admin').filter(it=> !it.approverOnly || isDeptApprover()).filter(it=> !it.processKey || sessionHasProcess(it.processKey));
     if(items.length===0) return '';
-    return '<div class="nav-group-label">'+g.group+'</div>' + items.map(it=>
-      '<div class="nav-item" data-route="'+it.id+'" onclick="navigate(\''+it.id+'\')"><span class="ic">'+it.ic+'</span><span>'+it.label+'</span></div>'
-    ).join('');
+    return '<div class="nav-group-label">'+g.group+'</div>' + items.map(navItemHtml).join('');
   }).join('');
   document.getElementById('nav-list').innerHTML = navHtml;
   const sideT2 = document.querySelector('.side-brand .t2');
@@ -1002,19 +1139,28 @@ function renderShell(){
   document.getElementById('side-role').textContent = session.department ? (session.department+' · '+session.role) : session.role;
   document.getElementById('side-av').textContent = session.fullName.split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
 }
+function toggleNavGroup(id){
+  navGroupOpen[id] = !navGroupOpen[id];
+  renderShell();
+}
 
 function navigate(r, sub){
+  if(portalMode!=='department' && ROUTE_PROCESS[r] && !sessionHasProcess(ROUTE_PROCESS[r])){
+    toast('You don\'t have access to '+processLabel(ROUTE_PROCESS[r])+'.');
+    r = 'dashboard'; sub = '';
+  }
   route = r; subroute = sub || '';
   const titles = portalMode==='department' ? TITLES_DEPT : TITLES;
-  document.querySelectorAll('.nav-item').forEach(el=>el.classList.toggle('active', el.dataset.route===r));
+  renderShell();
   document.getElementById('page-title').textContent = titles[r][0];
   document.getElementById('page-crumb').textContent = titles[r][1];
-  const badgeClass = session.role==='admin'?'badge-admin':(session.role==='department'?'badge-department':'badge-staff');
+  const badgeClass = roleBadgeClass(session.role);
   const badge = '<span class="badge '+badgeClass+'">'+session.role.toUpperCase()+'</span>';
   document.getElementById('topbar-right').innerHTML = badge;
   const map = {
     dashboard: renderDashboard, request: renderRequest, receiving: renderReceiving,
-    issuance: renderIssuance, returns: renderReturns, cyclecount: renderCycleCount, repair: renderRepair, settings: renderSettings,
+    issuance: renderIssuance, returns: renderReturns, cyclecount: renderCycleCount, repair: renderRepair,
+    cageloading: renderCageLoading, itassets: renderITAssets, parcelretrieval: renderParcelRetrieval, settings: renderSettings,
     ddashboard: renderDeptDashboard, dreceiving: renderDeptReceiving, dissuance: renderDeptIssuance, dreturn: renderDeptReturn, drequest: renderRequest, dapprovals: renderDeptApprovals
   };
   const fallback = portalMode==='department' ? renderDeptDashboard : renderDashboard;
@@ -1182,14 +1328,15 @@ function dashAsset(){
 }
 
 function renderRepairPipelineTable(){
-  if(DB.repairs.length===0) return '<div class="empty"><div class="ic">&#9874;</div>No damaged assets logged yet.</div>';
+  const repairs = socFilter(DB.repairs);
+  if(repairs.length===0) return '<div class="empty"><div class="ic">&#9874;</div>No damaged assets logged yet.</div>';
   const statuses = ['For Repair','Repaired','For Backload','For Disposal'];
   return '<div class="tabs" style="margin-bottom:12px;">' + statuses.map(s=>{
-    const n = DB.repairs.filter(r=>r.status===s).length;
+    const n = repairs.filter(r=>r.status===s).length;
     return `<div class="pill">${s} <b>(${n})</b></div>`;
   }).join('') + '</div>' +
   '<div class="tbl-wrap"><table><tr><th>Asset tagging</th><th>SKU</th><th>Item</th><th>Date received</th><th>Status</th><th>Remarks</th></tr>' +
-  DB.repairs.slice().reverse().map(r=>`<tr>
+  repairs.slice().reverse().map(r=>`<tr>
     <td class="mono">${esc(r.assetTagging)}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
     <td>${fmtDate(r.dateReceived)}</td><td>${statusTag(r.status)}</td><td>${esc(r.remarks||'—')}</td>
   </tr>`).join('') + '</table></div>';
@@ -1230,6 +1377,8 @@ function dashConsumable(){
 /* ============================= REQUEST MODULE ============================= */
 let reqDraftItems = [];
 let recvDraftItems = [];
+let cageDraftItems = [];
+let parcelSessionStation = '';
 function renderRequest(){
   const c = document.getElementById('content');
   const tab = subroute || 'new';
@@ -1392,7 +1541,8 @@ async function submitRequest(){
     id, requestedBy: session.fullName, department: dept, items: reqDraftItems.slice(),
     accountableName, accountableEmail,
     notes, status:initialStatus, dateFiled: nowISO(), decidedBy:null, decidedDate:null,
-    requiresApprovalFrom: approverUsername || null
+    requiresApprovalFrom: approverUsername || null,
+    soc: (DB.departmentSoc && DB.departmentSoc[dept]) || ''
   });
   reqDraftItems = [];
   if(approverUsername){
@@ -1473,7 +1623,7 @@ function requestStatusCell(r){
   return statusTag(r.status);
 }
 function requestListHtml(){
-  const rows = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : DB.requests;
+  const rows = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilter(DB.requests);
   const header = `<div class="list-head"><h3>${portalMode==='department'?'My department requests':'All requests'} (${rows.length})</h3>${dlBtn('exportRequests')}</div>`;
   if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#9998;</div>No requests filed yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
@@ -1807,7 +1957,7 @@ function downloadTransmittal(id){
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
 }
 function exportRequests(){
-  const rows = (portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : DB.requests).map(r=>[
+  const rows = (portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilter(DB.requests)).map(r=>[
     r.id, r.requestedBy, r.department,
     r.items.map(it=>it.sku+' x'+it.qty).join('; '),
     r.items.filter(it=>it.type==='Asset' && assetTagsArr(it).some(t=>t)).map(it=>it.sku+': '+assetTagsArr(it).filter(t=>t).join(', ')).join(' | '),
@@ -2027,7 +2177,7 @@ async function finalizeIssueRequest(){
       id: issId, sku: it.sku, description: it.description, type: it.type, uom: it.uom, qty: q, requestedQty: it.qty,
       department: r.department, accountability: r.accountableName||'', accountabilityEmail: r.accountableEmail||'',
       assetTagging: assetTagsArr(it).filter(t=>t).join(', '), opsId: empMatch?empMatch.opsId:'', receivedByName: r.accountableName||'',
-      transmittalNo, date: nowISO(), issuedBy: session.fullName, deptReceived:false, sourceRequestId: r.id
+      transmittalNo, date: nowISO(), issuedBy: session.fullName, deptReceived:false, sourceRequestId: r.id, soc: r.soc||''
     });
     DB.stock[it.sku] -= q;
   });
@@ -2060,7 +2210,7 @@ function renderReceiving(){
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='new'?'active':''}" onclick="navigate('receiving','new')">Receive supplies</div>
-      <div class="tab ${tab==='list'?'active':''}" onclick="navigate('receiving','list')">Receiving log (${DB.receiving.length})</div>
+      <div class="tab ${tab==='list'?'active':''}" onclick="navigate('receiving','list')">Receiving log (${socFilter(DB.receiving).length})</div>
     </div>
     <div id="recv-body"></div>
   `;
@@ -2177,7 +2327,7 @@ async function submitReceiving(){
   recvDraftItems.forEach(it=>{
     const id = nextCode('RCV','recv');
     ids.push(id);
-    DB.receiving.push({id, sku:it.sku, description:it.description, type:it.type, uom:it.uom, from, qty:it.qty, date, receivedBy:session.fullName, transmittal:file?file.name:'', transmittalFile});
+    DB.receiving.push({id, sku:it.sku, description:it.description, type:it.type, uom:it.uom, from, qty:it.qty, date, receivedBy:session.fullName, transmittal:file?file.name:'', transmittalFile, soc:currentSoc()});
     DB.stock[it.sku] = (DB.stock[it.sku]||0) + it.qty;
   });
   recvDraftItems = [];
@@ -2202,11 +2352,12 @@ function returnIRCell(r){
 }
 function receivingListHtml(){
   const isAdmin = session.role==='admin';
-  const header = `<div class="list-head"><h3>Receiving log (${DB.receiving.length})</h3>${dlBtn('exportReceiving')}</div>`;
-  if(DB.receiving.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#8615;</div>No receiving transactions logged yet.</div></div>';
+  const rows = socFilter(DB.receiving);
+  const header = `<div class="list-head"><h3>Receiving log (${rows.length})</h3>${dlBtn('exportReceiving')}</div>`;
+  if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#8615;</div>No receiving transactions logged yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
     '<tr><th>Ref #</th><th>SKU</th><th>Item</th><th>Type</th><th>From</th><th>Qty</th><th>Date</th><th>Received by</th><th>Transmittal</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
-    DB.receiving.slice().reverse().map(r=>`<tr>
+    rows.slice().reverse().map(r=>`<tr>
       <td class="mono">${esc(r.id)}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
       <td>${r.type==='Asset'?'<span class="tag tag-asset">Asset</span>':'<span class="tag tag-consumable">Consumable</span>'}</td>
       <td>${esc(r.from)}</td><td style="font-weight:700;">${r.qty} ${esc(r.uom)}</td><td>${fmtDate(r.date)}</td>
@@ -2258,7 +2409,7 @@ function deleteReceiving(id){
   });
 }
 function exportReceiving(){
-  const rows = DB.receiving.map(r=>[r.id,r.sku,r.description,r.type,r.from,r.qty,r.uom,fmtDate(r.date),r.receivedBy,r.transmittal||'']);
+  const rows = socFilter(DB.receiving).map(r=>[r.id,r.sku,r.description,r.type,r.from,r.qty,r.uom,fmtDate(r.date),r.receivedBy,r.transmittal||'']);
   downloadCSV('receiving-log.csv', ['Ref #','SKU','Item','Type','From','Qty','UOM','Date','Received by','Transmittal'], rows);
 }
 
@@ -2280,13 +2431,13 @@ function renderIssuance(){
 }
 function issuanceLogTabHtml(){
   return `<div class="card">
-      <div class="list-head"><h3>Issuance / Accountability log (${DB.issuance.length})</h3>${dlBtn('exportIssuance')}</div>
+      <div class="list-head"><h3>Issuance / Accountability log (${socFilter(DB.issuance).length})</h3>${dlBtn('exportIssuance')}</div>
       <div class="card-sub">Auto-generated whenever a request is marked Issued. Each line ties back to its source request.</div>
     </div>
     ${issuanceListHtml()}`;
 }
 function deployedAssetsHtml(){
-  const rows = DB.deptIssuance.filter(d=>d.assetTagging);
+  const rows = socFilter(DB.deptIssuance.filter(d=>d.assetTagging));
   const header = `<div class="list-head"><h3>Deployed assets (${rows.length})</h3>${dlBtn('exportDeployedAssets')}</div>`;
   if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#127970;</div>No assets deployed by departments yet.</div></div>';
   return '<div class="card">'+header+'<div class="card-sub">Assets issued to staff within a department, with the deployed area they reported.</div><div class="tbl-wrap"><table>' +
@@ -2299,11 +2450,11 @@ function deployedAssetsHtml(){
     </tr>`).join('') + '</table></div></div>';
 }
 function exportDeployedAssets(){
-  const rows = DB.deptIssuance.filter(d=>d.assetTagging).map(r=>[r.id,r.sku,r.description,r.assetTagging,r.department,r.deployedArea||'',r.receivedByName,r.opsId,fmtDate(r.date)]);
+  const rows = socFilter(DB.deptIssuance.filter(d=>d.assetTagging)).map(r=>[r.id,r.sku,r.description,r.assetTagging,r.department,r.deployedArea||'',r.receivedByName,r.opsId,fmtDate(r.date)]);
   downloadCSV('deployed-assets.csv', ['Ref #','SKU','Item','Asset tag','Department','Deployed area','Issued to','Ops ID','Date'], rows);
 }
 function exportIssuance(){
-  const rows = DB.issuance.map(r=>[
+  const rows = socFilter(DB.issuance).map(r=>[
     r.id, r.transmittalNo||'', r.sourceRequestId||'', r.sku, r.description, r.type||'', r.qty, r.uom,
     r.department, r.accountability, r.accountabilityEmail||'', r.assetTagging||'',
     r.issuedBy||'', fmtDateOrBlank(r.date),
@@ -2313,10 +2464,11 @@ function exportIssuance(){
 }
 function issuanceListHtml(){
   const isAdmin = session.role==='admin';
-  if(DB.issuance.length===0) return '<div class="card"><div class="empty"><div class="ic">&#8613;</div>No issuance transactions yet — these are created automatically when a request is issued.</div></div>';
+  const rows = socFilter(DB.issuance);
+  if(rows.length===0) return '<div class="card"><div class="empty"><div class="ic">&#8613;</div>No issuance transactions yet — these are created automatically when a request is issued.</div></div>';
   return '<div class="card"><div class="tbl-wrap"><table>' +
     '<tr><th>Ref #</th><th>Transmittal</th><th>Source request</th><th>SKU</th><th>Item</th><th>Qty</th><th>Dept</th><th>Accountability</th><th>Asset tag</th><th>Date</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
-    DB.issuance.slice().reverse().map(r=>`<tr>
+    rows.slice().reverse().map(r=>`<tr>
       <td class="mono">${esc(r.id)}</td><td class="mono">${r.sourceRequestId&&r.transmittalNo?`<button class="btn btn-sm" onclick="openTransmittal('${esc(r.sourceRequestId)}')">${esc(r.transmittalNo)}</button>`:esc(r.transmittalNo||'—')}</td><td class="mono">${esc(r.sourceRequestId||'—')}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
       <td style="font-weight:700;">${r.qty} ${esc(r.uom)}</td><td>${esc(r.department)}</td><td>${esc(r.accountability)}<div class="small-note">${esc(r.accountabilityEmail||'')}</div></td>
       <td class="mono">${esc(r.assetTagging||'—')}</td>
@@ -2405,15 +2557,15 @@ function ccConsumableHtml(){
       }).join('')}
     </table></div>
     <div class="list-head" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);"><div class="section-title" style="margin:0;padding-top:0;border-top:none;">Recent count history</div>${dlBtn('exportCycleCountConsumable')}</div>
-    ${DB.cycleCountConsumable.length===0?'<div class="empty"><div class="ic">&#8635;</div>No counts recorded yet.</div>':
+    ${socFilter(DB.cycleCountConsumable).length===0?'<div class="empty"><div class="ic">&#8635;</div>No counts recorded yet.</div>':
     '<div class="tbl-wrap"><table><tr><th>SKU</th><th>System qty</th><th>Counted qty</th><th>Variance</th><th>Counted by</th><th>Date</th></tr>' +
-    DB.cycleCountConsumable.slice().reverse().slice(0,15).map(r=>`<tr><td class="mono">${esc(r.sku)}</td><td>${r.systemQty}</td><td>${r.countedQty}</td>
+    socFilter(DB.cycleCountConsumable).slice().reverse().slice(0,15).map(r=>`<tr><td class="mono">${esc(r.sku)}</td><td>${r.systemQty}</td><td>${r.countedQty}</td>
       <td style="color:${r.countedQty-r.systemQty<0?'var(--danger)':(r.countedQty-r.systemQty>0?'var(--success)':'var(--muted)')};font-weight:700;">${r.countedQty-r.systemQty>0?'+':''}${r.countedQty-r.systemQty}</td>
       <td>${esc(r.countedBy)}</td><td>${fmtDate(r.date)}</td></tr>`).join('') + '</table></div>'}
   </div>`;
 }
 function exportCycleCountConsumable(){
-  const rows = DB.cycleCountConsumable.map(r=>[r.sku,r.systemQty,r.countedQty,r.countedQty-r.systemQty,r.countedBy,fmtDate(r.date)]);
+  const rows = socFilter(DB.cycleCountConsumable).map(r=>[r.sku,r.systemQty,r.countedQty,r.countedQty-r.systemQty,r.countedBy,fmtDate(r.date)]);
   downloadCSV('cycle-count-consumable.csv', ['SKU','System qty','Counted qty','Variance','Counted by','Date'], rows);
 }
 async function saveConsCount(sku){
@@ -2421,7 +2573,7 @@ async function saveConsCount(sku){
   if(val===''){ toast('Enter a counted quantity first.'); return; }
   const counted = Number(val);
   const sys = DB.stock[sku]||0;
-  DB.cycleCountConsumable.push({sku, systemQty:sys, countedQty:counted, countedBy:session.fullName, date:nowISO()});
+  DB.cycleCountConsumable.push({sku, systemQty:sys, countedQty:counted, countedBy:session.fullName, date:nowISO(), soc:currentSoc()});
   document.getElementById('cc-c-var-'+sku).textContent = (counted-sys>0?'+':'')+(counted-sys);
   await saveDB();
   toast('Count saved for '+sku+'.');
@@ -2444,19 +2596,19 @@ function ccAssetHtml(){
       </tr>`).join('')}
     </table></div>
     <div class="list-head" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);"><div class="section-title" style="margin:0;padding-top:0;border-top:none;">Recent count history</div>${dlBtn('exportCycleCountAsset')}</div>
-    ${DB.cycleCountAsset.length===0?'<div class="empty"><div class="ic">&#8635;</div>No counts recorded yet.</div>':
+    ${socFilter(DB.cycleCountAsset).length===0?'<div class="empty"><div class="ic">&#8635;</div>No counts recorded yet.</div>':
     '<div class="tbl-wrap"><table><tr><th>SKU</th><th>Asset tagging</th><th>Qty issued</th><th>Counted qty</th><th>Counted by</th><th>Date</th></tr>' +
-    DB.cycleCountAsset.slice().reverse().slice(0,15).map(r=>`<tr><td class="mono">${esc(r.sku)}</td><td class="mono">${esc(r.assetTagging)}</td><td>${r.qtyIssued}</td><td>${r.countedQty}</td><td>${esc(r.countedBy)}</td><td>${fmtDate(r.date)}</td></tr>`).join('') + '</table></div>'}
+    socFilter(DB.cycleCountAsset).slice().reverse().slice(0,15).map(r=>`<tr><td class="mono">${esc(r.sku)}</td><td class="mono">${esc(r.assetTagging)}</td><td>${r.qtyIssued}</td><td>${r.countedQty}</td><td>${esc(r.countedBy)}</td><td>${fmtDate(r.date)}</td></tr>`).join('') + '</table></div>'}
   </div>`;
 }
 function exportCycleCountAsset(){
-  const rows = DB.cycleCountAsset.map(r=>[r.sku,r.assetTagging,r.qtyIssued,r.countedQty,r.countedBy,fmtDate(r.date)]);
+  const rows = socFilter(DB.cycleCountAsset).map(r=>[r.sku,r.assetTagging,r.qtyIssued,r.countedQty,r.countedBy,fmtDate(r.date)]);
   downloadCSV('cycle-count-asset.csv', ['SKU','Asset tagging','Qty issued','Counted qty','Counted by','Date'], rows);
 }
 async function saveAssetCount(i, sku, tag, qtyIssued){
   const val = document.getElementById('cc-a-'+i).value;
   if(val===''){ toast('Enter a counted quantity first.'); return; }
-  DB.cycleCountAsset.push({sku, assetTagging:tag, qtyIssued, countedQty:Number(val), countedBy:session.fullName, date:nowISO()});
+  DB.cycleCountAsset.push({sku, assetTagging:tag, qtyIssued, countedQty:Number(val), countedBy:session.fullName, date:nowISO(), soc:currentSoc()});
   await saveDB();
   toast('Count saved for '+tag+'.');
   renderCycleCount();
@@ -2469,7 +2621,7 @@ function renderRepair(){
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='new'?'active':''}" onclick="navigate('repair','new')">Log damaged asset</div>
-      <div class="tab ${tab==='list'?'active':''}" onclick="navigate('repair','list')">Repair register (${DB.repairs.length})</div>
+      <div class="tab ${tab==='list'?'active':''}" onclick="navigate('repair','list')">Repair register (${socFilter(DB.repairs).length})</div>
     </div>
     <div id="rep-body"></div>
   `;
@@ -2517,7 +2669,7 @@ async function saveRepair(){
   if(!tag){ toast('Enter the asset tagging.'); return; }
   if(!info){ toast('Enter a valid SKU code.'); return; }
   const id = nextCode('REP','rep');
-  DB.repairs.push({id, assetTagging:tag, sku:info.sku, description:info.description, dateReceived:date, status:repStatusPick, remarks});
+  DB.repairs.push({id, assetTagging:tag, sku:info.sku, description:info.description, dateReceived:date, status:repStatusPick, remarks, soc:currentSoc()});
   await saveDB();
   toast(id+' logged as "'+repStatusPick+'".');
   repStatusPick='For Repair';
@@ -2550,11 +2702,12 @@ function repairActionCell(r){
   return updateCell + (actionBtn ? '<div style="margin-top:6px;">'+actionBtn+'</div>' : '');
 }
 function repairListHtml(){
-  const header = `<div class="list-head"><h3>Repair register (${DB.repairs.length})</h3>${dlBtn('exportRepairs')}</div>`;
-  if(DB.repairs.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#9874;</div>No damaged assets logged yet.</div></div>';
+  const rows = socFilter(DB.repairs);
+  const header = `<div class="list-head"><h3>Repair register (${rows.length})</h3>${dlBtn('exportRepairs')}</div>`;
+  if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#9874;</div>No damaged assets logged yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
     '<tr><th>Ref #</th><th>Asset tagging</th><th>SKU</th><th>Item</th><th>Date received</th><th>Status</th><th>Remarks</th><th>Transmittal</th><th>Update / Action</th></tr>' +
-    DB.repairs.slice().reverse().map(r=>`<tr>
+    rows.slice().reverse().map(r=>`<tr>
       <td class="mono">${esc(r.id)}</td><td class="mono">${esc(r.assetTagging)}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
       <td>${fmtDate(r.dateReceived)}</td><td>${repairStatusDisplay(r)}</td><td>${esc(r.remarks||'—')}</td>
       <td>${repairTransmittalCell(r)}</td>
@@ -2571,7 +2724,7 @@ function viewRepairTransmittal(id){
   showFileModal(r.transmittalFile||r.id, r.transmittalFileData);
 }
 function exportRepairs(){
-  const rows = DB.repairs.map(r=>[r.id,r.assetTagging,r.sku,r.description,fmtDate(r.dateReceived),r.status,r.remarks||'',r.transmittalFile||'']);
+  const rows = socFilter(DB.repairs).map(r=>[r.id,r.assetTagging,r.sku,r.description,fmtDate(r.dateReceived),r.status,r.remarks||'',r.transmittalFile||'']);
   downloadCSV('repair-maintenance.csv', ['Ref #','Asset tagging','SKU','Item','Date received','Status','Remarks','Transmittal'], rows);
 }
 async function updateRepairStatus(id, status){
@@ -2670,11 +2823,11 @@ async function finalizeRepairAction(id, action){
 function renderReturns(){
   const c = document.getElementById('content');
   const tab = subroute || 'incoming';
-  const pendingCount = DB.returns.filter(r=>r.status==='Pending').length;
+  const pendingCount = socFilter(DB.returns).filter(r=>r.status==='Pending').length;
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='incoming'?'active':''}" onclick="navigate('returns','incoming')">Incoming returns (${pendingCount})</div>
-      <div class="tab ${tab==='log'?'active':''}" onclick="navigate('returns','log')">Returns log (${DB.returns.length})</div>
+      <div class="tab ${tab==='log'?'active':''}" onclick="navigate('returns','log')">Returns log (${socFilter(DB.returns).length})</div>
     </div>
     <div id="ret-body"></div>
   `;
@@ -2688,7 +2841,7 @@ function returnClassificationCell(r){
   return `<span class="tag ${map[cls]||''}">${esc(cls)}</span>`;
 }
 function returnsIncomingHtml(){
-  const pending = DB.returns.filter(r=>r.status==='Pending');
+  const pending = socFilter(DB.returns).filter(r=>r.status==='Pending');
   if(pending.length===0) return '<div class="card"><div class="empty"><div class="ic">&#8617;</div>No pending returns from departments right now.</div></div>';
   return '<div class="card"><div class="card-sub">Confirm receipt of items returned by departments. Good-condition items are added back to on-hand inventory; damaged items are routed to the repair register. Classification is visible to both admin and staff.</div><div class="tbl-wrap"><table>' +
     '<tr><th>Ref #</th><th>Department</th><th>SKU</th><th>Item</th><th>Category</th><th>Condition</th><th>Classification</th><th>Qty</th><th>Asset tag</th><th>IR</th><th>Returned by</th><th>Date</th><th></th></tr>' +
@@ -2705,11 +2858,12 @@ function returnsIncomingHtml(){
 }
 function returnsLogHtml(){
   const isAdmin = session.role==='admin';
-  const header = `<div class="list-head"><h3>Returns log (${DB.returns.length})</h3>${dlBtn('exportReturns')}</div>`;
-  if(DB.returns.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#8617;</div>No returns logged yet.</div></div>';
+  const rows = socFilter(DB.returns);
+  const header = `<div class="list-head"><h3>Returns log (${rows.length})</h3>${dlBtn('exportReturns')}</div>`;
+  if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#8617;</div>No returns logged yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
     '<tr><th>Ref #</th><th>Department</th><th>SKU</th><th>Item</th><th>Category</th><th>Condition</th><th>Classification</th><th>Qty</th><th>IR</th><th>Status</th><th>Returned by</th><th>Date returned</th><th>Received by</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
-    DB.returns.slice().reverse().map(r=>`<tr>
+    rows.slice().reverse().map(r=>`<tr>
       <td class="mono">${esc(r.id)}</td><td>${esc(r.department)}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
       <td>${r.category==='Asset'?'<span class="tag tag-asset">Asset</span>':'<span class="tag tag-consumable">Consumable</span>'}</td>
       <td>${r.condition==='Damaged'?'<span class="tag tag-rejected">Damaged</span>':'<span class="tag tag-ok">Good</span>'}</td>
@@ -2772,7 +2926,7 @@ function deleteReturn(id){
   });
 }
 function exportReturns(){
-  const rows = DB.returns.map(r=>[r.id,r.department,r.sku,r.description,r.category,r.condition,r.qty,r.uom,r.status,r.returnedBy,fmtDate(r.dateReturned),r.receivedBy||'']);
+  const rows = socFilter(DB.returns).map(r=>[r.id,r.department,r.sku,r.description,r.category,r.condition,r.qty,r.uom,r.status,r.returnedBy,fmtDate(r.dateReturned),r.receivedBy||'']);
   downloadCSV('department-returns.csv', ['Ref #','Department','SKU','Item','Category','Condition','Qty','UOM','Status','Returned by','Date returned','Received by'], rows);
 }
 async function receiveReturn(id){
@@ -2787,7 +2941,8 @@ async function receiveReturn(id){
     DB.repairs.push({
       id:repId, assetTagging:r.assetTagging||'', sku:r.sku, description:r.description,
       dateReceived: nowISO(), status:initStatus,
-      remarks: 'Returned by '+r.department+(r.remarks?(' — '+r.remarks):'')+(r.irFile?(' — IR: '+r.irFile):'')
+      remarks: 'Returned by '+r.department+(r.remarks?(' — '+r.remarks):'')+(r.irFile?(' — IR: '+r.irFile):''),
+      soc:r.soc||''
     });
   }
   r.status = r.category==='Asset' ? 'Asset Received' : 'Received';
@@ -2991,7 +3146,7 @@ async function submitDeptIssuance(){
   }
   if(!opsId || !emp){ toast('Enter a valid Ops ID for the receiving staff member.'); return; }
   const id = nextCode('DI','di');
-  DB.deptIssuance.push({id, department:session.department, sku:info.sku, description:info.description, uom:info.uom, qty, assetTagging, deployedArea, opsId, receivedByName:emp.fullName, remarks, date:nowISO(), issuedBy:session.fullName});
+  DB.deptIssuance.push({id, department:session.department, sku:info.sku, description:info.description, uom:info.uom, qty, assetTagging, deployedArea, opsId, receivedByName:emp.fullName, remarks, date:nowISO(), issuedBy:session.fullName, soc:(DB.departmentSoc && DB.departmentSoc[session.department]) || ''});
   await saveDB();
   toast(id+' issued to '+emp.fullName+'.');
   dissuCategory=null; dissuAutoFound=null;
@@ -3184,7 +3339,8 @@ async function submitDeptReturn(){
   DB.returns.push({
     id, department:session.department, category:dretCategory, condition:dretCondition,
     sku:info.sku, description:info.description, uom:info.uom, qty, assetTagging, irFile, irFileData, remarks,
-    status:'Pending', dateReturned:nowISO(), returnedBy:session.fullName, receivedBy:null, dateReceived:null
+    status:'Pending', dateReturned:nowISO(), returnedBy:session.fullName, receivedBy:null, dateReceived:null,
+    soc:(DB.departmentSoc && DB.departmentSoc[session.department]) || ''
   });
   addNotification(session.department+' returned '+info.sku+' ('+id+')'+(dretCondition==='Damaged'?' — damaged, IR attached':'')+'.', 'supplies', 'returns', 'incoming');
   await saveDB();
@@ -3220,14 +3376,16 @@ function renderSettings(){
       <div class="tab ${tab==='dept'?'active':''}" onclick="navigate('settings','dept')">Department</div>
       <div class="tab ${tab==='supplier'?'active':''}" onclick="navigate('settings','supplier')">Supplier</div>
       ${isAdmin ? `<div class="tab ${tab==='warehouse'?'active':''}" onclick="navigate('settings','warehouse')">Warehouse</div>` : ''}
+      <div class="tab ${tab==='station'?'active':''}" onclick="navigate('settings','station')">Sorting Station</div>
       <div class="tab ${tab==='acct'?'active':''}" onclick="navigate('settings','acct')">Accountability</div>
       ${isAdmin ? `<div class="tab ${tab==='access'?'active':''}" onclick="navigate('settings','access')">Access</div>` : ''}
     </div>
     <div id="set-body"></div>
   `;
-  const map = {sku:settingsSkuHtml, dept:()=>settingsListHtml('departments','Department',true), supplier:()=>settingsListHtml('suppliers','Supplier',true), warehouse:()=>settingsListHtml('warehouses','Warehouse',false), acct:settingsAccountabilityHtml, access:settingsAccessHtml};
+  const map = {sku:settingsSkuHtml, dept:settingsDepartmentsHtml, supplier:()=>settingsListHtml('suppliers','Supplier',true), warehouse:()=>settingsListHtml('warehouses','Warehouse',false), station:()=>settingsListHtml('sortingStations','Sorting Station',true), acct:settingsAccountabilityHtml, access:settingsAccessHtml};
   const renderer = ((tab==='access' || tab==='warehouse') && !isAdmin) ? settingsSkuHtml : (map[tab]||settingsSkuHtml);
   document.getElementById('set-body').innerHTML = renderer();
+  if(tab==='access' && isAdmin) toggleNewUserDept();
 }
 function settingsSkuHtml(){
   return `<div class="card">
@@ -3370,6 +3528,33 @@ async function importSkuCsv(inputEl){
   toast('Imported '+added+' SKU'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/duplicate/invalid).'):'.'));
   renderSettings();
 }
+function settingsDepartmentsHtml(){
+  return `<div class="card">
+    <div class="list-head"><h3>Add department</h3>${importBtn('importListCsv_departments','Department (single column)')}</div>
+    <div style="display:flex;gap:10px;">
+      <input id="new-list-val" placeholder="Department name" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;">
+      <button class="btn btn-primary" onclick="addListVal('departments')">Add</button>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Department list (${DB.departments.length})</h3>
+    <div class="card-sub">Set each department's home SOC so requests it files are tagged with that SOC right away, and only that SOC's Supplies staff see them. Leave unset if the department isn't tied to one SOC.</div>
+    <div class="tbl-wrap"><table><tr><th>Department</th><th>Home SOC</th><th></th></tr>
+      ${DB.departments.map((v,i)=>`<tr><td>${esc(v)}</td>
+        <td><select onchange="setDepartmentSoc('${esc(v)}', this.value)">
+          <option value="">— Not site-specific —</option>
+          ${DB.warehouses.map(w=>`<option value="${esc(w)}" ${(DB.departmentSoc||{})[v]===w?'selected':''}>${esc(w)}</option>`).join('')}
+        </select></td>
+        <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditListVal('departments',${i})">Edit</button> <button class="icon-btn" onclick="removeListVal('departments',${i})">&times;</button></td></tr>`).join('')}
+    </table></div>
+  </div>`;
+}
+async function setDepartmentSoc(dept, soc){
+  if(!DB.departmentSoc) DB.departmentSoc = {};
+  if(soc) DB.departmentSoc[dept] = soc; else delete DB.departmentSoc[dept];
+  await saveDB();
+  toast('Home SOC updated for '+dept+'.');
+}
 function settingsListHtml(key, label, allowCsv){
   return `<div class="card">
     <div class="list-head"><h3>Add ${label.toLowerCase()}</h3>${allowCsv ? importBtn('importListCsv_'+key, label+' (single column)') : ''}</div>
@@ -3401,11 +3586,41 @@ async function saveListValEdit(key, i){
   const v = document.getElementById('edit-list-val').value.trim();
   if(!v){ toast('Enter a value first.'); return; }
   if(DB[key].some((x,idx)=>idx!==i && x===v)){ toast('That value already exists.'); return; }
+  const oldVal = DB[key][i];
   DB[key][i] = v;
+  if(key==='departments' && oldVal!==v){ cascadeDepartmentRename(oldVal, v); }
   await saveDB();
   closeModal();
   toast('Updated.');
   renderSettings();
+}
+// Renaming a department in Settings must update every record across the system
+// that stores that department name as a plain string, so nothing is left
+// pointing at the old name.
+function cascadeDepartmentRename(oldName, newName){
+  DB.users.forEach(u=>{
+    if(u.department===oldName) u.department = newName;
+    if(u.departmentScope && u.departmentScope.includes(oldName)){
+      u.departmentScope = u.departmentScope.map(d=>d===oldName?newName:d);
+    }
+  });
+  (DB.employees||[]).forEach(e=>{ if(e.department===oldName) e.department = newName; });
+  (DB.requests||[]).forEach(r=>{ if(r.department===oldName) r.department = newName; });
+  (DB.deptIssuance||[]).forEach(d=>{ if(d.department===oldName) d.department = newName; });
+  (DB.returns||[]).forEach(r=>{ if(r.department===oldName) r.department = newName; });
+  (DB.pdaLogs||[]).forEach(l=>{ if(l.borrowerDepartment===oldName) l.borrowerDepartment = newName; });
+  (DB.notifications||[]).forEach(n=>{ if(n.forDept===oldName) n.forDept = newName; });
+  if(DB.pdaDeptBuckets){
+    DB.pdaDeptBuckets = DB.pdaDeptBuckets.map(b=>b===oldName?newName:b);
+  }
+  if(DB.pdaAllocations && Object.prototype.hasOwnProperty.call(DB.pdaAllocations, oldName)){
+    DB.pdaAllocations[newName] = DB.pdaAllocations[oldName];
+    delete DB.pdaAllocations[oldName];
+  }
+  if(DB.departmentSoc && Object.prototype.hasOwnProperty.call(DB.departmentSoc, oldName)){
+    DB.departmentSoc[newName] = DB.departmentSoc[oldName];
+    delete DB.departmentSoc[oldName];
+  }
 }
 async function addListVal(key){
   const v = document.getElementById('new-list-val').value.trim();
@@ -3418,6 +3633,7 @@ async function addListVal(key){
 }
 async function importListCsv_departments(inputEl){ await importListCsv('departments', inputEl); }
 async function importListCsv_suppliers(inputEl){ await importListCsv('suppliers', inputEl); }
+async function importListCsv_sortingStations(inputEl){ await importListCsv('sortingStations', inputEl); }
 async function importListCsv(key, inputEl){
   const rows = await importCsvRows(inputEl);
   if(!rows) return;
@@ -3433,7 +3649,9 @@ async function importListCsv(key, inputEl){
   renderSettings();
 }
 async function removeListVal(key, i){
+  const val = DB[key][i];
   DB[key].splice(i,1);
+  if(key==='departments' && DB.departmentSoc) delete DB.departmentSoc[val];
   await saveDB();
   toast('Removed.');
   renderSettings();
@@ -3511,14 +3729,23 @@ async function importAcctCsv(inputEl){
   toast('Imported '+added+' person'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (blank/duplicate name).'):'.'));
   renderSettings();
 }
+function processAccessCheckboxes(idPrefix, selected){
+  const sel = selected || PROCESS_LIST.map(p=>p.key); // default: all checked
+  return '<div class="proc-access-wrap">' + PROCESS_LIST.map(p=>
+    `<label class="proc-access-item"><input type="checkbox" id="${idPrefix}-${p.key}" ${sel.includes(p.key)?'checked':''}> ${esc(p.label)}</label>`
+  ).join('') + '</div>';
+}
+function readProcessAccessCheckboxes(idPrefix){
+  return PROCESS_LIST.map(p=>p.key).filter(k=>{ const el = document.getElementById(idPrefix+'-'+k); return el && el.checked; });
+}
 function settingsAccessHtml(){
   return `<div class="card">
-    <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department), Password, Site/SOC (if role=admin or staff), Department (if role=department), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
-    <div class="card-sub">Every login signs in with just a username and password — no portal or site picker. Set the role (and, for Staff/Admin, which SOC they work out of; for Department, which department) right here when creating the login.</div>
+    <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department/hub), Password, Site/SOC (if role=admin/staff/hub), Department (if role=department), Process Access (staff/hub only — semicolon-separated: supplies;itassets;cageloading;parcelretrieval — blank = all), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
+    <div class="card-sub">Every login signs in with just a username and password — no portal or site picker. Set the role (and, for Staff/Hub/Admin, which SOC they work out of; for Department, which department) right here when creating the login.</div>
     <div class="form-row3">
       <div class="field"><label>Full name</label><input id="new-user-name" placeholder="Full name"></div>
       <div class="field"><label>Username</label><input id="new-user-username" placeholder="username"></div>
-      <div class="field"><label>Role</label><select id="new-user-role" onchange="toggleNewUserDept()"><option value="staff">Staff</option><option value="admin">Admin</option><option value="department">Department</option></select></div>
+      <div class="field"><label>Role</label><select id="new-user-role" onchange="toggleNewUserDept()"><option value="staff">Staff</option><option value="hub">Hub</option><option value="admin">Admin</option><option value="department">Department</option></select></div>
     </div>
     <div class="form-row3" id="new-user-dept-wrap" style="display:none;">
       <div class="field"><label>Department</label><select id="new-user-dept" onchange="refreshNewUserApproverOptions()">${DB.departments.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
@@ -3531,6 +3758,11 @@ function settingsAccessHtml(){
         ${DB.warehouses.map(w=>`<option value="${esc(w)}">${esc(w)}</option>`).join('')}
       </select></div>
       <div class="field" id="new-user-pass-wrap"><label>Password</label><input id="new-user-pass" type="text" placeholder="Set a password"></div>
+    </div>
+    <div id="new-user-process-wrap" style="display:none;">
+      <div class="section-title">Process access</div>
+      <div class="card-sub" style="margin-bottom:10px;">Which of the 4 processes can this login use? Untick any this person shouldn't have access to — its dropdown won't appear in their sidebar.</div>
+      ${processAccessCheckboxes('new-user-proc')}
     </div>
     <div id="new-user-staff-scope-wrap" style="display:none;">
       <div class="section-title">Access scope</div>
@@ -3545,31 +3777,41 @@ function settingsAccessHtml(){
   </div>
   <div class="card">
     <h3>System users (${DB.users.length})</h3>
-    <div class="tbl-wrap"><table><tr><th>Full name</th><th>Username</th><th>Portal</th><th>Role</th><th>Department / Site</th><th>Access scope</th><th></th></tr>
+    <div class="tbl-wrap"><table><tr><th>Full name</th><th>Username</th><th>Portal</th><th>Role</th><th>Department / Site</th><th>Process access</th><th>Access scope</th><th></th></tr>
       ${DB.users.map(u=>`<tr><td>${esc(u.fullName)}</td><td class="mono">${esc(u.username)}</td>
       <td>${u.portal==='department'?'Department':'Supplies'}</td>
-      <td><span class="badge ${u.role==='admin'?'badge-admin':(u.role==='department'?'badge-department':'badge-staff')}">${u.role.toUpperCase()}</span></td>
+      <td><span class="badge ${roleBadgeClass(u.role)}">${u.role.toUpperCase()}</span></td>
       <td>${esc(u.department || u.site || '—')}${u.approverUsername?`<div class="small-note">Needs approval from: ${esc(u.approverUsername)}</div>`:''}</td>
+      <td>${processAccessCell(u)}</td>
       <td>${userScopeCell(u)}</td>
       <td style="white-space:nowrap;">${u.id===session.id?'<span class="small-note">current user</span>':`<button class="btn btn-sm" onclick="openEditUser(${u.id})">Edit</button> <button class="icon-btn" onclick="deleteUser(${u.id})">&times;</button>`}</td></tr>`).join('')}
     </table></div>
   </div>
   <div class="card">
-    <div class="list-head"><h3>Add employee (for Received-by lookup)</h3>${importBtn('importEmployeeCsv', 'Ops ID, Full Name, Department (must match an existing department)')}</div>
+    <div class="list-head"><h3>Add employee (for Received-by / PDA Issuance lookup)</h3>${importBtn('importEmployeeCsv', 'Ops ID, Full Name, Agency, Department (must match an existing department)')}</div>
     <div class="form-row3">
       <div class="field"><label>Ops ID</label><input id="new-emp-ops" placeholder="e.g. OPS-1005"></div>
       <div class="field"><label>Full name</label><input id="new-emp-name" placeholder="Full name"></div>
+      <div class="field"><label>Agency</label><input id="new-emp-agency" placeholder="e.g. Direct Hire"></div>
+    </div>
+    <div class="form-row">
       <div class="field"><label>Department</label><select id="new-emp-dept">${DB.departments.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
     </div>
     <div class="footer-actions"><button class="btn btn-primary" onclick="addEmployee()">Add employee</button></div>
   </div>
   <div class="card">
     <h3>Employee directory (${DB.employees.length})</h3>
-    <div class="tbl-wrap"><table><tr><th>Ops ID</th><th>Full name</th><th>Department</th><th></th></tr>
-      ${DB.employees.map((e,i)=>`<tr><td class="mono">${esc(e.opsId)}</td><td>${esc(e.fullName)}</td><td>${esc(e.department)}</td>
+    <div class="tbl-wrap"><table><tr><th>Ops ID</th><th>Full name</th><th>Agency</th><th>Department</th><th></th></tr>
+      ${DB.employees.map((e,i)=>`<tr><td class="mono">${esc(e.opsId)}</td><td>${esc(e.fullName)}</td><td>${esc(e.agency||'—')}</td><td>${esc(e.department)}</td>
       <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditEmployee(${i})">Edit</button> <button class="icon-btn" onclick="removeEmployee(${i})">&times;</button></td></tr>`).join('')}
     </table></div>
   </div>`;
+}
+function processAccessCell(u){
+  if(u.role==='admin') return '<span class="small-note">All processes</span>';
+  if(u.role==='department') return '<span class="small-note">—</span>';
+  if(!u.processAccess || u.processAccess.length===0) return '<span class="small-note">All processes</span>';
+  return u.processAccess.map(k=>`<span class="proc-badge">${esc(processLabel(k))}</span>`).join('');
 }
 function userScopeCell(u){
   if(u.role!=='staff') return '<span class="small-note">Full access</span>';
@@ -3591,8 +3833,11 @@ function toggleNewUserDept(){
   const role = document.getElementById('new-user-role').value;
   const isDept = role === 'department';
   const isStaff = role === 'staff';
+  const isHub = role === 'hub';
   document.getElementById('new-user-dept-wrap').style.display = isDept ? 'grid' : 'none';
   document.getElementById('new-user-site-wrap').style.display = isDept ? 'none' : 'grid';
+  const procWrap = document.getElementById('new-user-process-wrap');
+  if(procWrap) procWrap.style.display = (isStaff || isHub) ? 'block' : 'none';
   const scopeWrap = document.getElementById('new-user-staff-scope-wrap');
   if(scopeWrap) scopeWrap.style.display = isStaff ? 'block' : 'none';
   if(isDept) refreshNewUserApproverOptions();
@@ -3603,6 +3848,7 @@ async function addUser(){
   const role = document.getElementById('new-user-role').value;
   const isDept = role === 'department';
   const isStaff = role === 'staff';
+  const isHub = role === 'hub';
   const pass = isDept ? document.getElementById('new-user-pass-dept').value : document.getElementById('new-user-pass').value;
   const department = isDept ? document.getElementById('new-user-dept').value : undefined;
   const site = !isDept ? document.getElementById('new-user-site').value : undefined;
@@ -3618,6 +3864,9 @@ async function addUser(){
     if(approverUsername) newUser.approverUsername = approverUsername;
   }
   if(site) newUser.site = site;
+  if(isStaff || isHub){
+    newUser.processAccess = readProcessAccessCheckboxes('new-user-proc');
+  }
   if(isStaff){
     newUser.skuScope = Array.from(document.getElementById('new-user-sku-scope').selectedOptions).map(o=>o.value);
     newUser.departmentScope = Array.from(document.getElementById('new-user-dept-scope').selectedOptions).map(o=>o.value);
@@ -3634,6 +3883,7 @@ function openEditUser(id){
   if(!u) return;
   const isDept = u.role==='department';
   const isStaff = u.role==='staff';
+  const isHub = u.role==='hub';
   const deptFieldsHtml = isDept ? `
     <div class="field"><label>Department</label><select id="edit-user-dept" onchange="refreshEditUserApproverOptions(${id})">${DB.departments.map(d=>`<option ${d===u.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
     <div class="field"><label>Requires approval from</label><select id="edit-user-approver"></select></div>
@@ -3643,6 +3893,11 @@ function openEditUser(id){
       ${DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===u.site?'selected':''}>${esc(w)}</option>`).join('')}
     </select></div>
   `;
+  const processHtml = (isStaff || isHub) ? `
+    <div class="section-title">Process access</div>
+    <div class="card-sub" style="margin-bottom:10px;">Which of the 4 processes can this login use? Untick any this person shouldn't have access to.</div>
+    ${processAccessCheckboxes('edit-user-proc', u.processAccess && u.processAccess.length ? u.processAccess : PROCESS_LIST.map(p=>p.key))}
+  ` : '';
   const scopeHtml = isStaff ? `
     <div class="section-title">Access scope</div>
     <div class="card-sub" style="margin-bottom:10px;">Optional — limit this staff login's visibility. Leave a selector empty for full access on that dimension.</div>
@@ -3663,6 +3918,7 @@ function openEditUser(id){
       ${deptFieldsHtml}
       <div class="field"><label>New password (optional)</label><input id="edit-user-pass" type="text" placeholder="Leave blank to keep current"></div>
     </div>
+    ${processHtml}
     ${scopeHtml}
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -3704,6 +3960,9 @@ async function saveUserEdit(id){
   } else {
     const site = document.getElementById('edit-user-site').value;
     if(site) u.site = site; else delete u.site;
+    if(u.role==='staff' || u.role==='hub'){
+      u.processAccess = readProcessAccessCheckboxes('edit-user-proc');
+    }
     if(u.role==='staff'){
       u.skuScope = Array.from(document.getElementById('edit-user-sku-scope').selectedOptions).map(o=>o.value);
       u.departmentScope = Array.from(document.getElementById('edit-user-dept-scope').selectedOptions).map(o=>o.value);
@@ -3729,10 +3988,11 @@ function deleteUser(id){
 async function addEmployee(){
   const opsId = document.getElementById('new-emp-ops').value.trim();
   const fullName = document.getElementById('new-emp-name').value.trim();
+  const agency = document.getElementById('new-emp-agency').value.trim();
   const department = document.getElementById('new-emp-dept').value;
   if(!opsId||!fullName){ toast('Fill out Ops ID and full name.'); return; }
   if(empInfo(opsId)){ toast('That Ops ID already exists.'); return; }
-  DB.employees.push({opsId, fullName, department});
+  DB.employees.push({opsId, fullName, agency, department});
   await saveDB();
   toast('Employee added.');
   renderSettings();
@@ -3745,6 +4005,9 @@ function openEditEmployee(i){
     <div class="form-row3">
       <div class="field"><label>Ops ID</label><input id="edit-emp-ops" value="${esc(e.opsId)}"></div>
       <div class="field"><label>Full name</label><input id="edit-emp-name" value="${esc(e.fullName)}"></div>
+      <div class="field"><label>Agency</label><input id="edit-emp-agency" value="${esc(e.agency||'')}"></div>
+    </div>
+    <div class="form-row">
       <div class="field"><label>Department</label><select id="edit-emp-dept">${DB.departments.map(d=>`<option ${d===e.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
     </div>
     <div class="footer-actions">
@@ -3758,10 +4021,11 @@ async function saveEmployeeEdit(i){
   if(!e) return;
   const opsId = document.getElementById('edit-emp-ops').value.trim();
   const fullName = document.getElementById('edit-emp-name').value.trim();
+  const agency = document.getElementById('edit-emp-agency').value.trim();
   const department = document.getElementById('edit-emp-dept').value;
   if(!opsId || !fullName){ toast('Fill out Ops ID and full name.'); return; }
   if(DB.employees.some((x,idx)=>idx!==i && x.opsId.toUpperCase()===opsId.toUpperCase())){ toast('That Ops ID already exists.'); return; }
-  e.opsId = opsId; e.fullName = fullName; e.department = department;
+  e.opsId = opsId; e.fullName = fullName; e.agency = agency; e.department = department;
   await saveDB();
   closeModal();
   toast('Employee updated.');
@@ -3780,10 +4044,11 @@ async function importEmployeeCsv(inputEl){
   rows.forEach(row=>{
     const opsId = csvField(row, ['Ops ID','OpsId','Ops Id']).trim();
     const fullName = csvField(row, ['Full Name','Name']).trim();
+    const agency = csvField(row, ['Agency']).trim();
     const deptRaw = csvField(row, ['Department']).trim();
     const dept = DB.departments.find(d=>d.toLowerCase()===deptRaw.toLowerCase());
     if(!opsId || !fullName || !dept || empInfo(opsId)){ skipped++; return; }
-    DB.employees.push({opsId, fullName, department:dept});
+    DB.employees.push({opsId, fullName, agency, department:dept});
     added++;
   });
   if(added){ await saveDB(); }
@@ -3795,8 +4060,17 @@ function normalizeRole(raw){
   if(!r) return '';
   if(r==='admin' || r.includes('admin')) return 'admin';
   if(r==='department' || r.includes('department') || r.includes('dept')) return 'department';
+  if(r==='hub' || r.includes('hub')) return 'hub';
   if(r==='staff' || r.includes('staff')) return 'staff';
   return '';
+}
+function parseProcessAccessField(raw){
+  const vals = String(raw||'').split(';').map(x=>x.trim().toLowerCase()).filter(x=>x);
+  if(vals.length===0) return [];
+  return PROCESS_LIST.map(p=>p.key).filter(key=>{
+    const label = processLabel(key).toLowerCase();
+    return vals.some(v=> key===v || label===v || label.includes(v) || v.includes(key));
+  });
 }
 async function importUserCsv(inputEl){
   const rows = await importCsvRows(inputEl);
@@ -3817,7 +4091,7 @@ async function importUserCsv(inputEl){
       return;
     }
     if(!role){
-      problems.push('Row '+rowNum+': role "'+(roleRaw||'(blank)')+'" isn\'t recognized — use admin, staff, or department.');
+      problems.push('Row '+rowNum+': role "'+(roleRaw||'(blank)')+'" isn\'t recognized — use admin, staff, hub, or department.');
       return;
     }
     if(DB.users.find(u=>u.username.toLowerCase()===username.toLowerCase())){
@@ -3839,6 +4113,10 @@ async function importUserCsv(inputEl){
     if(role!=='department' && siteRaw){
       const site = DB.warehouses.find(w=>w.toLowerCase()===siteRaw.toLowerCase());
       if(site) newUser.site = site;
+    }
+    if(role==='staff' || role==='hub'){
+      const processRaw = csvField(row, ['Process Access','Process','Processes']);
+      if(processRaw.trim()) newUser.processAccess = parseProcessAccessField(processRaw);
     }
     if(role==='staff'){
       const splitScope = v => v.split(';').map(x=>x.trim()).filter(x=>x);
@@ -3869,6 +4147,828 @@ async function importUserCsv(inputEl){
   renderSettings();
 }
 
+/* ============================= CAGE LOADING MODULE ============================= */
+function renderCageLoading(){
+  const c = document.getElementById('content');
+  const tab = subroute || 'new';
+  c.innerHTML = `
+    <div class="tabs">
+      <div class="tab ${tab==='new'?'active':''}" onclick="navigate('cageloading','new')">Load Cage</div>
+      <div class="tab ${tab==='list'?'active':''}" onclick="navigate('cageloading','list')">Cage Log (${socFilter(DB.cages).length})</div>
+    </div>
+    <div id="cage-body"></div>
+  `;
+  document.getElementById('cage-body').innerHTML = tab==='new' ? cageLoadingFormHtml() : cageLoadingListHtml();
+  if(tab==='new'){ refreshCageItemsTable(); }
+}
+function whOptions(sel){
+  return DB.warehouses.length ? DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===sel?'selected':''}>${esc(w)}</option>`).join('') : '<option value="">No warehouses set up — add one in Settings &rarr; Warehouse</option>';
+}
+function cageLoadingFormHtml(){
+  return `
+  <div class="card">
+    <h3>Cage details</h3>
+    <div class="form-row3">
+      <div class="field"><label>Cage ID</label><input id="cage-id" placeholder="e.g. CAGE-014"></div>
+      <div class="field"><label>Loader</label><input id="cage-loader" value="${esc(session.fullName)}"></div>
+      <div class="field"><label>Source</label><select id="cage-source">${whOptions()}</select></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Destination</label><select id="cage-dest">${whOptions()}</select></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Scan items into this cage</h3>
+    <div class="card-sub">Scan or enter each item's code, then add it to the cage manifest.</div>
+    <div class="form-row3">
+      <div class="field"><label>Item code</label><input id="cage-item-code" placeholder="e.g. AST-0001" oninput="cageItemLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();addCageItem();}"></div>
+      <div class="field"><label>Item description</label><input id="cage-item-desc" class="autofill" disabled></div>
+      <div class="field"><label>Quantity</label><input id="cage-item-qty" type="number" min="1" value="1" onkeydown="if(event.key==='Enter'){event.preventDefault();addCageItem();}"></div>
+    </div>
+    <div class="footer-actions" style="margin-top:6px;">
+      <button class="btn" onclick="scanCageItem()">&#128247; Scan to add</button>
+      <button class="btn btn-amber" onclick="addCageItem()">+ Add to cage</button>
+    </div>
+    <div class="section-title">Items in this cage</div>
+    <div id="cage-items-table"></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="cageDraftItems=[];refreshCageItemsTable();">Clear items</button>
+      <button class="btn btn-primary" onclick="submitCageDispatch()">Dispatch cage</button>
+    </div>
+  </div>`;
+}
+function cageItemLookup(){
+  const v = document.getElementById('cage-item-code').value;
+  const info = skuInfo(v);
+  document.getElementById('cage-item-desc').value = info ? info.description : '';
+}
+function scanCageItem(){
+  showModal(`
+    <h3>Simulated barcode / QR scan</h3>
+    <div class="field"><label>Enter the item code to scan</label><input id="scan-cage-input" placeholder="e.g. AST-0001" onkeydown="if(event.key==='Enter')confirmScanCageItem()"></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmScanCageItem()">Scan</button>
+    </div>
+  `);
+  setTimeout(()=>{ const el=document.getElementById('scan-cage-input'); if(el) el.focus(); }, 50);
+}
+function confirmScanCageItem(){
+  const code = document.getElementById('scan-cage-input').value.trim();
+  closeModal();
+  if(code){ document.getElementById('cage-item-code').value = code; cageItemLookup(); toast('Scanned '+code+'. Confirm quantity and add to cage.'); }
+}
+function addCageItem(){
+  const code = document.getElementById('cage-item-code').value.trim();
+  if(!code){ toast('Enter or scan an item code first.'); return; }
+  const info = skuInfo(code);
+  const qty = Number(document.getElementById('cage-item-qty').value) || 1;
+  cageDraftItems.push({code, description: info?info.description:'', qty, scannedAt: nowISO()});
+  document.getElementById('cage-item-code').value=''; document.getElementById('cage-item-desc').value=''; document.getElementById('cage-item-qty').value='1';
+  refreshCageItemsTable();
+  document.getElementById('cage-item-code').focus();
+}
+function removeCageItem(i){ cageDraftItems.splice(i,1); refreshCageItemsTable(); }
+function refreshCageItemsTable(){
+  const el = document.getElementById('cage-items-table');
+  if(!el) return;
+  if(cageDraftItems.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#128230;</div>No items scanned yet.</div>'; return; }
+  el.innerHTML = '<div class="tbl-wrap"><table><tr><th>Code</th><th>Description</th><th>Qty</th><th>Scanned</th><th></th></tr>' +
+    cageDraftItems.map((it,i)=>`<tr><td class="mono">${esc(it.code)}</td><td>${esc(it.description||'—')}</td><td>${it.qty}</td><td>${fmtDateTime(it.scannedAt)}</td><td><button class="icon-btn" onclick="removeCageItem(${i})">&times;</button></td></tr>`).join('') +
+    '</table></div>';
+}
+async function submitCageDispatch(){
+  const cageId = document.getElementById('cage-id').value.trim();
+  const loader = document.getElementById('cage-loader').value.trim();
+  const source = document.getElementById('cage-source').value;
+  const dest = document.getElementById('cage-dest').value;
+  if(!cageId){ toast('Enter a Cage ID first.'); return; }
+  if(!loader){ toast('Enter the loader\'s name.'); return; }
+  if(!source || !dest){ toast('Select a source and destination — add one in Settings &rarr; Warehouse if empty.'); return; }
+  if(cageDraftItems.length===0){ toast('Scan at least one item into the cage first.'); return; }
+  const id = nextCode('CG','cg');
+  DB.cages.push({id, cageId, loader, source, dest, items: cageDraftItems.slice(), itemCount: cageDraftItems.reduce((a,b)=>a+b.qty,0), status:'Dispatched', dispatchedAt: nowISO(), soc:currentSoc()});
+  cageDraftItems = [];
+  await saveDB();
+  toast('Cage '+cageId+' dispatched ('+id+').');
+  navigate('cageloading','list');
+}
+function cageLoadingListHtml(){
+  const rows = socFilter(DB.cages);
+  const header = `<div class="list-head"><h3>Cage log (${rows.length})</h3>${dlBtn('exportCages')}</div>`;
+  if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#128230;</div>No cages dispatched yet.</div></div>';
+  return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
+    '<tr><th>Ref #</th><th>Cage ID</th><th>Loader</th><th>Source</th><th>Destination</th><th>Items</th><th>Dispatched</th><th></th></tr>' +
+    rows.slice().reverse().map(cg=>`<tr>
+      <td class="mono">${esc(cg.id)}</td><td class="mono">${esc(cg.cageId)}</td><td>${esc(cg.loader)}</td>
+      <td>${esc(cg.source)}</td><td>${esc(cg.dest)}</td><td style="font-weight:700;">${cg.itemCount}</td>
+      <td>${fmtDateTime(cg.dispatchedAt)}</td><td><button class="btn btn-sm" onclick="viewCageItems('${esc(cg.id)}')">View items</button></td>
+    </tr>`).join('') + '</table></div></div>';
+}
+function viewCageItems(id){
+  const cg = DB.cages.find(x=>x.id===id);
+  if(!cg) return;
+  showModal(`
+    <h3>${esc(cg.cageId)} — items (${cg.items.length})</h3>
+    <div class="tbl-wrap"><table><tr><th>Code</th><th>Description</th><th>Qty</th></tr>
+      ${cg.items.map(it=>`<tr><td class="mono">${esc(it.code)}</td><td>${esc(it.description||'—')}</td><td>${it.qty}</td></tr>`).join('')}
+    </table></div>
+    <div class="footer-actions"><button class="btn btn-primary" onclick="closeModal()">Close</button></div>
+  `);
+}
+function exportCages(){
+  const rows = socFilter(DB.cages).map(cg=>[cg.id,cg.cageId,cg.loader,cg.source,cg.dest,cg.itemCount,fmtDateTime(cg.dispatchedAt)]);
+  downloadCSV('cage-loading-log.csv', ['Ref #','Cage ID','Loader','Source','Destination','Items','Dispatched'], rows);
+}
+
+/* ============================= IT ASSETS (PDA) MODULE ============================= */
+function renderITAssets(){
+  const c = document.getElementById('content');
+  const tab = subroute || 'scan';
+  if(tab==='scan'){ pdaActiveMode = null; pdaModalTarget = null; pdaReturnCondition = 'Good'; pdaReturnInProgress = false; }
+  c.innerHTML = `
+    <div class="tabs">
+      <div class="tab ${tab==='log'?'active':''}" onclick="navigate('itassets','log')">Dashboard</div>
+      <div class="tab ${tab==='scan'?'active':''}" onclick="navigate('itassets','scan')">PDA Issuance</div>
+      <div class="tab ${tab==='masterlist'?'active':''}" onclick="navigate('itassets','masterlist')">PDA Masterlist (${socFilter(DB.pdas).length})</div>
+    </div>
+    <div id="pda-body"></div>
+  `;
+  const map = {scan: pdaScanHtml, masterlist: pdaMasterlistHtml, log: pdaDashboardHtml};
+  document.getElementById('pda-body').innerHTML = (map[tab]||pdaScanHtml)();
+  if(tab==='scan'){ setTimeout(()=>{ const el=document.getElementById('pda-scan-input'); if(el) el.focus(); }, 50); }
+}
+function pdaStatusTag(s){ return s==='Borrowed' ? '<span class="tag tag-pending">Borrowed</span>' : '<span class="tag tag-ok">Available</span>'; }
+// The 3-tier condition scale used on return — captured on the PDA log entry and
+// carried over onto the PDA masterlist record as its current condition.
+const PDA_CONDITIONS = [
+  {key:'Good', label:'Good condition', tagClass:'tag-ok'},
+  {key:'DamagedWorking', label:'Damaged but working', tagClass:'tag-pending'},
+  {key:'DamagedNotWorking', label:'Damaged and not working', tagClass:'tag-rejected'}
+];
+function pdaConditionNeedsIR(key){ return key==='DamagedWorking' || key==='DamagedNotWorking'; }
+function pdaConditionLabel(key){ const c = PDA_CONDITIONS.find(x=>x.key===key); return c ? c.label : (key||'—'); }
+function pdaConditionTag(key){
+  if(!key) return '<span class="small-note">—</span>';
+  const c = PDA_CONDITIONS.find(x=>x.key===key) || {label:key, tagClass:'tag-rejected'};
+  return '<span class="tag '+c.tagClass+'">'+esc(c.label)+'</span>';
+}
+function pdaConditionOptions(selected){
+  return PDA_CONDITIONS.map(c=>`<option value="${c.key}" ${selected===c.key?'selected':''}>${esc(c.label)}</option>`).join('');
+}
+// Exception states a PDA can be flagged with on the masterlist, independent of
+// its borrow/return condition — used for the per-SOC summary on PDA Masterlist.
+const PDA_EXCEPTION_STATUSES = [
+  {key:'', label:'None'},
+  {key:'HandoverIT', label:'Handover to I.T'},
+  {key:'Missing', label:'Missing'}
+];
+function pdaExceptionLabel(key){ const s = PDA_EXCEPTION_STATUSES.find(x=>x.key===key); return s ? s.label : ''; }
+function pdaExceptionOptions(selected){
+  return PDA_EXCEPTION_STATUSES.map(s=>`<option value="${s.key}" ${(selected||'')===s.key?'selected':''}>${esc(s.label)}</option>`).join('');
+}
+function pdaExceptionTag(key){
+  if(key==='HandoverIT') return '<span class="tag tag-pending">Handover to I.T</span>';
+  if(key==='Missing') return '<span class="tag tag-rejected">Missing</span>';
+  return '<span class="small-note">—</span>';
+}
+function pdaSocOptions(selected){
+  return '<option value="">Unassigned</option>' + PDA_DEPT_BUCKETS().map(b=>`<option value="${esc(b)}" ${(selected||'')===b?'selected':''}>${esc(b)}</option>`).join('');
+}
+function pdaScanHtml(){
+  const borrowed = socFilter(DB.pdas).filter(p=>p.status==='Borrowed');
+  return `<div class="card">
+    <h3>Scan device</h3>
+    <div class="card-sub">Scan the serial number first. An available device jumps straight to Ops ID and is issued automatically — no buttons to press. A borrowed device jumps to Ops ID to start a return.</div>
+    <div class="field scan-field">
+      <label>Serial number</label>
+      <input id="pda-scan-input" placeholder="Scan or type serial number" oninput="onPdaScanInput()" onkeydown="if(event.key==='Enter')processPdaScan()">
+      <div class="hint" id="pda-scan-status">Waiting for a serial number.</div>
+    </div>
+    <div class="scan-divider"></div>
+    <div class="field scan-field">
+      <label>Ops ID</label>
+      <input id="pda-ops-input" placeholder="Scan or type Ops ID" oninput="pdaOpsInputHandler()" disabled>
+      <div class="hint" id="pda-ops-status">Needed only after a serial number is scanned.</div>
+    </div>
+    <div id="pda-active-session"></div>
+  </div>
+  <div class="card">
+    <h3>Currently borrowed (${borrowed.length})</h3>
+    ${borrowed.length===0 ? '<div class="empty"><div class="ic">&#128241;</div>No PDAs currently out.</div>' :
+      '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Borrowed by</th><th>Agency / Dept</th><th>Since</th></tr>' +
+      borrowed.map(p=>{
+        const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.status==='Borrowed');
+        return `<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td>
+          <td>${log?esc(log.borrowerName)+' <span class="small-note">('+esc(log.opsId)+')</span>':'—'}</td>
+          <td>${log?esc(log.borrowerAgency||'—')+' / '+esc(log.borrowerDepartment||'—'):'—'}</td>
+          <td>${log?fmtDateTime(log.borrowedAt):'—'}</td></tr>`;
+      }).join('') + '</table></div>'}
+  </div>
+  ${pdaLogHtml()}`;
+}
+function setPdaScanStatus(text, kind){
+  const el = document.getElementById('pda-scan-status');
+  if(!el) return;
+  el.textContent = text;
+  el.className = 'hint' + (kind==='error' ? ' hint-error' : kind==='active' ? ' hint-active' : '');
+}
+function setPdaOpsStatus(text, kind){
+  const el = document.getElementById('pda-ops-status');
+  if(!el) return;
+  el.textContent = text;
+  el.className = 'hint' + (kind==='active' ? ' hint-active' : '');
+}
+// Fires on every keystroke — as soon as the typed/scanned text exactly matches a
+// PDA's serial (or PDA number), the Ops ID step opens right underneath, on the
+// same page (no popup). No Scan button, and no need to press Enter (fallback still works).
+function onPdaScanInput(){
+  const el = document.getElementById('pda-scan-input');
+  if(!el || el.disabled) return;
+  const code = el.value.trim();
+  if(!code) return;
+  const pda = DB.pdas.find(p=> (p.serial && p.serial.toUpperCase()===code.toUpperCase()) || p.pdaNo.toUpperCase()===code.toUpperCase());
+  if(pda) processPdaScan();
+}
+function processPdaScan(){
+  const el = document.getElementById('pda-scan-input');
+  if(!el || el.disabled) return;
+  const code = el.value.trim();
+  if(!code) return;
+  const pda = DB.pdas.find(p=> (p.serial && p.serial.toUpperCase()===code.toUpperCase()) || p.pdaNo.toUpperCase()===code.toUpperCase());
+  if(!pda){ setPdaScanStatus('That serial number isn\'t in the PDA masterlist — add it there first.', 'error'); return; }
+  el.disabled = true;
+  pdaModalTarget = pda.pdaNo;
+  pdaActiveMode = pda.status==='Borrowed' ? 'return' : 'borrow';
+  pdaReturnCondition = 'Good';
+  const opsEl = document.getElementById('pda-ops-input');
+  if(opsEl){ opsEl.disabled = false; opsEl.value = ''; }
+  if(pdaActiveMode==='borrow'){
+    setPdaScanStatus(pda.pdaNo+' found — available. Enter Ops ID to issue it.', 'active');
+    setPdaOpsStatus('Scan or type the borrower\'s Ops ID — issues automatically on match.', 'active');
+  } else {
+    setPdaScanStatus(pda.pdaNo+' found — currently borrowed. Enter Ops ID to return it.', 'active');
+    setPdaOpsStatus('Scan or type the returning person\'s Ops ID — records automatically once the condition below is set.', 'active');
+  }
+  renderPdaActiveSession();
+  if(opsEl) opsEl.focus();
+}
+let pdaModalTarget = null;
+let pdaActiveMode = null; // 'borrow' | 'return' | null — which inline panel is open under the serial field
+let pdaReturnCondition = 'Good';
+function pdaActiveSessionHeader(){
+  const pda = DB.pdas.find(p=>p.pdaNo===pdaModalTarget);
+  return esc(pdaModalTarget) + (pda && pda.serial ? ' <span class="small-note">('+esc(pda.serial)+')</span>' : '');
+}
+function renderPdaActiveSession(){
+  const el = document.getElementById('pda-active-session');
+  if(!el) return;
+  if(pdaActiveMode==='borrow'){
+    el.innerHTML = `
+      <div class="section-title" style="margin-top:18px;">Issuing ${pdaActiveSessionHeader()}</div>
+      <div class="card-sub" style="margin-bottom:10px;">The borrower's name, agency, and department fill in automatically, and this is recorded as borrowed right away.</div>
+      <div class="form-row">
+        <div class="field"><label>Full name</label><input id="pda-borrow-name" class="autofill" disabled></div>
+        <div class="field"><label>Agency</label><input id="pda-borrow-agency" class="autofill" disabled></div>
+      </div>
+      <div class="field"><label>Department</label><input id="pda-borrow-dept" class="autofill" disabled></div>
+      <div class="footer-actions"><button class="btn" onclick="cancelPdaActiveSession()">Cancel</button></div>
+    `;
+  } else if(pdaActiveMode==='return'){
+    el.innerHTML = `
+      <div class="section-title" style="margin-top:18px;">Returning ${pdaActiveSessionHeader()}</div>
+      <div class="card-sub" style="margin-bottom:10px;">Details fill in once the Ops ID matches. With Good condition selected, it records as returned automatically — Damaged conditions need an Incident Report attached and Confirm pressed.</div>
+      <div class="form-row">
+        <div class="field"><label>Full name</label><input id="pda-return-name" class="autofill" disabled></div>
+        <div class="field"><label>Agency</label><input id="pda-return-agency" class="autofill" disabled></div>
+      </div>
+      <div class="field"><label>Department</label><input id="pda-return-dept" class="autofill" disabled></div>
+      <div class="field"><label>Return condition</label>
+        <div class="pill-row" id="pda-return-pills">
+          ${PDA_CONDITIONS.map(cd=>`<div class="pill ${cd.key==='Good'?'active':''}" data-cond="${cd.key}" onclick="pickPdaReturnCondition('${cd.key}')">${esc(cd.label)}</div>`).join('')}
+        </div>
+      </div>
+      <div id="pda-return-ir-wrap" style="display:none;">
+        <div class="field"><label>Upload Incident Report</label>
+          <input type="file" id="pda-return-ir-file">
+          <div class="hint">Required when the PDA is returned damaged.</div>
+        </div>
+      </div>
+      <div class="footer-actions">
+        <button class="btn" onclick="cancelPdaActiveSession()">Cancel</button>
+        <button class="btn btn-primary" onclick="confirmPdaReturn()">Confirm return</button>
+      </div>
+    `;
+  } else {
+    el.innerHTML = '';
+  }
+}
+function cancelPdaActiveSession(){
+  pdaActiveMode = null; pdaModalTarget = null; pdaReturnCondition = 'Good'; pdaReturnInProgress = false;
+  renderPdaActiveSession();
+  const serialEl = document.getElementById('pda-scan-input');
+  if(serialEl){ serialEl.disabled = false; serialEl.value=''; serialEl.focus(); }
+  const opsEl = document.getElementById('pda-ops-input');
+  if(opsEl){ opsEl.disabled = true; opsEl.value=''; }
+  setPdaScanStatus('Waiting for a serial number.');
+  setPdaOpsStatus('Needed only after a serial number is scanned.');
+}
+// Fires on every keystroke in the shared Ops ID field — routes to the borrow or
+// return lookup depending on which mode the scanned serial opened.
+function pdaOpsInputHandler(){
+  if(pdaActiveMode==='borrow') pdaBorrowOpsLookup();
+  else if(pdaActiveMode==='return') pdaReturnOpsLookup();
+}
+function pdaBorrowOpsLookup(){
+  const el = document.getElementById('pda-ops-input');
+  if(!el) return;
+  const opsIdRaw = el.value.trim();
+  const emp = empInfo(opsIdRaw);
+  document.getElementById('pda-borrow-name').value = emp?emp.fullName:'';
+  document.getElementById('pda-borrow-agency').value = emp?(emp.agency||'—'):'';
+  document.getElementById('pda-borrow-dept').value = emp?emp.department:'';
+  if(emp && opsIdRaw.toUpperCase()===emp.opsId.toUpperCase()){
+    confirmPdaBorrow(); // full Ops ID match — record as borrowed automatically, no extra click
+  }
+}
+async function confirmPdaBorrow(){
+  const pdaNo = pdaModalTarget;
+  const opsIdEl = document.getElementById('pda-ops-input');
+  if(!pdaNo || !opsIdEl) return;
+  const opsId = opsIdEl.value.trim();
+  const emp = empInfo(opsId);
+  if(!opsId || !emp) return;
+  const pda = DB.pdas.find(p=>p.pdaNo===pdaNo);
+  if(!pda) return;
+  DB.pdaLogs.push({
+    id: nextCode('PL','pl'), pdaNo, opsId, borrowerName: emp.fullName, borrowerAgency: emp.agency||'', borrowerDepartment: emp.department||'',
+    borrowedAt: nowISO(), returnedAt:'', returnedByOpsId:'', returnedByName:'', returnedByAgency:'', returnedByDepartment:'',
+    conditionOnReturn:'', irFile:'', irFileData:'', status:'Borrowed', soc:currentSoc()
+  });
+  pda.status = 'Borrowed';
+  await saveDB();
+  pdaActiveMode = null; pdaModalTarget = null;
+  toast(pdaNo+' issued to '+emp.fullName+'.');
+  renderITAssets();
+}
+function pdaReturnOpsLookup(){
+  const el = document.getElementById('pda-ops-input');
+  if(!el) return;
+  const emp = empInfo(el.value.trim());
+  document.getElementById('pda-return-name').value = emp?emp.fullName:'';
+  document.getElementById('pda-return-agency').value = emp?(emp.agency||'—'):'';
+  document.getElementById('pda-return-dept').value = emp?emp.department:'';
+  checkPdaAutoReturn();
+}
+function pickPdaReturnCondition(c){
+  pdaReturnCondition = c;
+  document.querySelectorAll('#pda-return-pills .pill').forEach(p=>p.classList.toggle('active', p.dataset.cond===c));
+  const wrap = document.getElementById('pda-return-ir-wrap');
+  if(wrap) wrap.style.display = pdaConditionNeedsIR(c) ? 'block' : 'none';
+  checkPdaAutoReturn();
+}
+// Once the Ops ID fully matches AND a condition that needs no IR upload is set
+// (Good is the default), the return records itself — no button press needed.
+// Damaged conditions still need a manual Confirm click since a file must be attached.
+let pdaReturnInProgress = false;
+function checkPdaAutoReturn(){
+  if(pdaActiveMode!=='return' || pdaReturnInProgress) return;
+  const opsEl = document.getElementById('pda-ops-input');
+  if(!opsEl) return;
+  const opsIdRaw = opsEl.value.trim();
+  const emp = empInfo(opsIdRaw);
+  if(!emp || opsIdRaw.toUpperCase()!==emp.opsId.toUpperCase()) return;
+  if(pdaConditionNeedsIR(pdaReturnCondition)) return;
+  confirmPdaReturn();
+}
+async function confirmPdaReturn(){
+  const pdaNo = pdaModalTarget;
+  const opsIdEl = document.getElementById('pda-ops-input');
+  if(!pdaNo || !opsIdEl) return;
+  const opsId = opsIdEl.value.trim();
+  const emp = empInfo(opsId);
+  if(!opsId || !emp){ toast('Enter a valid Ops ID for who is returning it.'); return; }
+  const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pdaNo && l.status==='Borrowed');
+  const pda = DB.pdas.find(p=>p.pdaNo===pdaNo);
+  if(!log || !pda) return;
+  pdaReturnInProgress = true;
+  let irFile='', irFileData='';
+  if(pdaConditionNeedsIR(pdaReturnCondition)){
+    const fileEl = document.getElementById('pda-return-ir-file');
+    const irFileObj = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+    if(!irFileObj){ toast('Upload the Incident Report before completing this return.'); pdaReturnInProgress = false; return; }
+    if(irFileObj.size > 4*1024*1024){ toast('IR file is too large (max 4MB).'); pdaReturnInProgress = false; return; }
+    irFile = irFileObj.name;
+    try{ irFileData = await readFileAsDataURL(irFileObj); }
+    catch(e){ console.error('File read error', e); toast('Could not read the IR file — completing the return without it attached for viewing.'); }
+  }
+  log.returnedAt = nowISO();
+  log.returnedByOpsId = opsId; log.returnedByName = emp.fullName; log.returnedByAgency = emp.agency||''; log.returnedByDepartment = emp.department||'';
+  log.conditionOnReturn = pdaReturnCondition; log.status = 'Returned'; log.irFile = irFile; log.irFileData = irFileData;
+  pda.status = 'Available'; pda.condition = pdaReturnCondition;
+  await saveDB();
+  pdaReturnInProgress = false;
+  pdaActiveMode = null; pdaModalTarget = null;
+  toast(pdaNo+' returned by '+emp.fullName+' — logged as '+pdaConditionLabel(pdaReturnCondition)+'.');
+  renderITAssets();
+}
+function pdaMasterlistHtml(){
+  const isAdmin = session.role==='admin';
+  return `<div class="card">
+    <div class="list-head"><h3>Add PDA</h3>${importBtn('importPdaCsv','PDA No, Serial, Condition (Good/Damaged but working/Damaged and not working)')}</div>
+    <div class="form-row3">
+      <div class="field"><label>PDA number</label><input id="new-pda-no" placeholder="e.g. PDA-014"></div>
+      <div class="field"><label>Serial</label><input id="new-pda-serial" placeholder="Serial number"></div>
+      <div class="field"><label>Condition</label><select id="new-pda-condition">${pdaConditionOptions('Good')}</select></div>
+    </div>
+    <div class="footer-actions"><button class="btn btn-primary" onclick="addPda()">Add PDA</button></div>
+  </div>
+  <div class="card">
+    <h3>PDA allocation by department</h3>
+    <div class="card-sub">Set the department name and how many PDAs are allocated to it. Used to compare allocation against what's actually borrowed.</div>
+    <div class="form-row3">
+      ${PDA_DEPT_BUCKETS().map((b,i)=>`<div class="field">
+        <label>Department name</label>
+        <input id="pda-dept-name-${i}" value="${esc(b)}" style="margin-bottom:10px;">
+        <label>Allocated</label>
+        <input type="number" min="0" id="pda-alloc-${i}" value="${Number(DB.pdaAllocations[b])||0}">
+      </div>`).join('')}
+    </div>
+    <div class="footer-actions"><button class="btn btn-primary" onclick="savePdaAllocations()">Save allocation</button></div>
+  </div>
+  ${pdaSocSummaryHtml()}
+  <div class="card">
+    <h3>PDA masterlist (${socFilter(DB.pdas).length})</h3>
+    ${socFilter(DB.pdas).length===0 ? '<div class="empty"><div class="ic">&#128241;</div>No PDAs added yet.</div>' :
+    '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition</th><th>Status</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
+    DB.pdas.map((p,i)=>({p,i})).filter(x=>socVisible(x.p.soc)).map(({p,i})=>`<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td><td>${pdaConditionTag(p.condition)}</td><td>${pdaStatusTag(p.status)}</td>${isAdmin?`<td style="white-space:nowrap;"><button class="icon-btn-view" onclick="openEditPda(${i})" title="Edit">&#9998;</button> <button class="icon-btn" onclick="removePda(${i})" title="Remove">&times;</button></td>`:''}</tr>`).join('') +
+    '</table></div>'}
+  </div>`;
+}
+function pdaSocSummaryHtml(){
+  const pdas = socFilter(DB.pdas);
+  const handoverCount = pdas.filter(p=>p.exceptionStatus==='HandoverIT').length;
+  const missingCount = pdas.filter(p=>p.exceptionStatus==='Missing').length;
+  const goodCount = pdas.filter(p=>p.condition==='Good').length;
+  const damagedCount = pdas.filter(p=>p.condition==='DamagedWorking').length;
+  return `<div class="card">
+    <h3>SOC PDA summary</h3>
+    <div class="card-sub">Overall PDA condition counts.</div>
+    <div class="grid g2" style="margin:14px 0 18px;">
+      <div class="metric"><div class="lbl">Handover to I.T</div><div class="val">${handoverCount}</div></div>
+      <div class="metric"><div class="lbl">Missing</div><div class="val">${missingCount}</div></div>
+    </div>
+    <div class="tbl-wrap"><table><tr><th>Condition</th><th>Count</th></tr>
+      <tr><td>Good working condition</td><td>${goodCount}</td></tr>
+      <tr><td>Damaged but working</td><td>${damagedCount}</td></tr>
+      <tr><td><strong>Total Active PDA</strong></td><td><strong>${goodCount+damagedCount}</strong></td></tr>
+    </table></div>
+  </div>`;
+}
+function pdaAllocInputId(bucket){ return bucket.replace(/[^a-zA-Z0-9]+/g,'-'); }
+async function savePdaAllocations(){
+  if(!DB.pdaAllocations) DB.pdaAllocations = {};
+  const oldBuckets = PDA_DEPT_BUCKETS();
+  const newNames = oldBuckets.map((b,i)=>{
+    const el = document.getElementById('pda-dept-name-'+i);
+    const v = el ? el.value.trim() : '';
+    return v || b;
+  });
+  const lower = newNames.map(n=>n.toLowerCase());
+  const dupIdx = lower.findIndex((n,i)=>lower.indexOf(n)!==i);
+  if(dupIdx!==-1){ toast('Department names must be unique — "'+newNames[dupIdx]+'" is used more than once.'); return; }
+  if(newNames.some(n=>!n)){ toast('Department name can\'t be blank.'); return; }
+  const newAllocations = {};
+  oldBuckets.forEach((oldName,i)=>{
+    const el = document.getElementById('pda-alloc-'+i);
+    const val = el ? parseInt(el.value,10) : 0;
+    newAllocations[newNames[i]] = isNaN(val) || val<0 ? 0 : val;
+  });
+  DB.pdaDeptBuckets = newNames;
+  DB.pdaAllocations = newAllocations;
+  await saveDB();
+  toast('PDA allocation saved.');
+  renderITAssets();
+}
+async function addPda(){
+  const pdaNo = document.getElementById('new-pda-no').value.trim();
+  const serial = document.getElementById('new-pda-serial').value.trim();
+  const condition = document.getElementById('new-pda-condition').value;
+  if(!pdaNo){ toast('Enter a PDA number.'); return; }
+  if(DB.pdas.some(p=>p.pdaNo.toUpperCase()===pdaNo.toUpperCase())){ toast('That PDA number already exists.'); return; }
+  DB.pdas.push({pdaNo, serial, condition, soc:currentSoc(), exceptionStatus:'', status:'Available'});
+  await saveDB();
+  toast('PDA added.');
+  renderITAssets();
+}
+function openEditPda(i){
+  const p = DB.pdas[i];
+  showModal(`
+    <h3>Edit PDA</h3>
+    <div class="field"><label>PDA number</label><input id="edit-pda-no" value="${esc(p.pdaNo)}"></div>
+    <div class="field"><label>Serial</label><input id="edit-pda-serial" value="${esc(p.serial||'')}"></div>
+    <div class="field"><label>Condition</label><select id="edit-pda-condition">${pdaConditionOptions(p.condition)}</select></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="savePdaEdit(${i})">Save changes</button>
+    </div>
+  `);
+}
+async function savePdaEdit(i){
+  const pdaNo = document.getElementById('edit-pda-no').value.trim();
+  const serial = document.getElementById('edit-pda-serial').value.trim();
+  const condition = document.getElementById('edit-pda-condition').value;
+  if(!pdaNo){ toast('Enter a PDA number.'); return; }
+  if(DB.pdas.some((p,idx)=>idx!==i && p.pdaNo.toUpperCase()===pdaNo.toUpperCase())){ toast('That PDA number already exists.'); return; }
+  DB.pdas[i].pdaNo = pdaNo; DB.pdas[i].serial = serial; DB.pdas[i].condition = condition;
+  await saveDB();
+  closeModal();
+  toast('Updated.');
+  renderITAssets();
+}
+async function removePda(i){
+  DB.pdas.splice(i,1);
+  await saveDB();
+  toast('Removed.');
+  renderITAssets();
+}
+function parsePdaConditionCsv(raw){
+  const r = String(raw||'').trim().toLowerCase();
+  if(!r) return 'Good';
+  if(r.includes('not working')) return 'DamagedNotWorking';
+  if(r.includes('damaged')) return 'DamagedWorking';
+  return 'Good';
+}
+async function importPdaCsv(inputEl){
+  const rows = await importCsvRows(inputEl);
+  if(!rows) return;
+  let added=0, skipped=0;
+  rows.forEach(row=>{
+    const pdaNo = csvField(row, ['PDA No','PDA Number','PDA','PDA#']).trim();
+    const serial = csvField(row, ['Serial','Serial Number']).trim();
+    const condition = parsePdaConditionCsv(csvField(row, ['Condition']));
+    if(!pdaNo || DB.pdas.some(p=>p.pdaNo.toUpperCase()===pdaNo.toUpperCase())){ skipped++; return; }
+    DB.pdas.push({pdaNo, serial, condition, soc:currentSoc(), exceptionStatus:'', status:'Available'});
+    added++;
+  });
+  if(added){ await saveDB(); }
+  toast('Imported '+added+' PDA'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (blank/duplicate).'):'.'));
+  renderITAssets();
+}
+function viewPdaLogIR(id){
+  const l = DB.pdaLogs.find(x=>x.id===id);
+  if(!l || !l.irFileData){ toast('No IR document attached to this record.'); return; }
+  showFileModal(l.irFile||l.id, l.irFileData);
+}
+function pdaLogIRCell(l){
+  if(l.irFileData) return `<a href="javascript:void(0)" onclick="viewPdaLogIR('${esc(l.id)}')" style="color:var(--info);font-weight:600;text-decoration:underline;cursor:pointer;">&#128206; ${esc(l.irFile||'View IR')}</a>`;
+  if(l.irFile) return '&#128206; '+esc(l.irFile);
+  return '<span class="small-note">—</span>';
+}
+function pdaDashboardHtml(){
+  const logs = socFilter(DB.pdaLogs);
+  const dateMap = {};
+  logs.forEach(l=>{
+    const bd = localDateStr(l.borrowedAt);
+    if(!dateMap[bd]) dateMap[bd] = {borrowed:0, returned:0};
+    dateMap[bd].borrowed++;
+    if(l.returnedAt){
+      const rd = localDateStr(l.returnedAt);
+      if(!dateMap[rd]) dateMap[rd] = {borrowed:0, returned:0};
+      dateMap[rd].returned++;
+    }
+  });
+  const dates = Object.keys(dateMap).sort((a,b)=> b.localeCompare(a));
+  const amTotal = logs.filter(l=>pdaShiftOf(new Date(l.borrowedAt))==='AM').length;
+  const pmTotal = logs.filter(l=>pdaShiftOf(new Date(l.borrowedAt))==='PM').length;
+  return `<div id="pda-dept-report-wrap">${pdaDeptAllocationReportHtml()}</div>
+  <div class="card">
+    <h3>Daily report</h3>
+    <div class="card-sub">PDAs borrowed and returned per day, with overall AM / PM shift totals across all issuances.</div>
+    <div class="grid g2" style="margin:14px 0 18px;">
+      <div class="metric"><div class="lbl">AM shift</div><div class="val">${amTotal}</div><div class="sub">6:00 AM – 5:59 PM</div></div>
+      <div class="metric"><div class="lbl">PM shift</div><div class="val">${pmTotal}</div><div class="sub">6:00 PM – 5:59 AM</div></div>
+    </div>
+    ${dates.length===0 ? '<div class="empty"><div class="ic">&#128241;</div>No borrow/return activity yet.</div>' :
+      '<div class="tbl-wrap"><table><tr><th>Date</th><th>Borrowed</th><th>Returned</th></tr>' +
+      dates.map(d=>`<tr><td class="mono">${esc(d)}</td><td>${dateMap[d].borrowed}</td><td>${dateMap[d].returned}</td></tr>`).join('') +
+      '</table></div>'}
+  </div>
+  <div id="pda-shift-report-wrap">${pdaShiftReportHtml()}</div>`;
+}
+function pdaLogHtml(){
+  const logs = socFilter(DB.pdaLogs);
+  const header = `<div class="list-head"><h3>Borrow / return log (${logs.length})</h3>${dlBtn('exportPdaLog')}</div>`;
+  if(logs.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#128241;</div>No borrow/return activity yet.</div></div>';
+  return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
+    '<tr><th>Ref #</th><th>PDA #</th><th>Borrowed by</th><th>Borrowed</th><th>Returned by</th><th>Returned</th><th>Condition</th><th>IR</th><th>Status</th></tr>' +
+    logs.slice().reverse().map(l=>`<tr>
+      <td class="mono">${esc(l.id)}</td><td class="mono">${esc(l.pdaNo)}</td>
+      <td>${esc(l.borrowerName)}<div class="small-note">${esc(l.opsId)} &middot; ${esc(l.borrowerAgency||'—')} &middot; ${esc(l.borrowerDepartment||'—')}</div></td>
+      <td>${fmtDateTime(l.borrowedAt)}</td>
+      <td>${l.returnedByName ? esc(l.returnedByName)+'<div class="small-note">'+esc(l.returnedByOpsId)+' &middot; '+esc(l.returnedByAgency||'—')+'</div>' : '<span class="small-note">—</span>'}</td>
+      <td>${l.returnedAt?fmtDateTime(l.returnedAt):'—'}</td>
+      <td>${pdaConditionTag(l.conditionOnReturn)}</td>
+      <td>${pdaLogIRCell(l)}</td>
+      <td>${l.status==='Borrowed'?'<span class="tag tag-pending">Borrowed</span>':'<span class="tag tag-approved">Returned</span>'}</td>
+    </tr>`).join('') + '</table></div></div>';
+}
+function exportPdaLog(){
+  const rows = socFilter(DB.pdaLogs).map(l=>[l.id,l.pdaNo,l.opsId,l.borrowerName,l.borrowerAgency||'',l.borrowerDepartment||'',fmtDateTime(l.borrowedAt),l.returnedByOpsId||'',l.returnedByName||'',l.returnedAt?fmtDateTime(l.returnedAt):'',pdaConditionLabel(l.conditionOnReturn),l.irFile||'',l.status]);
+  downloadCSV('pda-borrow-return-log.csv', ['Ref #','PDA #','Borrower Ops ID','Borrower Name','Borrower Agency','Borrower Department','Borrowed','Returned By Ops ID','Returned By Name','Returned','Condition on return','IR file','Status'], rows);
+}
+
+/* ------------------------- PDA reports (AM/PM shift + department allocation) ------------------------- */
+function localDateStr(d){
+  const dt = d ? new Date(d) : new Date();
+  return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+}
+// AM shift: 6:00 AM – 5:59 PM. PM shift: 6:00 PM – 5:59 AM. Based on local issue time.
+function pdaShiftOf(dateObj){
+  const h = dateObj.getHours();
+  return (h>=6 && h<18) ? 'AM' : 'PM';
+}
+let pdaShiftReportDate = localDateStr();
+function pdaReportsHtml(){
+  return `<div id="pda-shift-report-wrap">${pdaShiftReportHtml()}</div>
+  <div id="pda-dept-report-wrap">${pdaDeptAllocationReportHtml()}</div>`;
+}
+function pdaShiftReportHtml(){
+  const dateStr = pdaShiftReportDate;
+  const dayLogs = socFilter(DB.pdaLogs).filter(l=>localDateStr(l.borrowedAt)===dateStr).slice().sort((a,b)=>new Date(a.borrowedAt)-new Date(b.borrowedAt));
+  const amCount = dayLogs.filter(l=>pdaShiftOf(new Date(l.borrowedAt))==='AM').length;
+  const pmCount = dayLogs.filter(l=>pdaShiftOf(new Date(l.borrowedAt))==='PM').length;
+  return `<div class="card">
+    <div class="list-head"><h3>AM / PM shift record</h3>${dlBtn('exportPdaShiftReport')}</div>
+    <div class="card-sub">PDA issuances on the selected date, split by shift — AM 6:00 AM to 5:59 PM, PM 6:00 PM to 5:59 AM.</div>
+    <div class="field" style="max-width:220px;"><label>Date</label><input type="date" id="pda-shift-date" value="${dateStr}" onchange="onPdaShiftDateChange()"></div>
+    <div class="grid g2" style="margin:14px 0 18px;">
+      <div class="metric"><div class="lbl">AM shift issuances</div><div class="val">${amCount}</div><div class="sub">6:00 AM – 5:59 PM</div></div>
+      <div class="metric"><div class="lbl">PM shift issuances</div><div class="val">${pmCount}</div><div class="sub">6:00 PM – 5:59 AM</div></div>
+    </div>
+    ${dayLogs.length===0 ? '<div class="empty"><div class="ic">&#128241;</div>No PDA issuances on this date.</div>' :
+      '<div class="tbl-wrap"><table><tr><th>Shift</th><th>PDA #</th><th>Borrowed by</th><th>Department</th><th>Borrowed</th><th>Returned</th><th>Status</th></tr>' +
+      dayLogs.map(l=>{
+        const shift = pdaShiftOf(new Date(l.borrowedAt));
+        return `<tr><td><span class="tag ${shift==='AM'?'tag-ok':'tag-pullout'}">${shift}</span></td>
+          <td class="mono">${esc(l.pdaNo)}</td>
+          <td>${esc(l.borrowerName)} <span class="small-note">(${esc(l.opsId)})</span></td>
+          <td>${esc(l.borrowerDepartment||'—')}</td>
+          <td>${fmtDateTime(l.borrowedAt)}</td>
+          <td>${l.returnedAt?fmtDateTime(l.returnedAt):'—'}</td>
+          <td>${l.status==='Borrowed'?'<span class="tag tag-pending">Borrowed</span>':'<span class="tag tag-ok">Returned</span>'}</td></tr>`;
+      }).join('') + '</table></div>'}
+  </div>`;
+}
+function onPdaShiftDateChange(){
+  const el = document.getElementById('pda-shift-date');
+  if(!el) return;
+  pdaShiftReportDate = el.value || localDateStr();
+  const wrap = document.getElementById('pda-shift-report-wrap');
+  if(wrap) wrap.innerHTML = pdaShiftReportHtml();
+}
+function exportPdaShiftReport(){
+  const dateStr = pdaShiftReportDate;
+  const dayLogs = socFilter(DB.pdaLogs).filter(l=>localDateStr(l.borrowedAt)===dateStr).slice().sort((a,b)=>new Date(a.borrowedAt)-new Date(b.borrowedAt));
+  const rows = dayLogs.map(l=>[pdaShiftOf(new Date(l.borrowedAt)), l.pdaNo, l.opsId, l.borrowerName, l.borrowerDepartment||'', fmtDateTime(l.borrowedAt), l.returnedAt?fmtDateTime(l.returnedAt):'', l.status]);
+  downloadCSV('pda-shift-report-'+dateStr+'.csv', ['Shift','PDA #','Ops ID','Borrower','Department','Borrowed','Returned','Status'], rows);
+}
+function PDA_DEPT_BUCKETS(){ return DB.pdaDeptBuckets || []; }
+function pdaDeptBucket(deptName){
+  if(!deptName) return 'Other Department';
+  const found = PDA_DEPT_BUCKETS().find(b=>b.toLowerCase()===deptName.trim().toLowerCase());
+  return found || 'Other Department';
+}
+function pdaDeptAllocationReportHtml(){
+  const pdas = socFilter(DB.pdas);
+  const pdaLogs = socFilter(DB.pdaLogs);
+  const totalPdas = pdas.length;
+  const borrowed = pdas.filter(p=>p.status==='Borrowed');
+  const available = pdas.filter(p=>p.status!=='Borrowed');
+  const buckets = [...PDA_DEPT_BUCKETS(), 'Other Department'];
+  const byBucket = {}; buckets.forEach(b=>byBucket[b]=[]);
+  borrowed.forEach(p=>{
+    const log = pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.status==='Borrowed');
+    byBucket[pdaDeptBucket(log?log.borrowerDepartment:'')].push({pda:p, log});
+  });
+  const allocOf = b => Number((DB.pdaAllocations||{})[b])||0;
+  const totalAllocated = PDA_DEPT_BUCKETS().reduce((s,b)=>s+allocOf(b),0);
+  return `<div class="card">
+    <div class="list-head"><h3>Allocated vs. borrowed vs. remaining</h3>${dlBtn('exportPdaDeptReport')}</div>
+    <div class="card-sub">PDAs allocated per department (set on PDA Masterlist) compared against what's currently borrowed and what's still available (${totalPdas} in the masterlist).</div>
+    <div class="grid g3" style="margin:14px 0 18px;">
+      ${buckets.map(b=>`<div class="metric"><div class="lbl">${esc(b)}</div><div class="val">${byBucket[b].length}</div><div class="sub">borrowed${b!=='Other Department'?' of '+allocOf(b)+' allocated':''}</div></div>`).join('')}
+      <div class="metric success"><div class="lbl">Remaining (available)</div><div class="val">${available.length}</div><div class="sub">of ${totalPdas} total</div></div>
+    </div>
+    <div class="tbl-wrap"><table><tr><th>Category</th><th>Allocated</th><th>Borrowed</th><th>Remaining</th></tr>
+      ${buckets.map(b=>{
+        const isOther = b==='Other Department';
+        const alloc = allocOf(b);
+        const remaining = isOther ? '—' : (alloc - byBucket[b].length);
+        return `<tr><td>${esc(b)}</td><td>${isOther?'—':alloc}</td><td>${byBucket[b].length}</td><td${!isOther && remaining<0?' style="color:var(--danger);font-weight:600;"':''}>${remaining}</td></tr>`;
+      }).join('')}
+      <tr><td>Remaining (available)</td><td>—</td><td>${available.length}</td><td>—</td></tr>
+      <tr><td><strong>Total</strong></td><td><strong>${totalAllocated}</strong></td><td><strong>${borrowed.length}</strong></td><td><strong>${totalAllocated - PDA_DEPT_BUCKETS().reduce((s,b)=>s+byBucket[b].length,0)}</strong></td></tr>
+    </table></div>
+    <div class="section-title">Borrowed — by department</div>
+    ${borrowed.length===0 ? '<div class="empty"><div class="ic">&#128241;</div>No PDAs currently out.</div>' :
+      '<div class="tbl-wrap"><table><tr><th>Department</th><th>PDA #</th><th>Serial</th><th>Borrowed by</th><th>Since</th></tr>' +
+      buckets.filter(b=>byBucket[b].length).map(b=>byBucket[b].map(x=>`<tr><td>${esc(b)}</td><td class="mono">${esc(x.pda.pdaNo)}</td><td class="mono">${esc(x.pda.serial||'—')}</td>
+        <td>${x.log?esc(x.log.borrowerName)+' <span class="small-note">('+esc(x.log.opsId)+')</span>':'—'}</td>
+        <td>${x.log?fmtDateTime(x.log.borrowedAt):'—'}</td></tr>`).join('')).join('') + '</table></div>'}
+  </div>`;
+}
+function pdaAllocBarRow(label, count, total, isRemaining){
+  const pct = total>0 ? Math.round((count/total)*100) : 0;
+  return `<div class="alloc-bar-row">
+    <div class="alloc-bar-label">${esc(label)}</div>
+    <div class="alloc-bar-track"><div class="alloc-bar-fill${isRemaining?' remaining':''}" style="width:${pct}%"></div></div>
+    <div class="alloc-bar-value">${count} <span class="small-note">(${pct}%)</span></div>
+  </div>`;
+}
+function exportPdaDeptReport(){
+  const pdas = socFilter(DB.pdas);
+  const pdaLogs = socFilter(DB.pdaLogs);
+  const borrowed = pdas.filter(p=>p.status==='Borrowed');
+  const available = pdas.filter(p=>p.status!=='Borrowed');
+  const rows = borrowed.map(p=>{
+    const log = pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.status==='Borrowed');
+    return [pdaDeptBucket(log?log.borrowerDepartment:''), 'Borrowed', p.pdaNo, p.serial||'', log?log.borrowerName:'', log?log.opsId:'', log?fmtDateTime(log.borrowedAt):''];
+  });
+  available.forEach(p=>{ rows.push(['Remaining (available)', 'Available', p.pdaNo, p.serial||'', '', '', '']); });
+  downloadCSV('pda-department-allocation.csv', ['Department bucket','Status','PDA #','Serial','Borrower','Ops ID','Borrowed since'], rows);
+}
+
+/* ============================= PARCEL RETRIEVAL MODULE ============================= */
+function renderParcelRetrieval(){
+  const c = document.getElementById('content');
+  const tab = subroute || 'scan';
+  c.innerHTML = `
+    <div class="tabs">
+      <div class="tab ${tab==='scan'?'active':''}" onclick="navigate('parcelretrieval','scan')">Retrieve</div>
+      <div class="tab ${tab==='list'?'active':''}" onclick="navigate('parcelretrieval','list')">Retrieval Log (${socFilter(DB.parcels).length})</div>
+    </div>
+    <div id="parcel-body"></div>
+  `;
+  document.getElementById('parcel-body').innerHTML = tab==='scan' ? parcelScanHtml() : parcelLogHtml();
+  if(tab==='scan'){ refreshParcelSessionTable(); }
+}
+function stationOptions(){
+  return '<option value="">Select station…</option>' + (DB.sortingStations.length ? DB.sortingStations.map(s=>`<option value="${esc(s)}" ${s===parcelSessionStation?'selected':''}>${esc(s)}</option>`).join('') : '');
+}
+function parcelScanHtml(){
+  return `<div class="card">
+    <h3>Retrieval session</h3>
+    <div class="card-sub">Select the sorting station once, then scan each parcel as you retrieve it.</div>
+    <div class="form-row">
+      <div class="field"><label>Sorting station</label><select id="parcel-station" onchange="parcelSessionStation=this.value;">${stationOptions()}</select></div>
+      <div class="field"><label>Parcel ID</label><input id="parcel-id-input" placeholder="e.g. PCL-2044" onkeydown="if(event.key==='Enter'){event.preventDefault();addParcelScan();}"></div>
+    </div>
+    <div class="footer-actions"><button class="btn btn-primary" onclick="addParcelScan()">Scan</button></div>
+  </div>
+  <div class="card">
+    <h3>Scanned this session</h3>
+    <div id="parcel-session-table"></div>
+  </div>`;
+}
+let parcelSessionScans = [];
+function refreshParcelSessionTable(){
+  const el = document.getElementById('parcel-session-table');
+  if(!el) return;
+  if(parcelSessionScans.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#128233;</div>No parcels scanned yet this session.</div>'; return; }
+  el.innerHTML = '<div class="tbl-wrap"><table><tr><th>Parcel ID</th><th>Station</th><th>Retrieved</th></tr>' +
+    parcelSessionScans.slice().reverse().map(p=>`<tr><td class="mono">${esc(p.parcelId)}</td><td>${esc(p.station)}</td><td>${fmtDateTime(p.retrievedAt)}</td></tr>`).join('') +
+    '</table></div>';
+}
+async function addParcelScan(){
+  const station = document.getElementById('parcel-station').value;
+  const input = document.getElementById('parcel-id-input');
+  const code = input.value.trim();
+  if(!station){ toast('Select a sorting station first.'); return; }
+  if(!code) return;
+  if(DB.parcels.some(p=>p.parcelId.toUpperCase()===code.toUpperCase())){ toast('That Parcel ID was already retrieved.'); input.value=''; return; }
+  const rec = {id: nextCode('PCL','pl'), parcelId: code, station, retriever: session.fullName, retrievedAt: nowISO(), soc:currentSoc()};
+  DB.parcels.push(rec);
+  parcelSessionScans.push(rec);
+  await saveDB();
+  input.value='';
+  refreshParcelSessionTable();
+  input.focus();
+}
+function parcelLogHtml(){
+  const rows = socFilter(DB.parcels);
+  const header = `<div class="list-head"><h3>Parcel retrieval log (${rows.length})</h3>${dlBtn('exportParcels')}</div>`;
+  if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#128233;</div>No parcels retrieved yet.</div></div>';
+  return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
+    '<tr><th>Ref #</th><th>Parcel ID</th><th>Station</th><th>Retriever</th><th>Retrieved</th></tr>' +
+    rows.slice().reverse().map(p=>`<tr><td class="mono">${esc(p.id)}</td><td class="mono">${esc(p.parcelId)}</td><td>${esc(p.station)}</td><td>${esc(p.retriever)}</td><td>${fmtDateTime(p.retrievedAt)}</td></tr>`).join('') +
+    '</table></div></div>';
+}
+function exportParcels(){
+  const rows = socFilter(DB.parcels).map(p=>[p.id,p.parcelId,p.station,p.retriever,fmtDateTime(p.retrievedAt)]);
+  downloadCSV('parcel-retrieval-log.csv', ['Ref #','Parcel ID','Station','Retriever','Retrieved'], rows);
+}
+
 /* ============================= INIT ============================= */
 (async function init(){
   await loadDB();
@@ -3877,7 +4977,7 @@ async function importUserCsv(inputEl){
     const stillExists = DB.users.find(u=>u.id===saved.session.id);
     if(stillExists){
       portalMode = saved.portalMode || stillExists.portal || 'supplies';
-      session = {id:stillExists.id, username:stillExists.username, fullName:stillExists.fullName, role:stillExists.role, portal:stillExists.portal, department:stillExists.department||null, site:stillExists.site||null};
+      session = {id:stillExists.id, username:stillExists.username, fullName:stillExists.fullName, role:stillExists.role, portal:stillExists.portal, department:stillExists.department||null, site:stillExists.site||null, processAccess:stillExists.processAccess||null};
       route = saved.route || (portalMode==='department' ? 'ddashboard' : 'dashboard');
       subroute = saved.subroute || '';
       document.getElementById('login-screen').style.display='none';
