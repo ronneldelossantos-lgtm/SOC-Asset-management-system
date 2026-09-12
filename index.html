@@ -3368,10 +3368,8 @@ function deptReturnListHtml(){
 function renderSettings(){
   const c = document.getElementById('content');
   const isAdmin = session.role==='admin';
-  const canEmployees = isAdmin || session.role==='staff';
   let tab = subroute || 'sku';
   if(!isAdmin && (tab==='access' || tab==='warehouse')) tab = 'sku';
-  if(!canEmployees && tab==='employees') tab = 'sku';
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='sku'?'active':''}" onclick="navigate('settings','sku')">SKU code</div>
@@ -3380,14 +3378,13 @@ function renderSettings(){
       ${isAdmin ? `<div class="tab ${tab==='warehouse'?'active':''}" onclick="navigate('settings','warehouse')">Warehouse</div>` : ''}
       <div class="tab ${tab==='station'?'active':''}" onclick="navigate('settings','station')">Sorting Station</div>
       <div class="tab ${tab==='acct'?'active':''}" onclick="navigate('settings','acct')">Accountability</div>
-      ${canEmployees ? `<div class="tab ${tab==='employees'?'active':''}" onclick="navigate('settings','employees')">Ops ID Directory</div>` : ''}
+      <div class="tab ${tab==='opsid'?'active':''}" onclick="navigate('settings','opsid')">Ops ID Directory</div>
       ${isAdmin ? `<div class="tab ${tab==='access'?'active':''}" onclick="navigate('settings','access')">Access</div>` : ''}
     </div>
     <div id="set-body"></div>
   `;
-  const map = {sku:settingsSkuHtml, dept:settingsDepartmentsHtml, supplier:()=>settingsListHtml('suppliers','Supplier',true), warehouse:()=>settingsListHtml('warehouses','Warehouse',false), station:()=>settingsListHtml('sortingStations','Sorting Station',true), acct:settingsAccountabilityHtml, employees:settingsEmployeesHtml, access:settingsUsersHtml};
-  const blocked = ((tab==='access' || tab==='warehouse') && !isAdmin) || (tab==='employees' && !canEmployees);
-  const renderer = blocked ? settingsSkuHtml : (map[tab]||settingsSkuHtml);
+  const map = {sku:settingsSkuHtml, dept:settingsDepartmentsHtml, supplier:()=>settingsListHtml('suppliers','Supplier',true), warehouse:()=>settingsListHtml('warehouses','Warehouse',false), station:()=>settingsListHtml('sortingStations','Sorting Station',true), acct:settingsAccountabilityHtml, opsid:settingsEmployeesHtml, access:settingsAccessHtml};
+  const renderer = ((tab==='access' || tab==='warehouse') && !isAdmin) ? settingsSkuHtml : (map[tab]||settingsSkuHtml);
   document.getElementById('set-body').innerHTML = renderer();
   if(tab==='access' && isAdmin) toggleNewUserDept();
 }
@@ -3742,7 +3739,7 @@ function processAccessCheckboxes(idPrefix, selected){
 function readProcessAccessCheckboxes(idPrefix){
   return PROCESS_LIST.map(p=>p.key).filter(k=>{ const el = document.getElementById(idPrefix+'-'+k); return el && el.checked; });
 }
-function settingsUsersHtml(){
+function settingsAccessHtml(){
   return `<div class="card">
     <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department/hub), Password, Site/SOC (if role=admin/staff/hub), Department (if role=department), Process Access (staff/hub only — semicolon-separated: supplies;itassets;cageloading;parcelretrieval — blank = all), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
     <div class="card-sub">Every login signs in with just a username and password — no portal or site picker. Set the role (and, for Staff/Hub/Admin, which SOC they work out of; for Department, which department) right here when creating the login.</div>
@@ -3792,47 +3789,37 @@ function settingsUsersHtml(){
     </table></div>
   </div>`;
 }
-/* ---- Ops ID directory (Employee directory) — visible to Admin and Staff, SOC-scoped for Staff ---- */
-function employeeSoc(e){ return (DB.departmentSoc && DB.departmentSoc[e.department]) || ''; }
-function employeeSocVisible(e){
-  if(!session) return true;
-  if(session.role==='admin' || session.role==='department') return true;
-  return employeeSoc(e) === (session.site||'');
-}
-function socDepartments(){
-  if(!session || session.role==='admin' || session.role==='department') return DB.departments.slice();
-  return DB.departments.filter(d=>((DB.departmentSoc && DB.departmentSoc[d])||'')===(session.site||''));
-}
+// ------------------------- Ops ID (Employee) directory -------------------------
+// Open to Admin, Staff, and Hub (unlike the Access tab, which stays admin-only).
+// Staff/Hub logins add and import employees scoped to their own assigned SOC —
+// they only see/manage employees tagged with their site, plus untagged legacy
+// records (shared across all sites). Admins see and can tag/reassign every SOC.
 function settingsEmployeesHtml(){
   const isAdmin = session.role==='admin';
-  const scopeDepts = socDepartments();
-  const visibleEmployees = DB.employees.filter(employeeSocVisible);
-  const scopeNote = isAdmin ? '' : `<div class="card-sub">Showing the Ops ID directory for your assigned SOC${session.site?(' — <b>'+esc(session.site)+'</b>'):''}. Employees you add or import must belong to a department under this SOC.</div>`;
-  const importHint = isAdmin
-    ? 'Ops ID, Full Name, Agency, Department (must match an existing department)'
-    : 'Ops ID, Full Name, Agency, Department (must match a department under your assigned SOC)';
+  const visible = socFilter(DB.employees);
   return `<div class="card">
-    <div class="list-head"><h3>Add employee (for Received-by / PDA Issuance lookup)</h3>${importBtn('importEmployeeCsv', importHint)}</div>
-    ${scopeNote}
-    ${scopeDepts.length===0 ? '<div class="empty"><div class="ic">&#128100;</div>No department is mapped to your assigned SOC yet — ask an admin to set a department\'s Home SOC before adding employees.</div>' : `
+    <div class="list-head"><h3>Add employee (for Received-by / PDA Issuance lookup)</h3>${importBtn('importEmployeeCsv', 'Ops ID, Full Name, Agency, Department (must match an existing department)'+(isAdmin?', SOC (optional — must match an existing site, blank = shared across sites)':''))}</div>
+    ${isAdmin ? '' : `<div class="card-sub">New entries are tagged to your assigned SOC${currentSoc()?` (<b>${esc(currentSoc())}</b>)`:''} — you'll only see and manage employees from your own site here, plus any shared/untagged entries.</div>`}
     <div class="form-row3">
       <div class="field"><label>Ops ID</label><input id="new-emp-ops" placeholder="e.g. OPS-1005"></div>
       <div class="field"><label>Full name</label><input id="new-emp-name" placeholder="Full name"></div>
       <div class="field"><label>Agency</label><input id="new-emp-agency" placeholder="e.g. Direct Hire"></div>
     </div>
-    <div class="form-row">
-      <div class="field"><label>Department</label><select id="new-emp-dept">${scopeDepts.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
+    <div class="form-row${isAdmin?'3':''}">
+      <div class="field"><label>Department</label><select id="new-emp-dept">${DB.departments.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
+      ${isAdmin ? `<div class="field"><label>SOC (site)</label><select id="new-emp-soc">
+        <option value="">— Shared / all sites —</option>
+        ${DB.warehouses.map(w=>`<option value="${esc(w)}">${esc(w)}</option>`).join('')}
+      </select></div>` : ''}
     </div>
     <div class="footer-actions"><button class="btn btn-primary" onclick="addEmployee()">Add employee</button></div>
-    `}
   </div>
   <div class="card">
-    <h3>Employee directory (${visibleEmployees.length})</h3>
-    ${visibleEmployees.length===0 ? '<div class="empty"><div class="ic">&#128100;</div>No employees yet.</div>' : `
-    <div class="tbl-wrap"><table><tr><th>Ops ID</th><th>Full name</th><th>Agency</th><th>Department</th><th></th></tr>
-      ${visibleEmployees.map(e=>`<tr><td class="mono">${esc(e.opsId)}</td><td>${esc(e.fullName)}</td><td>${esc(e.agency||'—')}</td><td>${esc(e.department)}</td>
-      <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditEmployee('${esc(e.opsId)}')">Edit</button> <button class="icon-btn" onclick="removeEmployee('${esc(e.opsId)}')">&times;</button></td></tr>`).join('')}
-    </table></div>`}
+    <h3>Employee directory (${visible.length})</h3>
+    <div class="tbl-wrap"><table><tr><th>Ops ID</th><th>Full name</th><th>Agency</th><th>Department</th>${isAdmin?'<th>SOC</th>':''}<th></th></tr>
+      ${visible.map(e=>{ const i = DB.employees.indexOf(e); return `<tr><td class="mono">${esc(e.opsId)}</td><td>${esc(e.fullName)}</td><td>${esc(e.agency||'—')}</td><td>${esc(e.department)}</td>${isAdmin?`<td>${socOf(e.soc)}</td>`:''}
+      <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditEmployee(${i})">Edit</button> <button class="icon-btn" onclick="removeEmployee(${i})">&times;</button></td></tr>`; }).join('')}
+    </table></div>
   </div>`;
 }
 function processAccessCell(u){
@@ -4017,22 +4004,20 @@ async function addEmployee(){
   const opsId = document.getElementById('new-emp-ops').value.trim();
   const fullName = document.getElementById('new-emp-name').value.trim();
   const agency = document.getElementById('new-emp-agency').value.trim();
-  const deptEl = document.getElementById('new-emp-dept');
-  const department = deptEl ? deptEl.value : '';
+  const department = document.getElementById('new-emp-dept').value;
+  const socEl = document.getElementById('new-emp-soc');
+  const soc = session.role==='admin' ? (socEl?socEl.value:'') : currentSoc();
   if(!opsId||!fullName){ toast('Fill out Ops ID and full name.'); return; }
-  if(session.role!=='admin' && !socDepartments().includes(department)){ toast('Choose a department under your assigned SOC.'); return; }
   if(empInfo(opsId)){ toast('That Ops ID already exists.'); return; }
-  DB.employees.push({opsId, fullName, agency, department});
+  DB.employees.push({opsId, fullName, agency, department, soc});
   await saveDB();
   toast('Employee added.');
   renderSettings();
 }
-function openEditEmployee(opsId){
-  const e = empInfo(opsId);
-  if(!e) return;
-  if(session.role!=='admin' && !employeeSocVisible(e)){ toast('That employee is outside your assigned SOC.'); return; }
-  const deptOptions = socDepartments();
-  const deptList = deptOptions.includes(e.department) ? deptOptions : [e.department, ...deptOptions];
+function openEditEmployee(i){
+  const e = DB.employees[i];
+  if(!e || !socVisible(e.soc)) return;
+  const isAdmin = session.role==='admin';
   showModal(`
     <h3>Edit employee</h3>
     <div class="form-row3">
@@ -4040,40 +4025,39 @@ function openEditEmployee(opsId){
       <div class="field"><label>Full name</label><input id="edit-emp-name" value="${esc(e.fullName)}"></div>
       <div class="field"><label>Agency</label><input id="edit-emp-agency" value="${esc(e.agency||'')}"></div>
     </div>
-    <div class="form-row">
-      <div class="field"><label>Department</label><select id="edit-emp-dept">${deptList.map(d=>`<option ${d===e.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+    <div class="form-row${isAdmin?'3':''}">
+      <div class="field"><label>Department</label><select id="edit-emp-dept">${DB.departments.map(d=>`<option ${d===e.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+      ${isAdmin ? `<div class="field"><label>SOC (site)</label><select id="edit-emp-soc">
+        <option value="" ${!e.soc?'selected':''}>— Shared / all sites —</option>
+        ${DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===e.soc?'selected':''}>${esc(w)}</option>`).join('')}
+      </select></div>` : ''}
     </div>
-    <input type="hidden" id="edit-emp-orig-ops" value="${esc(e.opsId)}">
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveEmployeeEdit()">Save changes</button>
+      <button class="btn btn-primary" onclick="saveEmployeeEdit(${i})">Save changes</button>
     </div>
   `);
 }
-async function saveEmployeeEdit(){
-  const origOpsId = document.getElementById('edit-emp-orig-ops').value;
-  const e = empInfo(origOpsId);
-  if(!e) return;
-  if(session.role!=='admin' && !employeeSocVisible(e)){ toast('That employee is outside your assigned SOC.'); return; }
+async function saveEmployeeEdit(i){
+  const e = DB.employees[i];
+  if(!e || !socVisible(e.soc)) return;
   const opsId = document.getElementById('edit-emp-ops').value.trim();
   const fullName = document.getElementById('edit-emp-name').value.trim();
   const agency = document.getElementById('edit-emp-agency').value.trim();
   const department = document.getElementById('edit-emp-dept').value;
+  const socEl = document.getElementById('edit-emp-soc');
   if(!opsId || !fullName){ toast('Fill out Ops ID and full name.'); return; }
-  if(session.role!=='admin' && !socDepartments().includes(department)){ toast('Choose a department under your assigned SOC.'); return; }
-  if(DB.employees.some(x=>x!==e && x.opsId.toUpperCase()===opsId.toUpperCase())){ toast('That Ops ID already exists.'); return; }
+  if(DB.employees.some((x,idx)=>idx!==i && x.opsId.toUpperCase()===opsId.toUpperCase())){ toast('That Ops ID already exists.'); return; }
   e.opsId = opsId; e.fullName = fullName; e.agency = agency; e.department = department;
+  if(session.role==='admin' && socEl) e.soc = socEl.value;
   await saveDB();
   closeModal();
   toast('Employee updated.');
   renderSettings();
 }
-async function removeEmployee(opsId){
-  const e = empInfo(opsId);
-  if(!e) return;
-  if(session.role!=='admin' && !employeeSocVisible(e)){ toast('That employee is outside your assigned SOC.'); return; }
-  const i = DB.employees.indexOf(e);
-  if(i<0) return;
+async function removeEmployee(i){
+  const e = DB.employees[i];
+  if(!e || !socVisible(e.soc)) return;
   DB.employees.splice(i,1);
   await saveDB();
   toast('Employee removed.');
@@ -4082,20 +4066,27 @@ async function removeEmployee(opsId){
 async function importEmployeeCsv(inputEl){
   const rows = await importCsvRows(inputEl);
   if(!rows) return;
-  const allowedDepts = socDepartments();
+  const isAdmin = session.role==='admin';
+  const ownSoc = currentSoc();
   let added = 0, skipped = 0;
   rows.forEach(row=>{
     const opsId = csvField(row, ['Ops ID','OpsId','Ops Id']).trim();
     const fullName = csvField(row, ['Full Name','Name']).trim();
     const agency = csvField(row, ['Agency']).trim();
     const deptRaw = csvField(row, ['Department']).trim();
-    const dept = allowedDepts.find(d=>d.toLowerCase()===deptRaw.toLowerCase());
+    const dept = DB.departments.find(d=>d.toLowerCase()===deptRaw.toLowerCase());
     if(!opsId || !fullName || !dept || empInfo(opsId)){ skipped++; return; }
-    DB.employees.push({opsId, fullName, agency, department:dept});
+    let soc = ownSoc;
+    if(isAdmin){
+      const socRaw = csvField(row, ['SOC','Site','Site (SOC)']).trim();
+      const match = DB.warehouses.find(w=>w.toLowerCase()===socRaw.toLowerCase());
+      soc = match || '';
+    }
+    DB.employees.push({opsId, fullName, agency, department:dept, soc});
     added++;
   });
   if(added){ await saveDB(); }
-  toast('Imported '+added+' employee'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/duplicate/unknown or out-of-SOC department).'):'.'));
+  toast('Imported '+added+' employee'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/duplicate/unknown department).'):'.'));
   renderSettings();
 }
 function normalizeRole(raw){
