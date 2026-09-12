@@ -3791,33 +3791,26 @@ function settingsAccessHtml(){
 }
 // ------------------------- Ops ID (Employee) directory -------------------------
 // Open to Admin, Staff, and Hub (unlike the Access tab, which stays admin-only).
-// Staff/Hub logins add and import employees scoped to their own assigned SOC —
-// they only see/manage employees tagged with their site, plus untagged legacy
-// records (shared across all sites). Admins see and can tag/reassign every SOC.
+// Department is a free-text field; the directory is shared across all sites
+// with no SOC/site tagging.
 function settingsEmployeesHtml(){
-  const isAdmin = session.role==='admin';
-  const visible = socFilter(DB.employees);
+  const visible = DB.employees;
   return `<div class="card">
-    <div class="list-head"><h3>Add employee (for Received-by / PDA Issuance lookup)</h3>${importBtn('importEmployeeCsv', 'Ops ID, Full Name, Agency, Department (must match an existing department)'+(isAdmin?', SOC (optional — must match an existing site, blank = shared across sites)':''))}</div>
-    ${isAdmin ? '' : `<div class="card-sub">New entries are tagged to your assigned SOC${currentSoc()?` (<b>${esc(currentSoc())}</b>)`:''} — you'll only see and manage employees from your own site here, plus any shared/untagged entries.</div>`}
+    <div class="list-head"><h3>Add employee (for Received-by / PDA Issuance lookup)</h3>${importBtn('importEmployeeCsv', 'Ops ID, Full Name, Agency, Department')}</div>
     <div class="form-row3">
       <div class="field"><label>Ops ID</label><input id="new-emp-ops" placeholder="e.g. OPS-1005"></div>
       <div class="field"><label>Full name</label><input id="new-emp-name" placeholder="Full name"></div>
       <div class="field"><label>Agency</label><input id="new-emp-agency" placeholder="e.g. Direct Hire"></div>
     </div>
-    <div class="form-row${isAdmin?'3':''}">
-      <div class="field"><label>Department</label><select id="new-emp-dept">${DB.departments.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
-      ${isAdmin ? `<div class="field"><label>SOC (site)</label><select id="new-emp-soc">
-        <option value="">— Shared / all sites —</option>
-        ${DB.warehouses.map(w=>`<option value="${esc(w)}">${esc(w)}</option>`).join('')}
-      </select></div>` : ''}
+    <div class="form-row">
+      <div class="field"><label>Department</label><input id="new-emp-dept" placeholder="e.g. Operations"></div>
     </div>
     <div class="footer-actions"><button class="btn btn-primary" onclick="addEmployee()">Add employee</button></div>
   </div>
   <div class="card">
     <h3>Employee directory (${visible.length})</h3>
-    <div class="tbl-wrap"><table><tr><th>Ops ID</th><th>Full name</th><th>Agency</th><th>Department</th>${isAdmin?'<th>SOC</th>':''}<th></th></tr>
-      ${visible.map(e=>{ const i = DB.employees.indexOf(e); return `<tr><td class="mono">${esc(e.opsId)}</td><td>${esc(e.fullName)}</td><td>${esc(e.agency||'—')}</td><td>${esc(e.department)}</td>${isAdmin?`<td>${socOf(e.soc)}</td>`:''}
+    <div class="tbl-wrap"><table><tr><th>Ops ID</th><th>Full name</th><th>Agency</th><th>Department</th><th></th></tr>
+      ${visible.map(e=>{ const i = DB.employees.indexOf(e); return `<tr><td class="mono">${esc(e.opsId)}</td><td>${esc(e.fullName)}</td><td>${esc(e.agency||'—')}</td><td>${esc(e.department)}</td>
       <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditEmployee(${i})">Edit</button> <button class="icon-btn" onclick="removeEmployee(${i})">&times;</button></td></tr>`; }).join('')}
     </table></div>
   </div>`;
@@ -4004,20 +3997,17 @@ async function addEmployee(){
   const opsId = document.getElementById('new-emp-ops').value.trim();
   const fullName = document.getElementById('new-emp-name').value.trim();
   const agency = document.getElementById('new-emp-agency').value.trim();
-  const department = document.getElementById('new-emp-dept').value;
-  const socEl = document.getElementById('new-emp-soc');
-  const soc = session.role==='admin' ? (socEl?socEl.value:'') : currentSoc();
+  const department = document.getElementById('new-emp-dept').value.trim();
   if(!opsId||!fullName){ toast('Fill out Ops ID and full name.'); return; }
   if(empInfo(opsId)){ toast('That Ops ID already exists.'); return; }
-  DB.employees.push({opsId, fullName, agency, department, soc});
+  DB.employees.push({opsId, fullName, agency, department});
   await saveDB();
   toast('Employee added.');
   renderSettings();
 }
 function openEditEmployee(i){
   const e = DB.employees[i];
-  if(!e || !socVisible(e.soc)) return;
-  const isAdmin = session.role==='admin';
+  if(!e) return;
   showModal(`
     <h3>Edit employee</h3>
     <div class="form-row3">
@@ -4025,12 +4015,8 @@ function openEditEmployee(i){
       <div class="field"><label>Full name</label><input id="edit-emp-name" value="${esc(e.fullName)}"></div>
       <div class="field"><label>Agency</label><input id="edit-emp-agency" value="${esc(e.agency||'')}"></div>
     </div>
-    <div class="form-row${isAdmin?'3':''}">
-      <div class="field"><label>Department</label><select id="edit-emp-dept">${DB.departments.map(d=>`<option ${d===e.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
-      ${isAdmin ? `<div class="field"><label>SOC (site)</label><select id="edit-emp-soc">
-        <option value="" ${!e.soc?'selected':''}>— Shared / all sites —</option>
-        ${DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===e.soc?'selected':''}>${esc(w)}</option>`).join('')}
-      </select></div>` : ''}
+    <div class="form-row">
+      <div class="field"><label>Department</label><input id="edit-emp-dept" value="${esc(e.department||'')}"></div>
     </div>
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -4040,16 +4026,14 @@ function openEditEmployee(i){
 }
 async function saveEmployeeEdit(i){
   const e = DB.employees[i];
-  if(!e || !socVisible(e.soc)) return;
+  if(!e) return;
   const opsId = document.getElementById('edit-emp-ops').value.trim();
   const fullName = document.getElementById('edit-emp-name').value.trim();
   const agency = document.getElementById('edit-emp-agency').value.trim();
-  const department = document.getElementById('edit-emp-dept').value;
-  const socEl = document.getElementById('edit-emp-soc');
+  const department = document.getElementById('edit-emp-dept').value.trim();
   if(!opsId || !fullName){ toast('Fill out Ops ID and full name.'); return; }
   if(DB.employees.some((x,idx)=>idx!==i && x.opsId.toUpperCase()===opsId.toUpperCase())){ toast('That Ops ID already exists.'); return; }
   e.opsId = opsId; e.fullName = fullName; e.agency = agency; e.department = department;
-  if(session.role==='admin' && socEl) e.soc = socEl.value;
   await saveDB();
   closeModal();
   toast('Employee updated.');
@@ -4057,7 +4041,7 @@ async function saveEmployeeEdit(i){
 }
 async function removeEmployee(i){
   const e = DB.employees[i];
-  if(!e || !socVisible(e.soc)) return;
+  if(!e) return;
   DB.employees.splice(i,1);
   await saveDB();
   toast('Employee removed.');
@@ -4066,27 +4050,18 @@ async function removeEmployee(i){
 async function importEmployeeCsv(inputEl){
   const rows = await importCsvRows(inputEl);
   if(!rows) return;
-  const isAdmin = session.role==='admin';
-  const ownSoc = currentSoc();
   let added = 0, skipped = 0;
   rows.forEach(row=>{
     const opsId = csvField(row, ['Ops ID','OpsId','Ops Id']).trim();
     const fullName = csvField(row, ['Full Name','Name']).trim();
     const agency = csvField(row, ['Agency']).trim();
-    const deptRaw = csvField(row, ['Department']).trim();
-    const dept = DB.departments.find(d=>d.toLowerCase()===deptRaw.toLowerCase());
-    if(!opsId || !fullName || !dept || empInfo(opsId)){ skipped++; return; }
-    let soc = ownSoc;
-    if(isAdmin){
-      const socRaw = csvField(row, ['SOC','Site','Site (SOC)']).trim();
-      const match = DB.warehouses.find(w=>w.toLowerCase()===socRaw.toLowerCase());
-      soc = match || '';
-    }
-    DB.employees.push({opsId, fullName, agency, department:dept, soc});
+    const department = csvField(row, ['Department']).trim();
+    if(!opsId || !fullName || !department || empInfo(opsId)){ skipped++; return; }
+    DB.employees.push({opsId, fullName, agency, department});
     added++;
   });
   if(added){ await saveDB(); }
-  toast('Imported '+added+' employee'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/duplicate/unknown department).'):'.'));
+  toast('Imported '+added+' employee'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/duplicate).'):'.'));
   renderSettings();
 }
 function normalizeRole(raw){
@@ -4392,7 +4367,7 @@ function pdaScanHtml(){
     ${borrowed.length===0 ? '<div class="empty"><div class="ic">&#128241;</div>No PDAs currently out.</div>' :
       '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Borrowed by</th><th>Agency / Dept</th><th>Since</th></tr>' +
       borrowed.map(p=>{
-        const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.status==='Borrowed');
+        const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Borrowed');
         return `<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td>
           <td>${log?esc(log.borrowerName)+' <span class="small-note">('+esc(log.opsId)+')</span>':'—'}</td>
           <td>${log?esc(log.borrowerAgency||'—')+' / '+esc(log.borrowerDepartment||'—'):'—'}</td>
@@ -4421,7 +4396,7 @@ function onPdaScanInput(){
   if(!el || el.disabled) return;
   const code = el.value.trim();
   if(!code) return;
-  const pda = DB.pdas.find(p=> (p.serial && p.serial.toUpperCase()===code.toUpperCase()) || p.pdaNo.toUpperCase()===code.toUpperCase());
+  const pda = socFilter(DB.pdas).find(p=> (p.serial && p.serial.toUpperCase()===code.toUpperCase()) || p.pdaNo.toUpperCase()===code.toUpperCase());
   if(pda) processPdaScan();
 }
 function processPdaScan(){
@@ -4429,10 +4404,10 @@ function processPdaScan(){
   if(!el || el.disabled) return;
   const code = el.value.trim();
   if(!code) return;
-  const pda = DB.pdas.find(p=> (p.serial && p.serial.toUpperCase()===code.toUpperCase()) || p.pdaNo.toUpperCase()===code.toUpperCase());
+  const pda = socFilter(DB.pdas).find(p=> (p.serial && p.serial.toUpperCase()===code.toUpperCase()) || p.pdaNo.toUpperCase()===code.toUpperCase());
   if(!pda){ setPdaScanStatus('That serial number isn\'t in the PDA masterlist — add it there first.', 'error'); return; }
   el.disabled = true;
-  pdaModalTarget = pda.pdaNo;
+  pdaModalTarget = DB.pdas.indexOf(pda);
   pdaActiveMode = pda.status==='Borrowed' ? 'return' : 'borrow';
   pdaReturnCondition = 'Good';
   const opsEl = document.getElementById('pda-ops-input');
@@ -4447,12 +4422,13 @@ function processPdaScan(){
   renderPdaActiveSession();
   if(opsEl) opsEl.focus();
 }
-let pdaModalTarget = null;
+let pdaModalTarget = null; // index into DB.pdas — kept as an index (not the PDA #) since PDA numbers can now repeat across different SOCs
 let pdaActiveMode = null; // 'borrow' | 'return' | null — which inline panel is open under the serial field
 let pdaReturnCondition = 'Good';
 function pdaActiveSessionHeader(){
-  const pda = DB.pdas.find(p=>p.pdaNo===pdaModalTarget);
-  return esc(pdaModalTarget) + (pda && pda.serial ? ' <span class="small-note">('+esc(pda.serial)+')</span>' : '');
+  const pda = pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
+  if(!pda) return '';
+  return esc(pda.pdaNo) + (pda.serial ? ' <span class="small-note">('+esc(pda.serial)+')</span>' : '');
 }
 function renderPdaActiveSession(){
   const el = document.getElementById('pda-active-session');
@@ -4526,18 +4502,17 @@ function pdaBorrowOpsLookup(){
   }
 }
 async function confirmPdaBorrow(){
-  const pdaNo = pdaModalTarget;
+  const pda = pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
   const opsIdEl = document.getElementById('pda-ops-input');
-  if(!pdaNo || !opsIdEl) return;
+  if(!pda || !opsIdEl) return;
   const opsId = opsIdEl.value.trim();
   const emp = empInfo(opsId);
   if(!opsId || !emp) return;
-  const pda = DB.pdas.find(p=>p.pdaNo===pdaNo);
-  if(!pda) return;
+  const pdaNo = pda.pdaNo;
   DB.pdaLogs.push({
     id: nextCode('PL','pl'), pdaNo, opsId, borrowerName: emp.fullName, borrowerAgency: emp.agency||'', borrowerDepartment: emp.department||'',
     borrowedAt: nowISO(), returnedAt:'', returnedByOpsId:'', returnedByName:'', returnedByAgency:'', returnedByDepartment:'',
-    conditionOnReturn:'', irFile:'', irFileData:'', status:'Borrowed', soc:currentSoc()
+    conditionOnReturn:'', irFile:'', irFileData:'', status:'Borrowed', soc:pda.soc
   });
   pda.status = 'Borrowed';
   await saveDB();
@@ -4576,15 +4551,15 @@ function checkPdaAutoReturn(){
   confirmPdaReturn();
 }
 async function confirmPdaReturn(){
-  const pdaNo = pdaModalTarget;
+  const pda = pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
   const opsIdEl = document.getElementById('pda-ops-input');
-  if(!pdaNo || !opsIdEl) return;
+  if(!pda || !opsIdEl) return;
   const opsId = opsIdEl.value.trim();
   const emp = empInfo(opsId);
   if(!opsId || !emp){ toast('Enter a valid Ops ID for who is returning it.'); return; }
-  const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pdaNo && l.status==='Borrowed');
-  const pda = DB.pdas.find(p=>p.pdaNo===pdaNo);
-  if(!log || !pda) return;
+  const pdaNo = pda.pdaNo;
+  const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pdaNo && l.soc===pda.soc && l.status==='Borrowed');
+  if(!log) return;
   pdaReturnInProgress = true;
   let irFile='', irFileData='';
   if(pdaConditionNeedsIR(pdaReturnCondition)){
@@ -4609,12 +4584,19 @@ async function confirmPdaReturn(){
 function pdaMasterlistHtml(){
   const isAdmin = session.role==='admin';
   return `<div class="card">
-    <div class="list-head"><h3>Add PDA</h3>${importBtn('importPdaCsv','PDA No, Serial, Condition (Good/Damaged but working/Damaged and not working)')}</div>
+    <div class="list-head"><h3>Add PDA</h3>${importBtn('importPdaCsv','PDA No, Serial, Condition (Good/Damaged but working/Damaged and not working)'+(isAdmin?', SOC (optional — must match an existing site, blank = shared across sites)':''))}</div>
+    <div class="card-sub">PDA numbers only need to be unique within the same SOC — different sites can each have their own "PDA-001", for example.${isAdmin?'':(currentSoc()?` New entries are tagged to your assigned SOC (<b>${esc(currentSoc())}</b>).`:'')}</div>
     <div class="form-row3">
       <div class="field"><label>PDA number</label><input id="new-pda-no" placeholder="e.g. PDA-014"></div>
       <div class="field"><label>Serial</label><input id="new-pda-serial" placeholder="Serial number"></div>
       <div class="field"><label>Condition</label><select id="new-pda-condition">${pdaConditionOptions('Good')}</select></div>
     </div>
+    ${isAdmin ? `<div class="form-row">
+      <div class="field"><label>SOC (site)</label><select id="new-pda-soc">
+        <option value="">— Shared / all sites —</option>
+        ${DB.warehouses.map(w=>`<option value="${esc(w)}">${esc(w)}</option>`).join('')}
+      </select></div>
+    </div>` : ''}
     <div class="footer-actions"><button class="btn btn-primary" onclick="addPda()">Add PDA</button></div>
   </div>
   <div class="card">
@@ -4634,8 +4616,8 @@ function pdaMasterlistHtml(){
   <div class="card">
     <h3>PDA masterlist (${socFilter(DB.pdas).length})</h3>
     ${socFilter(DB.pdas).length===0 ? '<div class="empty"><div class="ic">&#128241;</div>No PDAs added yet.</div>' :
-    '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition</th><th>Status</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
-    DB.pdas.map((p,i)=>({p,i})).filter(x=>socVisible(x.p.soc)).map(({p,i})=>`<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td><td>${pdaConditionTag(p.condition)}</td><td>${pdaStatusTag(p.status)}</td>${isAdmin?`<td style="white-space:nowrap;"><button class="icon-btn-view" onclick="openEditPda(${i})" title="Edit">&#9998;</button> <button class="icon-btn" onclick="removePda(${i})" title="Remove">&times;</button></td>`:''}</tr>`).join('') +
+    '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition</th><th>Status</th>'+(isAdmin?'<th>SOC</th><th></th>':'')+'</tr>' +
+    DB.pdas.map((p,i)=>({p,i})).filter(x=>socVisible(x.p.soc)).map(({p,i})=>`<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td><td><select onchange="updatePdaCondition(${i}, this.value)" style="padding:5px 8px;font-size:12px;">${pdaConditionOptions(p.condition)}</select></td><td>${pdaStatusTag(p.status)}</td>${isAdmin?`<td>${socOf(p.soc)}</td><td style="white-space:nowrap;"><button class="icon-btn-view" onclick="openEditPda(${i})" title="Edit">&#9998;</button> <button class="icon-btn" onclick="removePda(${i})" title="Remove">&times;</button></td>`:''}</tr>`).join('') +
     '</table></div>'}
   </div>`;
 }
@@ -4684,24 +4666,38 @@ async function savePdaAllocations(){
   toast('PDA allocation saved.');
   renderITAssets();
 }
+// A PDA number only has to be unique within the SOCs it's actually visible in:
+// two specific sites can each run their own "PDA-001", but a shared/untagged
+// (soc==='') entry is visible everywhere, so it still conflicts with any site.
+function pdaNoConflict(pdaNo, soc, excludeIdx){
+  const upper = pdaNo.toUpperCase();
+  return DB.pdas.some((p,idx)=> idx!==excludeIdx && p.pdaNo.toUpperCase()===upper && (!p.soc || !soc || p.soc===soc));
+}
 async function addPda(){
   const pdaNo = document.getElementById('new-pda-no').value.trim();
   const serial = document.getElementById('new-pda-serial').value.trim();
   const condition = document.getElementById('new-pda-condition').value;
+  const socEl = document.getElementById('new-pda-soc');
+  const soc = session.role==='admin' ? (socEl?socEl.value:'') : currentSoc();
   if(!pdaNo){ toast('Enter a PDA number.'); return; }
-  if(DB.pdas.some(p=>p.pdaNo.toUpperCase()===pdaNo.toUpperCase())){ toast('That PDA number already exists.'); return; }
-  DB.pdas.push({pdaNo, serial, condition, soc:currentSoc(), exceptionStatus:'', status:'Available'});
+  if(pdaNoConflict(pdaNo, soc, -1)){ toast('That PDA number already exists for this SOC.'); return; }
+  DB.pdas.push({pdaNo, serial, condition, soc, exceptionStatus:'', status:'Available'});
   await saveDB();
   toast('PDA added.');
   renderITAssets();
 }
 function openEditPda(i){
   const p = DB.pdas[i];
+  const isAdmin = session.role==='admin';
   showModal(`
     <h3>Edit PDA</h3>
     <div class="field"><label>PDA number</label><input id="edit-pda-no" value="${esc(p.pdaNo)}"></div>
     <div class="field"><label>Serial</label><input id="edit-pda-serial" value="${esc(p.serial||'')}"></div>
     <div class="field"><label>Condition</label><select id="edit-pda-condition">${pdaConditionOptions(p.condition)}</select></div>
+    ${isAdmin ? `<div class="field"><label>SOC (site)</label><select id="edit-pda-soc">
+      <option value="" ${!p.soc?'selected':''}>— Shared / all sites —</option>
+      ${DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===p.soc?'selected':''}>${esc(w)}</option>`).join('')}
+    </select></div>` : ''}
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="savePdaEdit(${i})">Save changes</button>
@@ -4712,9 +4708,11 @@ async function savePdaEdit(i){
   const pdaNo = document.getElementById('edit-pda-no').value.trim();
   const serial = document.getElementById('edit-pda-serial').value.trim();
   const condition = document.getElementById('edit-pda-condition').value;
+  const socEl = document.getElementById('edit-pda-soc');
+  const soc = (session.role==='admin' && socEl) ? socEl.value : DB.pdas[i].soc;
   if(!pdaNo){ toast('Enter a PDA number.'); return; }
-  if(DB.pdas.some((p,idx)=>idx!==i && p.pdaNo.toUpperCase()===pdaNo.toUpperCase())){ toast('That PDA number already exists.'); return; }
-  DB.pdas[i].pdaNo = pdaNo; DB.pdas[i].serial = serial; DB.pdas[i].condition = condition;
+  if(pdaNoConflict(pdaNo, soc, i)){ toast('That PDA number already exists for this SOC.'); return; }
+  DB.pdas[i].pdaNo = pdaNo; DB.pdas[i].serial = serial; DB.pdas[i].condition = condition; DB.pdas[i].soc = soc;
   await saveDB();
   closeModal();
   toast('Updated.');
@@ -4724,6 +4722,16 @@ async function removePda(i){
   DB.pdas.splice(i,1);
   await saveDB();
   toast('Removed.');
+  renderITAssets();
+}
+// Open to Admin, Staff, and Hub — anyone who can see a PDA row (per socVisible)
+// can update its condition inline, without needing full edit/remove rights.
+async function updatePdaCondition(i, value){
+  const p = DB.pdas[i];
+  if(!p || !socVisible(p.soc)) return;
+  p.condition = value;
+  await saveDB();
+  toast(p.pdaNo+' condition set to "'+pdaConditionLabel(value)+'".');
   renderITAssets();
 }
 function parsePdaConditionCsv(raw){
@@ -4736,17 +4744,25 @@ function parsePdaConditionCsv(raw){
 async function importPdaCsv(inputEl){
   const rows = await importCsvRows(inputEl);
   if(!rows) return;
+  const isAdmin = session.role==='admin';
+  const ownSoc = currentSoc();
   let added=0, skipped=0;
   rows.forEach(row=>{
     const pdaNo = csvField(row, ['PDA No','PDA Number','PDA','PDA#']).trim();
     const serial = csvField(row, ['Serial','Serial Number']).trim();
     const condition = parsePdaConditionCsv(csvField(row, ['Condition']));
-    if(!pdaNo || DB.pdas.some(p=>p.pdaNo.toUpperCase()===pdaNo.toUpperCase())){ skipped++; return; }
-    DB.pdas.push({pdaNo, serial, condition, soc:currentSoc(), exceptionStatus:'', status:'Available'});
+    let soc = ownSoc;
+    if(isAdmin){
+      const socRaw = csvField(row, ['SOC','Site','Site (SOC)']).trim();
+      const match = DB.warehouses.find(w=>w.toLowerCase()===socRaw.toLowerCase());
+      soc = match || '';
+    }
+    if(!pdaNo || pdaNoConflict(pdaNo, soc, -1)){ skipped++; return; }
+    DB.pdas.push({pdaNo, serial, condition, soc, exceptionStatus:'', status:'Available'});
     added++;
   });
   if(added){ await saveDB(); }
-  toast('Imported '+added+' PDA'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (blank/duplicate).'):'.'));
+  toast('Imported '+added+' PDA'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (blank/duplicate for that SOC).'):'.'));
   renderITAssets();
 }
 function viewPdaLogIR(id){
@@ -4882,7 +4898,7 @@ function pdaDeptAllocationReportHtml(){
   const buckets = [...PDA_DEPT_BUCKETS(), 'Other Department'];
   const byBucket = {}; buckets.forEach(b=>byBucket[b]=[]);
   borrowed.forEach(p=>{
-    const log = pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.status==='Borrowed');
+    const log = pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Borrowed');
     byBucket[pdaDeptBucket(log?log.borrowerDepartment:'')].push({pda:p, log});
   });
   const allocOf = b => Number((DB.pdaAllocations||{})[b])||0;
@@ -4926,7 +4942,7 @@ function exportPdaDeptReport(){
   const borrowed = pdas.filter(p=>p.status==='Borrowed');
   const available = pdas.filter(p=>p.status!=='Borrowed');
   const rows = borrowed.map(p=>{
-    const log = pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.status==='Borrowed');
+    const log = pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Borrowed');
     return [pdaDeptBucket(log?log.borrowerDepartment:''), 'Borrowed', p.pdaNo, p.serial||'', log?log.borrowerName:'', log?log.opsId:'', log?fmtDateTime(log.borrowedAt):''];
   });
   available.forEach(p=>{ rows.push(['Remaining (available)', 'Available', p.pdaNo, p.serial||'', '', '', '']); });
