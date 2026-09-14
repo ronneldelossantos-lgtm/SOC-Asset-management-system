@@ -1455,7 +1455,7 @@ function dashAsset(){
   const onHand = assets.reduce((a,s)=>a+stockOf(s.sku),0);
   const freq = requestFrequency();
   const top10 = assets.map(s=>({...s, count: freq[s.sku]||0})).sort((a,b)=>b.count-a.count).slice(0,10);
-  const rep = DB.repairs;
+  const rep = socFilter(DB.repairs);
   const counts = {
     'For Repair': rep.filter(r=>r.status==='For Repair').length,
     'Repaired': rep.filter(r=>r.status==='Repaired').length,
@@ -1553,7 +1553,7 @@ function renderRequest(){
   const c = document.getElementById('content');
   const tab = subroute || 'new';
   const routeKey = portalMode==='department' ? 'drequest' : 'request';
-  const visibleReqs = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : DB.requests;
+  const visibleReqs = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilter(DB.requests);
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='new'?'active':''}" onclick="navigate('${routeKey}','new')">File a request</div>
@@ -2751,10 +2751,10 @@ async function saveConsCount(sku){
   renderCycleCount();
 }
 function ccAssetHtml(){
-  if(DB.issuance.filter(i=>i.type==='Asset').length===0){
+  if(socFilter(DB.issuance).filter(i=>i.type==='Asset').length===0){
     return '<div class="card"><div class="empty"><div class="ic">&#9673;</div>No issued assets to count yet — issue assets first.</div></div>';
   }
-  const issuedAssets = DB.issuance.filter(i=>i.type==='Asset');
+  const issuedAssets = socFilter(DB.issuance).filter(i=>i.type==='Asset');
   return `<div class="card">
     <h3>Asset count sheet</h3>
     <div class="card-sub">Verify each issued/tagged asset against physical presence.</div>
