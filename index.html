@@ -572,6 +572,19 @@ function defaultDB(){
 }
 
 function migrateDB(){
+  // Old shape was DB.stock[sku] = qty (a single company-wide number per SKU).
+  // New shape is DB.stock[soc][sku] = qty. Move any old flat entries into the
+  // shared/legacy '' bucket so existing totals aren't lost — they'll show up
+  // on every SOC's dashboard (and on "All SOCs") until receiving/issuance
+  // going forward naturally splits them out per site.
+  if(!DB.stock) DB.stock = {};
+  {
+    const flatKeys = Object.keys(DB.stock).filter(k=>typeof DB.stock[k] !== 'object' || DB.stock[k]===null);
+    if(flatKeys.length){
+      if(!DB.stock['']) DB.stock[''] = {};
+      flatKeys.forEach(k=>{ DB.stock[''][k] = Number(DB.stock[k])||0; delete DB.stock[k]; });
+    }
+  }
   if(!DB.counters.trn) DB.counters.trn = 100;
   if(!DB.counters.ret) DB.counters.ret = 100;
   if(!DB.counters.di) DB.counters.di = 100;
@@ -1005,7 +1018,7 @@ function skuInfo(code){ return DB.sku.find(s=>s.sku.toUpperCase()===String(code|
    Issuance / Accountability log) spread across the days since its
    earliest issuance. No issuance history yet => 0 (no basis to project). */
 function dailyAvgConsumption(sku){
-  const records = DB.issuance.filter(i=>i.sku===sku);
+  const records = socFilter(DB.issuance).filter(i=>i.sku===sku);
   if(records.length===0) return 0;
   const totalQty = records.reduce((s,r)=>s+Number(r.qty||0),0);
   const earliest = Math.min(...records.map(r=>new Date(r.date).getTime()));
@@ -1018,7 +1031,7 @@ function safetyStockOf(s){
   return Math.ceil(dac*days);
 }
 function stockStatusRow(s){
-  const soh = DB.stock[s.sku]||0;
+  const soh = stockOf(s.sku);
   const dac = dailyAvgConsumption(s.sku);
   const safety = safetyStockOf(s);
   const sufficient = soh > safety;
@@ -1114,6 +1127,40 @@ function socVisible(recSoc){
   return recSoc === session.site;
 }
 function socFilter(arr){ return (arr||[]).filter(x=>socVisible(x.soc)); }
+// ---- Per-SOC stock quantities ----
+// DB.stock is nested: DB.stock[soc][sku] = on-hand qty. The soc key '' is the
+// shared/legacy bucket — stock that predates per-site tracking, or stock an
+// admin adds while "viewing" All SOCs. A specific site's on-hand always
+// includes that shared bucket too (same convention socVisible/socFilter use
+// for untagged records: visible everywhere). Viewing "All SOCs" (soc==='')
+// sums every site's bucket for a true company-wide total.
+function stockOf(sku, soc){
+  if(soc===undefined) soc = currentSoc();
+  if(!DB.stock) DB.stock = {};
+  if(!soc){
+    let total = 0;
+    Object.keys(DB.stock).forEach(k=>{ total += Number((DB.stock[k]||{})[sku]||0); });
+    return total;
+  }
+  const own = Number(((DB.stock[soc]||{})[sku])||0);
+  const shared = Number(((DB.stock['']||{})[sku])||0);
+  return own + shared;
+}
+function setStock(sku, qty, soc){
+  if(soc===undefined) soc = currentSoc();
+  if(!DB.stock) DB.stock = {};
+  if(!DB.stock[soc]) DB.stock[soc] = {};
+  DB.stock[soc][sku] = Number(qty)||0;
+}
+function addStock(sku, delta, soc){
+  if(soc===undefined) soc = currentSoc();
+  if(!DB.stock) DB.stock = {};
+  if(!DB.stock[soc]) DB.stock[soc] = {};
+  DB.stock[soc][sku] = Number(DB.stock[soc][sku]||0) + Number(delta);
+}
+function deleteStockAllSocs(sku){
+  Object.keys(DB.stock||{}).forEach(k=>{ delete DB.stock[k][sku]; });
+}
 // ---- Admin-only "viewing as SOC" switcher: lets an admin narrow their own
 // dashboards/lists down to a single site, same shape a Staff/Hub login for
 // that site would see, without needing a separate account. ----
@@ -1359,8 +1406,8 @@ function renderDashboard(){
 
 function requestFrequency(){
   const freq = {};
-  DB.requests.forEach(r=> r.items.forEach(it=>{ freq[it.sku] = (freq[it.sku]||0) + Number(it.qty||0); }));
-  DB.issuance.forEach(is=>{ freq[is.sku] = (freq[is.sku]||0) + Number(is.qty||0); });
+  socFilter(DB.requests).forEach(r=> r.items.forEach(it=>{ freq[it.sku] = (freq[it.sku]||0) + Number(it.qty||0); }));
+  socFilter(DB.issuance).forEach(is=>{ freq[is.sku] = (freq[is.sku]||0) + Number(is.qty||0); });
   return freq;
 }
 function filterStockRows(inputEl, tableId){
@@ -1394,7 +1441,7 @@ function stockStatusTableHtml(items, tableId){
 
 function dashAsset(){
   const assets = DB.sku.filter(s=>s.type==='Asset');
-  const onHand = assets.reduce((a,s)=>a+(DB.stock[s.sku]||0),0);
+  const onHand = assets.reduce((a,s)=>a+stockOf(s.sku),0);
   const freq = requestFrequency();
   const top10 = assets.map(s=>({...s, count: freq[s.sku]||0})).sort((a,b)=>b.count-a.count).slice(0,10);
   const rep = DB.repairs;
@@ -1467,10 +1514,10 @@ function currentUserRecord(){ return DB.users.find(u=>u.id===session.id); }
 
 function dashConsumable(){
   const cons = DB.sku.filter(s=>s.type==='Consumable');
-  const onHand = cons.reduce((a,s)=>a+(DB.stock[s.sku]||0),0);
+  const onHand = cons.reduce((a,s)=>a+stockOf(s.sku),0);
   const low = cons.filter(s=>!stockStatusRow(s).sufficient);
-  const pendingReq = DB.requests.filter(r=>r.status==='Pending' && r.items.some(it=>{const info=skuInfo(it.sku);return info&&info.type==='Consumable';})).length;
-  const issuedThisLog = DB.issuance.filter(is=>{const info=skuInfo(is.sku);return info&&info.type==='Consumable';}).length;
+  const pendingReq = socFilter(DB.requests).filter(r=>r.status==='Pending' && r.items.some(it=>{const info=skuInfo(it.sku);return info&&info.type==='Consumable';})).length;
+  const issuedThisLog = socFilter(DB.issuance).filter(is=>{const info=skuInfo(is.sku);return info&&info.type==='Consumable';}).length;
   return `
     <div class="grid g4" style="margin-bottom:18px;">
       <div class="metric"><div class="lbl">On-hand consumable stock</div><div class="val">${onHand}</div><div class="sub">across ${cons.length} SKUs</div></div>
@@ -1595,7 +1642,7 @@ function reqDescPick(sku){
   if(!info) return;
   document.getElementById('req-desc').value = info.description;
   document.getElementById('req-sku').value = info.sku;
-  const onHandPart = portalMode==='department' ? '' : ` &middot; On hand: ${DB.stock[info.sku]||0}`;
+  const onHandPart = portalMode==='department' ? '' : ` &middot; On hand: ${stockOf(info.sku)}`;
   document.getElementById('req-sku-hint').innerHTML = `${info.type} &middot; UOM: ${info.uom}${onHandPart}`;
   const box = document.getElementById('req-desc-suggest');
   box.innerHTML=''; box.style.display='none';
@@ -1790,7 +1837,7 @@ function requestListHtml(){
         const tags=assetTagsArr(it).filter(t=>t);
         const tagStr = tags.length?' (tags: '+esc(tags.join(', '))+')':'';
         if(portalMode!=='supplies') return esc(it.sku)+' — '+esc(it.description)+' &times;'+it.qty+tagStr;
-        const onHand = DB.stock[it.sku]||0;
+        const onHand = stockOf(it.sku, r.soc);
         const short = onHand < it.qty;
         return esc(it.sku)+' — '+esc(it.description)+' &times;'+it.qty+' <span style="'+(short?'color:var(--danger);font-weight:600;':'color:var(--muted);')+'">(on hand: '+onHand+')</span>'+tagStr;
       }).join('<br>')}</div></td>
@@ -2127,7 +2174,7 @@ function openApproveRequestModal(r){
     <div class="tbl-wrap" style="margin:14px 0;"><table>
       <tr><th>SKU</th><th>Description</th><th>Requested</th><th>Approved qty</th></tr>
       ${r.items.map((it,i)=>{
-        const onHand = DB.stock[it.sku]||0;
+        const onHand = stockOf(it.sku, r.soc);
         const short = onHand < it.qty;
         return `<tr>
           <td class="mono">${esc(it.sku)}</td><td>${esc(it.description)}</td>
@@ -2172,7 +2219,7 @@ function requestIssuePreCheck(r){
     return false;
   }
   for(const it of r.items){
-    if((DB.stock[it.sku]||0) < approvedQtyOf(it)){
+    if(stockOf(it.sku, r.soc) < approvedQtyOf(it)){
       toast('Not enough stock on hand for '+it.sku+' — cannot complete this request.');
       return false;
     }
@@ -2291,7 +2338,7 @@ async function finalizeIssueRequest(){
       assetTagging: assetTagsArr(it).filter(t=>t).join(', '), opsId: empMatch?empMatch.opsId:'', receivedByName: r.accountableName||'',
       transmittalNo, date: nowISO(), issuedBy: session.fullName, deptReceived:false, sourceRequestId: r.id, soc: r.soc||''
     });
-    DB.stock[it.sku] -= q;
+    addStock(it.sku, -q, r.soc||'');
   });
   r.transmittalNo = transmittalNo;
   r.issuedBy = session.fullName;
@@ -2436,11 +2483,12 @@ async function submitReceiving(){
   }
   const date = nowISO();
   const ids = [];
+  const soc = currentSoc();
   recvDraftItems.forEach(it=>{
     const id = nextCode('RCV','recv');
     ids.push(id);
-    DB.receiving.push({id, sku:it.sku, description:it.description, type:it.type, uom:it.uom, from, qty:it.qty, date, receivedBy:session.fullName, transmittal:file?file.name:'', transmittalFile, soc:currentSoc()});
-    DB.stock[it.sku] = (DB.stock[it.sku]||0) + it.qty;
+    DB.receiving.push({id, sku:it.sku, description:it.description, type:it.type, uom:it.uom, from, qty:it.qty, date, receivedBy:session.fullName, transmittal:file?file.name:'', transmittalFile, soc});
+    addStock(it.sku, it.qty, soc);
   });
   recvDraftItems = [];
   await saveDB();
@@ -2502,7 +2550,7 @@ async function saveReceivingEdit(id){
   const qty = Number(document.getElementById('edit-recv-qty').value);
   if(!Number.isFinite(qty) || qty<0){ toast('Enter a valid quantity.'); return; }
   const delta = qty - r.qty;
-  if(delta!==0) DB.stock[r.sku] = (DB.stock[r.sku]||0) + delta;
+  if(delta!==0) addStock(r.sku, delta, r.soc||'');
   r.from = from; r.qty = qty;
   await saveDB();
   closeModal();
@@ -2513,7 +2561,7 @@ function deleteReceiving(id){
   const r = DB.receiving.find(x=>x.id===id);
   if(!r) return;
   confirmAction('Delete '+r.id+'? This will also remove the '+r.qty+' '+r.uom+' it added to the stock of '+r.sku+'.', async ()=>{
-    DB.stock[r.sku] = (DB.stock[r.sku]||0) - r.qty;
+    addStock(r.sku, -r.qty, r.soc||'');
     DB.receiving = DB.receiving.filter(x=>x.id!==id);
     await saveDB();
     toast('Receiving record deleted.');
@@ -2619,7 +2667,7 @@ async function saveIssuanceEdit(id){
   const accountabilityEmail = document.getElementById('edit-iss-acct-email').value.trim();
   if(!Number.isFinite(qty) || qty<0){ toast('Enter a valid quantity.'); return; }
   const delta = qty - r.qty;
-  if(delta!==0) DB.stock[r.sku] = (DB.stock[r.sku]||0) - delta;
+  if(delta!==0) addStock(r.sku, -delta, r.soc||'');
   r.department = department; r.qty = qty; r.accountability = accountability; r.accountabilityEmail = accountabilityEmail;
   await saveDB();
   closeModal();
@@ -2630,7 +2678,7 @@ function deleteIssuance(id){
   const r = DB.issuance.find(x=>x.id===id);
   if(!r) return;
   confirmAction('Delete '+r.id+'? This will restore '+r.qty+' '+r.uom+' back to the stock of '+r.sku+'.', async ()=>{
-    DB.stock[r.sku] = (DB.stock[r.sku]||0) + r.qty;
+    addStock(r.sku, r.qty, r.soc||'');
     DB.issuance = DB.issuance.filter(x=>x.id!==id);
     await saveDB();
     toast('Issuance record deleted.');
@@ -2659,7 +2707,7 @@ function ccConsumableHtml(){
     <div class="tbl-wrap"><table>
       <tr><th>SKU</th><th>Item</th><th>System qty</th><th>Counted qty</th><th>Variance</th><th></th></tr>
       ${cons.map(s=>{
-        const sys = DB.stock[s.sku]||0;
+        const sys = stockOf(s.sku);
         return `<tr>
           <td class="mono">${esc(s.sku)}</td><td>${esc(s.description)}</td><td>${sys}</td>
           <td><input type="number" id="cc-c-${s.sku}" style="width:90px;" placeholder="qty"></td>
@@ -2684,7 +2732,7 @@ async function saveConsCount(sku){
   const val = document.getElementById('cc-c-'+sku).value;
   if(val===''){ toast('Enter a counted quantity first.'); return; }
   const counted = Number(val);
-  const sys = DB.stock[sku]||0;
+  const sys = stockOf(sku);
   DB.cycleCountConsumable.push({sku, systemQty:sys, countedQty:counted, countedBy:session.fullName, date:nowISO(), soc:currentSoc()});
   document.getElementById('cc-c-var-'+sku).textContent = (counted-sys>0?'+':'')+(counted-sys);
   await saveDB();
@@ -2904,7 +2952,7 @@ async function finalizeRepairAction(id, action){
   if(!r){ actionInFlight = false; toast('This record changed elsewhere — please reopen it and try again.'); closeModal(); navigate('repair','list'); return; }
   if(file){ r.transmittalFile = transmittalFile; r.transmittalFileData = transmittalFileData; }
   if(action==='inventory'){
-    DB.stock[r.sku] = (DB.stock[r.sku]||0) + 1;
+    addStock(r.sku, 1, r.soc||'');
     r.status = 'Added to Inventory';
     r.inventoryBy = session.fullName; r.inventoryDate = nowISO();
     await saveDB();
@@ -3014,7 +3062,7 @@ async function saveReturnEdit(id){
   const stockAffecting = r.condition==='Good' && (r.status==='Received'||r.status==='Asset Received');
   if(stockAffecting){
     const delta = qty - r.qty;
-    if(delta!==0) DB.stock[r.sku] = (DB.stock[r.sku]||0) + delta;
+    if(delta!==0) addStock(r.sku, delta, r.soc||'');
   }
   r.qty = qty; r.remarks = remarks;
   await saveDB();
@@ -3030,7 +3078,7 @@ function deleteReturn(id){
     ? 'Delete '+r.id+'? This will remove the '+r.qty+' '+r.uom+' it added back to the stock of '+r.sku+'.'
     : 'Delete '+r.id+'? Note: if this was routed to the Repair register, that entry will NOT be removed automatically.';
   confirmAction(warning, async ()=>{
-    if(stockAffecting) DB.stock[r.sku] = (DB.stock[r.sku]||0) - r.qty;
+    if(stockAffecting) addStock(r.sku, -r.qty, r.soc||'');
     DB.returns = DB.returns.filter(x=>x.id!==id);
     await saveDB();
     toast('Return record deleted.');
@@ -3045,7 +3093,7 @@ async function receiveReturn(id){
   const r = DB.returns.find(x=>x.id===id);
   if(!r) return;
   if(r.condition==='Good'){
-    DB.stock[r.sku] = (DB.stock[r.sku]||0) + r.qty;
+    addStock(r.sku, r.qty, r.soc||'');
   }else{
     const repId = nextCode('REP','rep');
     const info = skuInfo(r.sku);
@@ -3519,11 +3567,11 @@ function settingsSkuHtml(){
   </div>
   <div class="card">
     <h3>SKU master list (${DB.sku.length})</h3>
-    <div class="card-sub">For assets, set a classification — it reflects on the Supplies Portal's Department Returns module for both admin and staff. Safety stock (days) sets the coverage window used to calculate each SKU's safety stock on the Dashboard.</div>
+    <div class="card-sub">For assets, set a classification — it reflects on the Supplies Portal's Department Returns module for both admin and staff. Safety stock (days) sets the coverage window used to calculate each SKU's safety stock on the Dashboard.${session.role==='admin'?` "On hand" reflects whichever SOC you're currently viewing (top-right switcher) — <b>${esc(adminViewSoc||'All SOCs combined')}</b>.`:''}</div>
     <div class="tbl-wrap"><table><tr><th>SKU</th><th>Description</th><th>Type</th><th>UOM</th><th>On hand</th><th>Asset condition</th><th>Safety stock (days)</th><th></th></tr>
       ${DB.sku.map(s=>`<tr><td class="mono">${esc(s.sku)}</td><td>${esc(s.description)}</td>
         <td>${s.type==='Asset'?'<span class="tag tag-asset">Asset</span>':'<span class="tag tag-consumable">Consumable</span>'}</td>
-        <td>${esc(s.uom)}</td><td>${DB.stock[s.sku]||0}</td>
+        <td>${esc(s.uom)}</td><td>${stockOf(s.sku)}</td>
         <td>${s.type==='Asset' ? `<select onchange="updateSkuAssetCondition('${esc(s.sku)}', this.value)" style="padding:5px 8px;font-size:12px;">
             ${['Repairable','Disposable','Backload'].map(c=>`<option ${c===(s.assetCondition||'Repairable')?'selected':''}>${c}</option>`).join('')}
           </select>` : '<span class="small-note">—</span>'}</td>
@@ -3565,7 +3613,7 @@ function openEditSku(sku){
       </select>
     </div>
     <div class="field"><label>UOM</label><input id="edit-sku-uom" value="${esc(info.uom)}"></div>
-    <div class="field"><label>On-hand quantity</label><input id="edit-sku-qty" type="number" min="0" value="${DB.stock[sku]||0}"></div>
+    <div class="field"><label>On-hand quantity${session.role==='admin'?` <span class="small-note">(for ${esc(adminViewSoc||'All SOCs — shared bucket')})</span>`:''}</label><input id="edit-sku-qty" type="number" min="0" value="${stockOf(sku)}"></div>
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveSkuEdit('${esc(sku)}')">Save changes</button>
@@ -3581,7 +3629,7 @@ async function saveSkuEdit(sku){
   info.description = desc;
   info.type = document.getElementById('edit-sku-type').value;
   info.uom = uom;
-  DB.stock[sku] = Number(document.getElementById('edit-sku-qty').value)||0;
+  setStock(sku, Number(document.getElementById('edit-sku-qty').value)||0, currentSoc());
   await saveDB();
   closeModal();
   toast('SKU '+sku+' updated.');
@@ -3604,7 +3652,7 @@ async function addSku(){
   if(!sku || !desc || !uom){ toast('Fill out SKU code, description, and UOM.'); return; }
   if(skuInfo(sku)){ toast('That SKU code already exists.'); return; }
   DB.sku.push({sku, description:desc, type, uom, assetCondition: type==='Asset' ? 'Repairable' : undefined, safetyStockDays: 7});
-  DB.stock[sku] = qty;
+  setStock(sku, qty, currentSoc());
   DB.reorderPoint[sku] = 0;
   await saveDB();
   toast('SKU '+sku+' added'+(type==='Consumable'?' — starts at 0 on-hand; receive stock via Receiving.':'.'));
@@ -3613,7 +3661,7 @@ async function addSku(){
 function deleteSku(sku){
   confirmAction('Remove SKU '+sku+' from the master list? This will also clear its stock and reorder-point records.', async ()=>{
     DB.sku = DB.sku.filter(s=>s.sku!==sku);
-    delete DB.stock[sku]; delete DB.reorderPoint[sku];
+    delete DB.reorderPoint[sku]; deleteStockAllSocs(sku);
     await saveDB();
     toast('SKU '+sku+' removed.');
     renderSettings();
@@ -3633,7 +3681,7 @@ async function importSkuCsv(inputEl){
     if(!sku || !desc || !type || !uom || skuInfo(sku)){ skipped++; return; }
     const qty = type==='Consumable' ? 0 : (Number(qtyRaw)||0);
     DB.sku.push({sku, description:desc, type, uom, assetCondition: type==='Asset' ? 'Repairable' : undefined, safetyStockDays: 7});
-    DB.stock[sku] = qty;
+    setStock(sku, qty, currentSoc());
     DB.reorderPoint[sku] = 0;
     added++;
   });
