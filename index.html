@@ -1059,11 +1059,13 @@ async function doLogin(){
   document.getElementById('app').style.display='block';
   if(portalMode==='department'){
     route = 'ddashboard'; subroute='';
+    renderShell();
+    navigate(route);
   }else{
-    route = 'dashboard'; subroute='asset';
+    const land = defaultLandingRoute();
+    renderShell();
+    navigate(land.route, land.sub);
   }
-  renderShell();
-  navigate(route);
   startAutoRefresh();
 }
 function doLogout(){
@@ -1095,6 +1097,17 @@ const ROUTE_PROCESS = {
   itassets:'itassets', cageloading:'cageloading', parcelretrieval:'parcelretrieval'
 };
 function processLabel(key){ const p = PROCESS_LIST.find(x=>x.key===key); return p ? p.label : key; }
+// Picks a sensible first screen after login for a Supplies-portal account.
+// Dashboard now lives inside the Supplies process (not a standalone item), so
+// a Staff/Hub login scoped away from 'supplies' should land somewhere they
+// can actually see in the nav, instead of an orphaned Dashboard page.
+function defaultLandingRoute(){
+  if(userHasProcess(session, 'supplies')) return {route:'dashboard', sub:'asset'};
+  if(userHasProcess(session, 'itassets')) return {route:'itassets', sub:'log'};
+  if(userHasProcess(session, 'cageloading')) return {route:'cageloading', sub:'list'};
+  if(userHasProcess(session, 'parcelretrieval')) return {route:'parcelretrieval', sub:'scan'};
+  return {route:'settings', sub:''};
+}
 function userHasProcess(u, key){
   if(!u) return false;
   if(u.role==='admin' || u.role==='department') return true;
@@ -1189,11 +1202,9 @@ function roleBadgeClass(role){
 // dropdown ({id,label,ic,children:[{id,sub,label}]}) — the dropdown's children
 // are that process's different modules, reached via navigate(route, subroute).
 const NAV = [
-  {group:'Overview', items:[
-    {id:'dashboard', label:'Dashboard', ic:'&#9673;'}
-  ]},
   {group:'Processes', items:[
     {type:'dropdown', id:'proc-supplies', processKey:'supplies', label:'Supplies (Asset & Consumables)', ic:'&#128230;', children:[
+      {id:'dashboard', sub:'asset', label:'Dashboard'},
       {id:'request', sub:'', label:'Request'},
       {id:'receiving', sub:'', label:'Receiving'},
       {id:'issuance', sub:'', label:'Issuance / Accountability'},
