@@ -112,6 +112,10 @@ a{color:inherit;}
 .notif-bell:hover{border-color:var(--faint);background:#EFF1F4;}
 .notif-dot{position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;padding:0 4px;border-radius:20px;background:var(--danger);color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;font-family:var(--sans);line-height:1;}
 .notif-panel{position:absolute;top:46px;right:0;width:340px;max-height:420px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 16px 40px rgba(16,24,38,0.18);z-index:20;}
+.soc-switcher{display:flex;align-items:center;gap:8px;background:#F5F6F8;border:1px solid var(--border);border-radius:9px;padding:6px 8px 6px 12px;}
+.soc-switcher label{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);white-space:nowrap;}
+.soc-switcher select{border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:12.5px;font-weight:600;color:var(--ink);background:#fff;}
+.soc-switcher select:focus{outline:none;border-color:var(--amber);}
 .notif-panel-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border);}
 .notif-panel-head h4{font-size:13px;font-family:var(--sans);font-weight:700;}
 .notif-panel-head .mark-read{font-size:11.5px;color:var(--info);font-weight:600;cursor:pointer;}
@@ -304,6 +308,7 @@ tr:last-child td{border-bottom:none;}
           <div class="crumbs" id="page-crumb">Overview</div>
         </div>
         <div class="topbar-actions">
+          <div id="soc-switcher"></div>
           <div class="notif-wrap">
             <div class="notif-bell" id="notif-bell" onclick="toggleNotifPanel(event)">&#128276;<span id="notif-dot" class="notif-dot" style="display:none;"></span></div>
             <div id="notif-panel"></div>
@@ -496,6 +501,7 @@ let route = 'dashboard';
 let subroute = '';
 let portalMode = null; // 'supplies' | 'department' — derived from the logged-in account
 let navGroupOpen = {}; // {[dropdownGroupId]: true/false} — which sidebar process dropdowns are expanded
+let adminViewSoc = ''; // admin-only: when set, scopes the whole portal (dashboards + data) to this one SOC, as if that were the admin's own site. '' = all SOCs combined.
 
 /* Keeps the logged-in user and the exact screen/tab open across an actual
    browser refresh (F5 / reload), so reloading the tab lands back where you
@@ -505,7 +511,7 @@ let navGroupOpen = {}; // {[dropdownGroupId]: true/false} — which sidebar proc
 function saveUiSession(){
   try{
     if(!session){ sessionStorage.removeItem(UI_SESSION_KEY); return; }
-    sessionStorage.setItem(UI_SESSION_KEY, JSON.stringify({portalMode, session, route, subroute}));
+    sessionStorage.setItem(UI_SESSION_KEY, JSON.stringify({portalMode, session, route, subroute, adminViewSoc}));
   }catch(e){ /* sessionStorage unavailable — refresh will just restart at login */ }
 }
 function clearUiSession(){
@@ -1034,6 +1040,7 @@ async function doLogin(){
     return;
   }
   portalMode = found.portal; // derived from the account itself — no separate portal picker
+  adminViewSoc = '';
   session = {id:found.id, username:found.username, fullName:found.fullName, role:found.role, portal:found.portal, department:found.department||null, site:found.site||null, processAccess:found.processAccess||null};
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
@@ -1051,6 +1058,7 @@ function doLogout(){
   clearUiSession();
   session = null;
   portalMode = null;
+  adminViewSoc = '';
   document.getElementById('login-username').value='';
   document.getElementById('login-password').value='';
   document.getElementById('login-error-slot').innerHTML='';
@@ -1086,15 +1094,42 @@ function sessionHasProcess(key){ return userHasProcess(session, key); }
 // e.g. SOC5/SOC6/...) it belongs to. Admins always see everything. Staff/Hub logins
 // only see records tagged with their own site, plus any legacy/untagged records
 // (soc==='' ) that predate this feature and are treated as shared.
-function currentSoc(){ return (session && session.site) ? session.site : ''; }
+// For a Staff/Hub login this is their fixed home site. For an admin it's
+// whichever SOC they've currently switched the view to (via socSwitcherHtml) —
+// so records an admin creates while "viewing" a SOC get tagged to that SOC,
+// same as a real login for that site would. Admin on "All SOCs" gets '' (shared/untagged).
+function currentSoc(){
+  if(session && session.role==='admin') return adminViewSoc || '';
+  return (session && session.site) ? session.site : '';
+}
 function socOf(recSoc){ return recSoc ? `<span class="small-note">${esc(recSoc)}</span>` : '<span class="small-note">—</span>'; }
 function socVisible(recSoc){
   if(!session) return true;
-  if(session.role==='admin' || session.role==='department') return true;
+  if(session.role==='admin'){
+    if(adminViewSoc) return !recSoc || recSoc===adminViewSoc; // admin narrowed to one SOC: that SOC + untagged/legacy records
+    return true; // admin, no filter picked: everything
+  }
+  if(session.role==='department') return true;
   if(!recSoc) return true;
   return recSoc === session.site;
 }
 function socFilter(arr){ return (arr||[]).filter(x=>socVisible(x.soc)); }
+// ---- Admin-only "viewing as SOC" switcher: lets an admin narrow their own
+// dashboards/lists down to a single site, same shape a Staff/Hub login for
+// that site would see, without needing a separate account. ----
+function socSwitcherHtml(){
+  if(!session || session.role!=='admin') return '';
+  const opts = ['<option value="">All SOCs</option>'].concat(
+    (DB.warehouses||[]).map(w=>`<option value="${esc(w)}" ${w===adminViewSoc?'selected':''}>${esc(w)}</option>`)
+  );
+  return `<div class="soc-switcher"><label>Viewing</label><select onchange="setAdminViewSoc(this.value)">${opts.join('')}</select></div>`;
+}
+function setAdminViewSoc(val){
+  adminViewSoc = val;
+  saveUiSession();
+  renderShell();
+  navigate(route, subroute);
+}
 function roleBadgeClass(role){
   if(role==='admin') return 'badge-admin';
   if(role==='department') return 'badge-department';
@@ -1209,7 +1244,9 @@ function renderShell(){
   }).join('');
   document.getElementById('nav-list').innerHTML = navHtml;
   const sideT2 = document.querySelector('.side-brand .t2');
-  if(sideT2) sideT2.textContent = session.site ? session.site : 'System';
+  if(sideT2) sideT2.textContent = session.role==='admin' ? (adminViewSoc || 'All SOCs') : (session.site ? session.site : 'System');
+  const socSwitcherEl = document.getElementById('soc-switcher');
+  if(socSwitcherEl) socSwitcherEl.innerHTML = socSwitcherHtml();
   document.getElementById('side-name').textContent = session.fullName;
   document.getElementById('side-role').textContent = session.department ? (session.department+' · '+session.role) : session.role;
   document.getElementById('side-av').textContent = session.fullName.split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
@@ -5123,6 +5160,7 @@ function exportParcels(){
     const stillExists = DB.users.find(u=>u.id===saved.session.id);
     if(stillExists){
       portalMode = saved.portalMode || stillExists.portal || 'supplies';
+      adminViewSoc = saved.adminViewSoc || '';
       session = {id:stillExists.id, username:stillExists.username, fullName:stillExists.fullName, role:stillExists.role, portal:stillExists.portal, department:stillExists.department||null, site:stillExists.site||null, processAccess:stillExists.processAccess||null};
       route = saved.route || (portalMode==='department' ? 'ddashboard' : 'dashboard');
       subroute = saved.subroute || '';
