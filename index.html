@@ -579,20 +579,39 @@ if(!window.storage){
    ================================================================ */
 const PAGE_LOAD_MODIFIED = new Date(document.lastModified).getTime();
 let staleVersionBannerShown = false;
+/* Counts consecutive mismatches before actually showing the banner (see
+   below) — reset to 0 the moment a check comes back matching. */
+let staleVersionMismatchStreak = 0;
 async function checkForNewVersion(){
   if(staleVersionBannerShown) return;
   try{
-    const res = await fetch(location.pathname, {method:'HEAD', cache:'no-store'});
+    /* {cache:'no-store'} only bypasses THIS BROWSER's own cache — it has no
+       effect on a corporate/office network proxy sitting in between, which
+       can still serve a stale cached copy of this exact URL regardless of
+       that flag or the server's own Cache-Control header, if it's
+       configured to cache aggressively. A unique query string on every
+       request defeats any such proxy cache, since it can no longer treat
+       repeated checks as "the same URL". */
+    const res = await fetch(location.pathname+'?_v='+Date.now(), {method:'HEAD', cache:'no-store'});
     const serverModified = new Date(res.headers.get('Last-Modified')).getTime();
-    if(!isNaN(serverModified) && !isNaN(PAGE_LOAD_MODIFIED) && serverModified !== PAGE_LOAD_MODIFIED){
-      staleVersionBannerShown = true;
-      const bar = document.createElement('div');
-      bar.id = 'stale-version-banner';
-      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:var(--amber);color:var(--navy);padding:10px 16px;font-size:13px;font-weight:700;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,0.25);';
-      bar.innerHTML = 'This tab is running an outdated version of the app — please save any in-progress work, then reload. '
-        + '<button style="margin-left:10px;padding:6px 14px;border-radius:6px;border:1px solid var(--navy);background:var(--navy);color:#fff;font-weight:700;cursor:pointer;" onclick="location.reload()">Reload now</button>';
-      document.body.prepend(bar);
+    if(isNaN(serverModified) || isNaN(PAGE_LOAD_MODIFIED) || serverModified===PAGE_LOAD_MODIFIED){
+      staleVersionMismatchStreak = 0;
+      return;
     }
+    /* Require two mismatches in a row (this poll and the next, ~60s apart)
+       before trusting it — a single blip (a slow-to-propagate CDN edge, a
+       one-off network hiccup) shouldn't be enough to tell someone their
+       work might be at risk and they need to reload. A real new deploy
+       stays mismatched on the next check too; a transient glitch doesn't. */
+    staleVersionMismatchStreak++;
+    if(staleVersionMismatchStreak < 2) return;
+    staleVersionBannerShown = true;
+    const bar = document.createElement('div');
+    bar.id = 'stale-version-banner';
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:var(--amber);color:var(--navy);padding:10px 16px;font-size:13px;font-weight:700;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,0.25);';
+    bar.innerHTML = 'This tab is running an outdated version of the app — please save any in-progress work, then reload. '
+      + '<button style="margin-left:10px;padding:6px 14px;border-radius:6px;border:1px solid var(--navy);background:var(--navy);color:#fff;font-weight:700;cursor:pointer;" onclick="location.reload()">Reload now</button>';
+    document.body.prepend(bar);
   }catch(e){ /* offline or blocked — harmless, next interval retries */ }
 }
 setInterval(checkForNewVersion, 60000);
