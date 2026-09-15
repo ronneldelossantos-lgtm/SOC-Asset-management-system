@@ -116,6 +116,18 @@ a{color:inherit;}
 .soc-switcher label{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);white-space:nowrap;}
 .soc-switcher select{border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:12.5px;font-weight:600;color:var(--ink);background:#fff;}
 .soc-switcher select:focus{outline:none;border-color:var(--amber);}
+.gsearch-wrap{position:relative;}
+.gsearch-ic{position:absolute;left:11px;top:50%;transform:translateY(-50%);font-size:13px;color:var(--faint);pointer-events:none;}
+.gsearch-input{width:230px;padding:9px 10px 9px 32px;border:1px solid var(--border);border-radius:9px;font-size:12.5px;background:#F5F6F8;color:var(--ink);transition:width .15s,background .15s;}
+.gsearch-input:focus{outline:none;border-color:var(--amber);background:#fff;width:290px;}
+.gsearch-panel{position:absolute;top:44px;left:0;width:340px;max-height:440px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 16px 40px rgba(16,24,38,0.18);z-index:25;display:none;}
+.gsearch-group-label{font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);font-weight:700;padding:10px 14px 4px;}
+.gsearch-item{padding:9px 14px;cursor:pointer;border-top:1px solid var(--border);}
+.gsearch-group-label + .gsearch-item{border-top:none;}
+.gsearch-item:hover{background:#F5F6F8;}
+.gsearch-item .gt{font-size:13px;font-weight:600;color:var(--ink);}
+.gsearch-item .gs{font-size:11.5px;color:var(--muted);margin-top:2px;}
+.gsearch-empty{padding:16px;text-align:center;color:var(--faint);font-size:12.5px;}
 .notif-panel-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border);}
 .notif-panel-head h4{font-size:13px;font-family:var(--sans);font-weight:700;}
 .notif-panel-head .mark-read{font-size:11.5px;color:var(--info);font-weight:600;cursor:pointer;}
@@ -308,6 +320,11 @@ tr:last-child td{border-bottom:none;}
           <div class="crumbs" id="page-crumb">Overview</div>
         </div>
         <div class="topbar-actions">
+          <div class="gsearch-wrap">
+            <span class="gsearch-ic">&#128269;</span>
+            <input id="gsearch-input" class="gsearch-input" placeholder="Search everything…" autocomplete="off" oninput="onGlobalSearchInput()" onfocus="onGlobalSearchInput()">
+            <div id="gsearch-panel" class="gsearch-panel"></div>
+          </div>
           <div id="soc-switcher"></div>
           <div class="notif-wrap">
             <div class="notif-bell" id="notif-bell" onclick="toggleNotifPanel(event)">&#128276;<span id="notif-dot" class="notif-dot" style="display:none;"></span></div>
@@ -606,7 +623,25 @@ function migrateDB(){
   if(!DB.departments) DB.departments = [];
   if(!DB.employees) DB.employees = [];
   if(!DB.departmentSoc) DB.departmentSoc = {};
-  ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'].forEach(d=>{ if(!DB.departments.includes(d)) DB.departments.push(d); });
+  // Departments used to be a flat, de-duplicated list of name strings, with a
+  // separate optional "Home SOC" map (DB.departmentSoc: name -> soc). That
+  // meant a department name could only ever belong to one SOC. Departments
+  // are now {name, soc} entries stored directly in DB.departments, and the
+  // same name can appear more than once as long as each entry's SOC differs
+  // (e.g. "Logistics" at SOC5 and a separate "Logistics" at SOC6).
+  if(DB.departments.length && typeof DB.departments[0] === 'string'){
+    DB.departments = DB.departments.map(n=>({name:n, soc: DB.departmentSoc[n]||''}));
+  }
+  ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'].forEach(d=>{ if(!DB.departments.some(x=>x.name===d)) DB.departments.push({name:d, soc:''}); });
+  // Department-role logins carry their own resolved departmentSoc now (set
+  // when the login was created/edited), instead of it being re-derived from
+  // DB.departmentSoc on every request/return/dept-issuance filed.
+  DB.users.forEach(u=>{
+    if(u.role==='department' && u.departmentSoc===undefined){
+      const match = DB.departments.find(d=>d.name===u.department);
+      u.departmentSoc = match ? (match.soc||'') : '';
+    }
+  });
   (DB.receiving||[]).forEach(r=>{ if(r.from && !DB.suppliers.includes(r.from)) DB.suppliers.push(r.from); });
   if(DB.accountability.length && typeof DB.accountability[0] === 'string'){
     DB.accountability = DB.accountability.map(n=>({name:n, email:''}));
@@ -1054,7 +1089,7 @@ async function doLogin(){
   }
   portalMode = found.portal; // derived from the account itself — no separate portal picker
   adminViewSoc = '';
-  session = {id:found.id, username:found.username, fullName:found.fullName, role:found.role, portal:found.portal, department:found.department||null, site:found.site||null, processAccess:found.processAccess||null};
+  session = {id:found.id, username:found.username, fullName:found.fullName, role:found.role, portal:found.portal, department:found.department||null, departmentSoc:found.departmentSoc||null, site:found.site||null, processAccess:found.processAccess||null};
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
   if(portalMode==='department'){
@@ -1399,7 +1434,110 @@ document.addEventListener('click', function(e){
     const wrap = document.querySelector('.notif-wrap');
     if(wrap && !wrap.contains(e.target)){ notifPanelOpen=false; renderNotifPanel(); }
   }
+  const gwrap = document.querySelector('.gsearch-wrap');
+  const gpanel = document.getElementById('gsearch-panel');
+  if(gwrap && gpanel && !gwrap.contains(e.target)){ gpanel.style.display='none'; }
 });
+
+/* ============================= GLOBAL SEARCH ============================= */
+// One search box, scoped to whatever the signed-in session can already see:
+// socFilter() keeps transactional records to the current SOC, sessionHasProcess()
+// keeps process-gated modules (PDA/cage/parcel) hidden from logins without
+// access to them, and the department portal only ever searches its own
+// department's records. Results link back to the matching module's list/tab —
+// there's no separate record detail page to deep-link to.
+function gsearchNav(route, sub){
+  const input = document.getElementById('gsearch-input');
+  if(input) input.value = '';
+  const panel = document.getElementById('gsearch-panel');
+  if(panel){ panel.style.display='none'; panel.innerHTML=''; }
+  navigate(route, sub);
+}
+function gsearchGroup(label, items){ return items.length ? {label, items} : null; }
+function globalSearchResults(q){
+  const query = q.trim().toLowerCase();
+  if(!query) return [];
+  const hit = (...vals) => vals.some(v=>v!==undefined && v!==null && String(v).toLowerCase().includes(query));
+  const cap = arr => arr.slice(0,6);
+  const groups = [];
+
+  if(portalMode==='department'){
+    const myReqs = DB.requests.filter(r=>r.department===session.department && hit(r.id, r.requestedBy, r.accountableName, r.notes));
+    groups.push(gsearchGroup('My requests', cap(myReqs).map(r=>({ title:r.id, sub:(r.status||'')+' · '+(r.requestedBy||''), go:()=>gsearchNav('drequest','list') }))));
+    const myIssu = DB.deptIssuance.filter(d=>d.department===session.department && hit(d.id, d.sku, d.description, d.opsId, d.receivedByName, d.assetTagging));
+    groups.push(gsearchGroup('My issuance', cap(myIssu).map(d=>({ title:d.id, sub:(d.sku||'')+' · '+(d.description||''), go:()=>gsearchNav('dissuance','list') }))));
+    const myRets = DB.returns.filter(r=>r.department===session.department && hit(r.id, r.sku, r.description));
+    groups.push(gsearchGroup('My returns', cap(myRets).map(r=>({ title:r.id, sub:(r.sku||'')+' · '+(r.description||''), go:()=>gsearchNav('dreturn','list') }))));
+    return groups.filter(Boolean);
+  }
+
+  const skuHits = DB.sku.filter(s=>hit(s.sku, s.description));
+  groups.push(gsearchGroup('SKU', cap(skuHits).map(s=>({ title:s.sku, sub:s.description, go:()=>gsearchNav('settings','sku') }))));
+
+  const deptHits = DB.departments.filter(d=>hit(d.name, d.soc));
+  groups.push(gsearchGroup('Departments', cap(deptHits).map(d=>({ title:d.name, sub:d.soc||'Not site-specific', go:()=>gsearchNav('settings','dept') }))));
+
+  const supHits = DB.suppliers.filter(s=>hit(s));
+  groups.push(gsearchGroup('Suppliers', cap(supHits).map(s=>({ title:s, sub:'Supplier', go:()=>gsearchNav('settings','supplier') }))));
+
+  const acctHits = DB.accountability.filter(a=>hit(a.name, a.email, a.department));
+  groups.push(gsearchGroup('Accountability', cap(acctHits).map(a=>({ title:a.name, sub:a.email||a.department||'', go:()=>gsearchNav('settings','acct') }))));
+
+  const empHits = DB.employees.filter(e=>hit(e.opsId, e.fullName, e.agency, e.department));
+  groups.push(gsearchGroup('Ops ID directory', cap(empHits).map(e=>({ title:e.fullName, sub:(e.opsId||'')+' · '+(e.department||''), go:()=>gsearchNav('settings','opsid') }))));
+
+  if(session.role==='admin'){
+    const userHits = DB.users.filter(u=>hit(u.fullName, u.username, u.department, u.site));
+    groups.push(gsearchGroup('Logins', cap(userHits).map(u=>({ title:u.fullName, sub:(u.username||'')+' · '+u.role, go:()=>gsearchNav('settings','access') }))));
+  }
+
+  if(sessionHasProcess('supplies')){
+    const reqHits = socFilter(DB.requests).filter(r=>hit(r.id, r.department, r.requestedBy, r.accountableName));
+    groups.push(gsearchGroup('Requests', cap(reqHits).map(r=>({ title:r.id, sub:(r.department||'')+' · '+(r.status||''), go:()=>gsearchNav('request','list') }))));
+
+    const recvHits = socFilter(DB.receiving).filter(r=>hit(r.id, r.sku, r.description, r.from));
+    groups.push(gsearchGroup('Receiving', cap(recvHits).map(r=>({ title:r.id, sub:(r.sku||'')+' · '+(r.from||''), go:()=>gsearchNav('receiving','list') }))));
+
+    const issHits = socFilter(DB.issuance).filter(r=>hit(r.id, r.sku, r.description, r.department, r.accountability, r.transmittalNo));
+    groups.push(gsearchGroup('Issuance', cap(issHits).map(r=>({ title:r.id, sub:(r.sku||'')+' · '+(r.department||''), go:()=>gsearchNav('issuance','log') }))));
+
+    const retHits = socFilter(DB.returns).filter(r=>hit(r.id, r.sku, r.description, r.department));
+    groups.push(gsearchGroup('Department Returns', cap(retHits).map(r=>({ title:r.id, sub:(r.sku||'')+' · '+(r.department||''), go:()=>gsearchNav('returns','log') }))));
+  }
+
+  if(sessionHasProcess('itassets')){
+    const pdaHits = socFilter(DB.pdas).filter(p=>hit(p.pdaNo, p.serial));
+    groups.push(gsearchGroup('PDAs', cap(pdaHits).map(p=>({ title:p.pdaNo, sub:p.serial||'', go:()=>gsearchNav('itassets','masterlist') }))));
+  }
+
+  if(sessionHasProcess('cageloading')){
+    const cageHits = socFilter(DB.cages).filter(c=>hit(c.id, c.cageId, c.loader, c.source, c.dest));
+    groups.push(gsearchGroup('Cages', cap(cageHits).map(c=>({ title:c.cageId, sub:c.dest||'', go:()=>gsearchNav('cageloading','list') }))));
+  }
+
+  if(sessionHasProcess('parcelretrieval')){
+    const parcelHits = socFilter(DB.parcels).filter(p=>hit(p.parcelId, p.station, p.retriever));
+    groups.push(gsearchGroup('Parcels', cap(parcelHits).map(p=>({ title:p.parcelId, sub:p.station||'', go:()=>gsearchNav('parcelretrieval','list') }))));
+  }
+
+  return groups.filter(Boolean);
+}
+let gsearchLastGroups = [];
+function onGlobalSearchInput(){
+  const input = document.getElementById('gsearch-input');
+  const panel = document.getElementById('gsearch-panel');
+  if(!input || !panel) return;
+  const q = input.value;
+  if(!q.trim()){ panel.style.display='none'; panel.innerHTML=''; return; }
+  const groups = globalSearchResults(q);
+  gsearchLastGroups = groups;
+  panel.style.display = 'block';
+  if(groups.length===0){ panel.innerHTML = '<div class="gsearch-empty">No matches for "'+esc(q)+'".</div>'; return; }
+  panel.innerHTML = groups.map((g,gi)=>
+    '<div class="gsearch-group-label">'+esc(g.label)+'</div>' +
+    g.items.map((it,ii)=>`<div class="gsearch-item" onclick="gsearchLastGroups[${gi}].items[${ii}].go()"><div class="gt">${esc(it.title)}</div>${it.sub?`<div class="gs">${esc(it.sub)}</div>`:''}</div>`).join('')
+  ).join('');
+}
 
 /* ============================= DASHBOARD ============================= */
 function renderDashboard(){
@@ -1567,7 +1705,7 @@ function renderRequest(){
 function requestFormHtml(){
   const deptField = portalMode==='department'
     ? `<div class="field"><label>Department</label><input value="${esc(session.department)}" disabled class="autofill"></div>`
-    : `<div class="field"><label>Department</label><select id="req-dept">${DB.departments.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>`;
+    : `<div class="field"><label>Department</label><select id="req-dept">${deptOptionsHtml()}</select></div>`;
   return `
   <div class="card">
     <h3>Replenishment request</h3>
@@ -1696,7 +1834,8 @@ function refreshReqItemsTable(){
 function isValidEmail(e){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e||'').trim()); }
 async function submitRequest(){
   if(reqDraftItems.length===0){ toast('Add at least one item before submitting.'); return; }
-  const dept = portalMode==='department' ? session.department : document.getElementById('req-dept').value;
+  const deptSel = portalMode==='department' ? {name:session.department, soc:session.departmentSoc||''} : parseDeptKey(document.getElementById('req-dept').value);
+  const dept = deptSel.name;
   const notes = document.getElementById('req-notes').value;
   const acctName = document.getElementById('req-acct-name').value.trim();
   if(!acctName){ toast("Enter the accountable person's full name."); return; }
@@ -1712,7 +1851,7 @@ async function submitRequest(){
     accountableName, accountableEmail,
     notes, status:initialStatus, dateFiled: nowISO(), decidedBy:null, decidedDate:null,
     requiresApprovalFrom: approverUsername || null,
-    soc: (DB.departmentSoc && DB.departmentSoc[dept]) || ''
+    soc: deptSel.soc || ''
   });
   reqDraftItems = [];
   if(approverUsername){
@@ -2655,7 +2794,7 @@ function openEditIssuance(id){
     <h3>Edit issuance record</h3>
     <div class="card-sub mono">${esc(r.id)} &middot; ${esc(r.sku)} &middot; ${esc(r.description)}</div>
     <div class="form-row" style="margin-top:14px;">
-      <div class="field"><label>Department</label><select id="edit-iss-dept">${DB.departments.map(d=>`<option ${d===r.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+      <div class="field"><label>Department</label><select id="edit-iss-dept">${deptNames().map(d=>`<option ${d===r.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
       <div class="field"><label>Quantity</label><input type="number" min="0" id="edit-iss-qty" value="${r.qty}"></div>
     </div>
     <div class="form-row">
@@ -3317,7 +3456,7 @@ async function submitDeptIssuance(){
   }
   if(!opsId || !emp){ toast('Enter a valid Ops ID for the receiving staff member.'); return; }
   const id = nextCode('DI','di');
-  DB.deptIssuance.push({id, department:session.department, sku:info.sku, description:info.description, uom:info.uom, qty, assetTagging, deployedArea, opsId, receivedByName:emp.fullName, remarks, date:nowISO(), issuedBy:session.fullName, soc:(DB.departmentSoc && DB.departmentSoc[session.department]) || ''});
+  DB.deptIssuance.push({id, department:session.department, sku:info.sku, description:info.description, uom:info.uom, qty, assetTagging, deployedArea, opsId, receivedByName:emp.fullName, remarks, date:nowISO(), issuedBy:session.fullName, soc:session.departmentSoc || ''});
   await saveDB();
   toast(id+' issued to '+emp.fullName+'.');
   dissuCategory=null; dissuAutoFound=null;
@@ -3511,7 +3650,7 @@ async function submitDeptReturn(){
     id, department:session.department, category:dretCategory, condition:dretCondition,
     sku:info.sku, description:info.description, uom:info.uom, qty, assetTagging, irFile, irFileData, remarks,
     status:'Pending', dateReturned:nowISO(), returnedBy:session.fullName, receivedBy:null, dateReceived:null,
-    soc:(DB.departmentSoc && DB.departmentSoc[session.department]) || ''
+    soc:session.departmentSoc || ''
   });
   addNotification(session.department+' returned '+info.sku+' ('+id+')'+(dretCondition==='Damaged'?' — damaged, IR attached':'')+'.', 'supplies', 'returns', 'incoming');
   await saveDB();
@@ -3700,32 +3839,99 @@ async function importSkuCsv(inputEl){
   toast('Imported '+added+' SKU'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (missing/duplicate/invalid).'):'.'));
   renderSettings();
 }
+// A department is now a {name, soc} entry — the same name can be added more
+// than once, once per different SOC. `deptKey`/`parseDeptKey` round-trip a
+// specific entry through a <select> option value so pickers stay unambiguous
+// even when several entries share a name. `deptNames()` gives the deduped
+// name list for pickers that only ever cared about the name (scope filters,
+// accountability, issuance re-labelling).
+const DEPT_KEY_SEP = '\u241F';
+function deptKey(d){ return (d.name||'') + DEPT_KEY_SEP + (d.soc||''); }
+function parseDeptKey(key){
+  const idx = (key||'').lastIndexOf(DEPT_KEY_SEP);
+  if(idx<0) return {name:key||'', soc:''};
+  return {name:key.slice(0,idx), soc:key.slice(idx+1)};
+}
+function deptLabel(d){ return d.soc ? `${d.name} — ${d.soc}` : `${d.name} — Not site-specific`; }
+function deptOptionsHtml(selectedKey){
+  return DB.departments.map(d=>{
+    const k = deptKey(d);
+    return `<option value="${esc(k)}" ${k===selectedKey?'selected':''}>${esc(deptLabel(d))}</option>`;
+  }).join('');
+}
+function deptNames(){ return Array.from(new Set(DB.departments.map(d=>d.name))); }
+function deptSocOptionsHtml(selectedSoc){
+  return '<option value="">— Not site-specific —</option>' + DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===(selectedSoc||'')?'selected':''}>${esc(w)}</option>`).join('');
+}
 function settingsDepartmentsHtml(){
   return `<div class="card">
-    <div class="list-head"><h3>Add department</h3>${importBtn('importListCsv_departments','Department (single column)')}</div>
+    <div class="list-head"><h3>Add department</h3>${importBtn('importListCsv_departments','Department, SOC (optional)')}</div>
+    <div class="card-sub">A department can be added more than once, each time under a different SOC — its requests are tagged with that SOC right away and only that SOC's Supplies staff see them. Leave SOC unset if it isn't tied to one site.</div>
     <div style="display:flex;gap:10px;">
-      <input id="new-list-val" placeholder="Department name" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;">
-      <button class="btn btn-primary" onclick="addListVal('departments')">Add</button>
+      <input id="new-dept-name" placeholder="Department name" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;">
+      <select id="new-dept-soc" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;">${deptSocOptionsHtml()}</select>
+      <button class="btn btn-primary" onclick="addDepartment()">Add</button>
     </div>
   </div>
   <div class="card">
     <h3>Department list (${DB.departments.length})</h3>
-    <div class="card-sub">Set each department's home SOC so requests it files are tagged with that SOC right away, and only that SOC's Supplies staff see them. Leave unset if the department isn't tied to one SOC.</div>
-    <div class="tbl-wrap"><table><tr><th>Department</th><th>Home SOC</th><th></th></tr>
-      ${DB.departments.map((v,i)=>`<tr><td>${esc(v)}</td>
-        <td><select onchange="setDepartmentSoc('${esc(v)}', this.value)">
-          <option value="">— Not site-specific —</option>
-          ${DB.warehouses.map(w=>`<option value="${esc(w)}" ${(DB.departmentSoc||{})[v]===w?'selected':''}>${esc(w)}</option>`).join('')}
-        </select></td>
-        <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditListVal('departments',${i})">Edit</button> <button class="icon-btn" onclick="removeListVal('departments',${i})">&times;</button></td></tr>`).join('')}
+    <div class="tbl-wrap"><table><tr><th>Department</th><th>SOC</th><th></th></tr>
+      ${DB.departments.map((d,i)=>`<tr><td>${esc(d.name)}</td><td>${esc(d.soc)||'<span class="small-note">Not site-specific</span>'}</td>
+        <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditDepartment(${i})">Edit</button> <button class="icon-btn" onclick="removeDepartment(${i})">&times;</button></td></tr>`).join('')}
     </table></div>
   </div>`;
 }
-async function setDepartmentSoc(dept, soc){
-  if(!DB.departmentSoc) DB.departmentSoc = {};
-  if(soc) DB.departmentSoc[dept] = soc; else delete DB.departmentSoc[dept];
+async function addDepartment(){
+  const name = document.getElementById('new-dept-name').value.trim();
+  const soc = document.getElementById('new-dept-soc').value;
+  if(!name){ toast('Enter a department name.'); return; }
+  if(DB.departments.some(d=>d.name===name && (d.soc||'')===soc)){ toast('That department already exists for that SOC.'); return; }
+  DB.departments.push({name, soc});
   await saveDB();
-  toast('Home SOC updated for '+dept+'.');
+  toast('Added.');
+  renderSettings();
+}
+function openEditDepartment(i){
+  const d = DB.departments[i];
+  if(!d) return;
+  showModal(`
+    <h3>Edit department</h3>
+    <div class="field"><label>Name</label><input id="edit-dept-name" value="${esc(d.name)}"></div>
+    <div class="field"><label>SOC</label><select id="edit-dept-soc">${deptSocOptionsHtml(d.soc)}</select></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveDepartmentEdit(${i})">Save changes</button>
+    </div>
+  `);
+}
+async function saveDepartmentEdit(i){
+  const d = DB.departments[i];
+  if(!d) return;
+  const name = document.getElementById('edit-dept-name').value.trim();
+  const soc = document.getElementById('edit-dept-soc').value;
+  if(!name){ toast('Enter a department name.'); return; }
+  if(DB.departments.some((x,idx)=>idx!==i && x.name===name && (x.soc||'')===soc)){ toast('That department already exists for that SOC.'); return; }
+  const oldName = d.name, oldSoc = d.soc||'';
+  d.name = name; d.soc = soc;
+  if(oldName!==name) cascadeDepartmentRename(oldName, name);
+  // Keep department-role logins bound to this specific (name, SOC) entry in sync.
+  DB.users.forEach(u=>{
+    if(u.role==='department' && u.department===oldName && (u.departmentSoc||'')===oldSoc){
+      u.department = name; u.departmentSoc = soc;
+    }
+  });
+  await saveDB();
+  closeModal();
+  toast('Updated.');
+  renderSettings();
+}
+function removeDepartment(i){
+  confirmAction('Remove this department from the list?', async ()=>{
+    DB.departments.splice(i,1);
+    await saveDB();
+    toast('Removed.');
+    renderSettings();
+  });
 }
 function settingsListHtml(key, label, allowCsv){
   return `<div class="card">
@@ -3758,9 +3964,7 @@ async function saveListValEdit(key, i){
   const v = document.getElementById('edit-list-val').value.trim();
   if(!v){ toast('Enter a value first.'); return; }
   if(DB[key].some((x,idx)=>idx!==i && x===v)){ toast('That value already exists.'); return; }
-  const oldVal = DB[key][i];
   DB[key][i] = v;
-  if(key==='departments' && oldVal!==v){ cascadeDepartmentRename(oldVal, v); }
   await saveDB();
   closeModal();
   toast('Updated.');
@@ -3789,10 +3993,6 @@ function cascadeDepartmentRename(oldName, newName){
     DB.pdaAllocations[newName] = DB.pdaAllocations[oldName];
     delete DB.pdaAllocations[oldName];
   }
-  if(DB.departmentSoc && Object.prototype.hasOwnProperty.call(DB.departmentSoc, oldName)){
-    DB.departmentSoc[newName] = DB.departmentSoc[oldName];
-    delete DB.departmentSoc[oldName];
-  }
 }
 async function addListVal(key){
   const v = document.getElementById('new-list-val').value.trim();
@@ -3803,7 +4003,22 @@ async function addListVal(key){
   toast('Added.');
   renderSettings();
 }
-async function importListCsv_departments(inputEl){ await importListCsv('departments', inputEl); }
+async function importListCsv_departments(inputEl){
+  const rows = await importCsvRows(inputEl);
+  if(!rows) return;
+  let added = 0, skipped = 0;
+  rows.forEach(row=>{
+    const name = (csvField(row, ['Department','Name']).trim()) || (Object.values(row)[0]||'').trim();
+    const socRaw = csvField(row, ['SOC','Site','Warehouse']).trim();
+    const soc = socRaw ? (DB.warehouses.find(w=>w.toLowerCase()===socRaw.toLowerCase()) || '') : '';
+    if(!name || DB.departments.some(d=>d.name===name && (d.soc||'')===soc)){ skipped++; return; }
+    DB.departments.push({name, soc});
+    added++;
+  });
+  if(added){ await saveDB(); }
+  toast('Imported '+added+' entr'+(added===1?'y':'ies')+(skipped?(', skipped '+skipped+' (blank/duplicate).'):'.'));
+  renderSettings();
+}
 async function importListCsv_suppliers(inputEl){ await importListCsv('suppliers', inputEl); }
 async function importListCsv_sortingStations(inputEl){ await importListCsv('sortingStations', inputEl); }
 async function importListCsv(key, inputEl){
@@ -3821,27 +4036,29 @@ async function importListCsv(key, inputEl){
   renderSettings();
 }
 async function removeListVal(key, i){
-  const val = DB[key][i];
   DB[key].splice(i,1);
-  if(key==='departments' && DB.departmentSoc) delete DB.departmentSoc[val];
   await saveDB();
   toast('Removed.');
   renderSettings();
 }
+function acctDeptOptions(selected){
+  return '<option value="">—</option>' + deptNames().map(d=>`<option ${d===selected?'selected':''}>${esc(d)}</option>`).join('');
+}
 function settingsAccountabilityHtml(){
   return `<div class="card">
-    <div class="list-head"><h3>Add accountable person</h3>${importBtn('importAcctCsv', 'Full Name, Email (optional)')}</div>
+    <div class="list-head"><h3>Add accountable person</h3>${importBtn('importAcctCsv', 'Full Name, Email (optional), Department (optional)')}</div>
     <div class="card-sub">Accountability is tied to a named person, not just a role — this person is selectable at Issuance.</div>
     <div class="form-row">
       <div class="field"><label>Full name</label><input id="new-acct-name" placeholder="Full name"></div>
       <div class="field"><label>Email</label><input id="new-acct-email" type="email" placeholder="name@company.com"></div>
+      <div class="field"><label>Department</label><select id="new-acct-dept">${acctDeptOptions()}</select></div>
     </div>
     <div class="footer-actions"><button class="btn btn-primary" onclick="addAccountability()">Add person</button></div>
   </div>
   <div class="card">
     <h3>Accountable persons (${DB.accountability.length})</h3>
-    <div class="tbl-wrap"><table><tr><th>Full name</th><th>Email</th><th></th></tr>
-      ${DB.accountability.map((a,i)=>`<tr><td>${esc(a.name)}</td><td>${esc(a.email)||'<span class="small-note">—</span>'}</td>
+    <div class="tbl-wrap"><table><tr><th>Full name</th><th>Email</th><th>Department</th><th></th></tr>
+      ${DB.accountability.map((a,i)=>`<tr><td>${esc(a.name)}</td><td>${esc(a.email)||'<span class="small-note">—</span>'}</td><td>${esc(a.department)||'<span class="small-note">—</span>'}</td>
       <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditAcct(${i})">Edit</button>
       <button class="icon-btn" onclick="removeAccountability(${i})">&times;</button></td></tr>`).join('')}
     </table></div>
@@ -3850,8 +4067,9 @@ function settingsAccountabilityHtml(){
 async function addAccountability(){
   const name = document.getElementById('new-acct-name').value.trim();
   const email = document.getElementById('new-acct-email').value.trim();
+  const department = document.getElementById('new-acct-dept').value;
   if(!name){ toast("Enter the accountable person's full name."); return; }
-  DB.accountability.push({name, email});
+  DB.accountability.push({name, email, department});
   await saveDB();
   toast('Accountable person added.');
   renderSettings();
@@ -3862,6 +4080,7 @@ function openEditAcct(i){
     <h3>Edit accountable person</h3>
     <div class="field"><label>Full name</label><input id="edit-acct-name" value="${esc(a.name)}"></div>
     <div class="field"><label>Email</label><input id="edit-acct-email" value="${esc(a.email)}"></div>
+    <div class="field"><label>Department</label><select id="edit-acct-dept">${acctDeptOptions(a.department)}</select></div>
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveAcctEdit(${i})">Save changes</button>
@@ -3873,6 +4092,7 @@ async function saveAcctEdit(i){
   if(!name){ toast("Enter the accountable person's full name."); return; }
   DB.accountability[i].name = name;
   DB.accountability[i].email = document.getElementById('edit-acct-email').value.trim();
+  DB.accountability[i].department = document.getElementById('edit-acct-dept').value;
   await saveDB();
   closeModal();
   toast('Updated.');
@@ -3893,8 +4113,10 @@ async function importAcctCsv(inputEl){
   rows.forEach(row=>{
     const name = csvField(row, ['Full Name','Name']).trim();
     const email = csvField(row, ['Email']).trim();
+    const deptRaw = csvField(row, ['Department']).trim();
+    const department = deptNames().find(d=>d.toLowerCase()===deptRaw.toLowerCase()) || '';
     if(!name || DB.accountability.some(a=>a.name.toLowerCase()===name.toLowerCase())){ skipped++; return; }
-    DB.accountability.push({name, email});
+    DB.accountability.push({name, email, department});
     added++;
   });
   if(added){ await saveDB(); }
@@ -3912,7 +4134,7 @@ function readProcessAccessCheckboxes(idPrefix){
 }
 function settingsAccessHtml(){
   return `<div class="card">
-    <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department/hub), Password, Site/SOC (if role=admin/staff/hub), Department (if role=department), Process Access (staff/hub only — semicolon-separated: supplies;itassets;cageloading;parcelretrieval — blank = all), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
+    <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department/hub), Password, Site/SOC (if role=admin/staff/hub), Department (if role=department), Department SOC (optional — only needed to disambiguate if that department name exists under more than one SOC), Process Access (staff/hub only — semicolon-separated: supplies;itassets;cageloading;parcelretrieval — blank = all), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
     <div class="card-sub">Every login signs in with just a username and password — no portal or site picker. Set the role (and, for Staff/Hub/Admin, which SOC they work out of; for Department, which department) right here when creating the login.</div>
     <div class="form-row3">
       <div class="field"><label>Full name</label><input id="new-user-name" placeholder="Full name"></div>
@@ -3920,7 +4142,7 @@ function settingsAccessHtml(){
       <div class="field"><label>Role</label><select id="new-user-role" onchange="toggleNewUserDept()"><option value="staff">Staff</option><option value="hub">Hub</option><option value="admin">Admin</option><option value="department">Department</option></select></div>
     </div>
     <div class="form-row3" id="new-user-dept-wrap" style="display:none;">
-      <div class="field"><label>Department</label><select id="new-user-dept" onchange="refreshNewUserApproverOptions()">${DB.departments.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
+      <div class="field"><label>Department</label><select id="new-user-dept" onchange="refreshNewUserApproverOptions()">${deptOptionsHtml()}</select></div>
       <div class="field"><label>Password</label><input id="new-user-pass-dept" type="text" placeholder="Set a password"></div>
       <div class="field"><label>Requires approval from</label><select id="new-user-approver"><option value="">— No additional approval —</option></select></div>
     </div>
@@ -3941,7 +4163,7 @@ function settingsAccessHtml(){
       <div class="card-sub" style="margin-bottom:10px;">Optional — limit this staff login's visibility to specific SKUs, departments, and accountable persons. Leave a selector empty for full access on that dimension.</div>
       <div class="form-row3">
         <div class="field"><label>SKU code</label><select id="new-user-sku-scope" multiple size="6">${DB.sku.map(s=>`<option value="${esc(s.sku)}">${esc(s.sku)} — ${esc(s.description)}</option>`).join('')}</select></div>
-        <div class="field"><label>Department</label><select id="new-user-dept-scope" multiple size="6">${DB.departments.map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select></div>
+        <div class="field"><label>Department</label><select id="new-user-dept-scope" multiple size="6">${deptNames().map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select></div>
         <div class="field"><label>Accountability</label><select id="new-user-acct-scope" multiple size="6">${DB.accountability.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('')}</select></div>
       </div>
     </div>
@@ -4003,7 +4225,7 @@ function userScopeCell(u){
 function refreshNewUserApproverOptions(){
   const sel = document.getElementById('new-user-approver');
   if(!sel) return;
-  const dept = document.getElementById('new-user-dept').value;
+  const dept = parseDeptKey(document.getElementById('new-user-dept').value).name;
   const candidates = DB.users.filter(u=>u.role==='department' && u.department===dept);
   sel.innerHTML = '<option value="">— No additional approval —</option>' +
     candidates.map(u=>`<option value="${esc(u.username)}">${esc(u.fullName)} (${esc(u.username)})</option>`).join('');
@@ -4029,14 +4251,15 @@ async function addUser(){
   const isStaff = role === 'staff';
   const isHub = role === 'hub';
   const pass = isDept ? document.getElementById('new-user-pass-dept').value : document.getElementById('new-user-pass').value;
-  const department = isDept ? document.getElementById('new-user-dept').value : undefined;
+  const deptSel = isDept ? parseDeptKey(document.getElementById('new-user-dept').value) : undefined;
   const site = !isDept ? document.getElementById('new-user-site').value : undefined;
   if(!fullName||!username||!pass){ toast('Fill out all fields.'); return; }
+  if(isDept && !deptSel.name){ toast('Add a department in Settings first.'); return; }
   if(DB.users.find(u=>u.username.toLowerCase()===username.toLowerCase())){ toast('That username is taken.'); return; }
   const id = Math.max(0,...DB.users.map(u=>u.id))+1;
   const portal = isDept ? 'department' : 'supplies';
   const newUser = {id, username, password:pass, role, fullName, portal};
-  if(isDept) newUser.department = department;
+  if(isDept){ newUser.department = deptSel.name; newUser.departmentSoc = deptSel.soc; }
   if(isDept){
     const approverSel = document.getElementById('new-user-approver');
     const approverUsername = approverSel ? approverSel.value : '';
@@ -4064,7 +4287,7 @@ function openEditUser(id){
   const isStaff = u.role==='staff';
   const isHub = u.role==='hub';
   const deptFieldsHtml = isDept ? `
-    <div class="field"><label>Department</label><select id="edit-user-dept" onchange="refreshEditUserApproverOptions(${id})">${DB.departments.map(d=>`<option ${d===u.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+    <div class="field"><label>Department</label><select id="edit-user-dept" onchange="refreshEditUserApproverOptions(${id})">${deptOptionsHtml(deptKey({name:u.department, soc:u.departmentSoc||''}))}</select></div>
     <div class="field"><label>Requires approval from</label><select id="edit-user-approver"></select></div>
   ` : `
     <div class="field"><label>Site (SOC)</label><select id="edit-user-site">
@@ -4082,7 +4305,7 @@ function openEditUser(id){
     <div class="card-sub" style="margin-bottom:10px;">Optional — limit this staff login's visibility. Leave a selector empty for full access on that dimension.</div>
     <div class="form-row3">
       <div class="field"><label>SKU code</label><select id="edit-user-sku-scope" multiple size="6">${DB.sku.map(s=>`<option value="${esc(s.sku)}" ${(u.skuScope||[]).includes(s.sku)?'selected':''}>${esc(s.sku)} — ${esc(s.description)}</option>`).join('')}</select></div>
-      <div class="field"><label>Department</label><select id="edit-user-dept-scope" multiple size="6">${DB.departments.map(d=>`<option value="${esc(d)}" ${(u.departmentScope||[]).includes(d)?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+      <div class="field"><label>Department</label><select id="edit-user-dept-scope" multiple size="6">${deptNames().map(d=>`<option value="${esc(d)}" ${(u.departmentScope||[]).includes(d)?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
       <div class="field"><label>Accountability</label><select id="edit-user-acct-scope" multiple size="6">${DB.accountability.map(a=>`<option value="${esc(a.name)}" ${(u.accountabilityScope||[]).includes(a.name)?'selected':''}>${esc(a.name)}</option>`).join('')}</select></div>
     </div>
   ` : '';
@@ -4111,7 +4334,7 @@ function refreshEditUserApproverOptions(id){
   const deptSel = document.getElementById('edit-user-dept');
   if(!sel || !deptSel) return;
   const u = DB.users.find(x=>x.id===id);
-  const dept = deptSel.value;
+  const dept = parseDeptKey(deptSel.value).name;
   const candidates = DB.users.filter(x=>x.role==='department' && x.department===dept && x.id!==id);
   sel.innerHTML = '<option value="">— No additional approval —</option>' +
     candidates.map(x=>`<option value="${esc(x.username)}" ${u && u.approverUsername===x.username?'selected':''}>${esc(x.fullName)} (${esc(x.username)})</option>`).join('');
@@ -4133,7 +4356,9 @@ async function saveUserEdit(id){
   }
   if(pass) u.password = pass;
   if(u.role==='department'){
-    u.department = document.getElementById('edit-user-dept').value;
+    const deptSel = parseDeptKey(document.getElementById('edit-user-dept').value);
+    u.department = deptSel.name;
+    u.departmentSoc = deptSel.soc;
     const approverUsername = document.getElementById('edit-user-approver').value;
     if(approverUsername) u.approverUsername = approverUsername; else delete u.approverUsername;
   } else {
@@ -4286,6 +4511,7 @@ async function importUserCsv(inputEl){
     const role = normalizeRole(roleRaw);
     const password = csvField(row, ['Password','Pass']).trim();
     const deptRaw = csvField(row, ['Department','Dept']).trim();
+    const deptSocRaw = csvField(row, ['Department SOC','Dept SOC']).trim();
     const siteRaw = csvField(row, ['Site','SOC','Warehouse']).trim();
     if(!fullName || !username || !password){
       problems.push('Row '+rowNum+': missing full name, username, or password.');
@@ -4299,10 +4525,13 @@ async function importUserCsv(inputEl){
       problems.push('Row '+rowNum+': username "'+username+'" already exists.');
       return;
     }
-    let department;
+    let deptMatch;
     if(role==='department'){
-      department = DB.departments.find(d=>d.toLowerCase()===deptRaw.toLowerCase());
-      if(!department){
+      if(deptSocRaw){
+        deptMatch = DB.departments.find(d=>d.name.toLowerCase()===deptRaw.toLowerCase() && (d.soc||'').toLowerCase()===deptSocRaw.toLowerCase());
+      }
+      if(!deptMatch) deptMatch = DB.departments.find(d=>d.name.toLowerCase()===deptRaw.toLowerCase());
+      if(!deptMatch){
         problems.push('Row '+rowNum+': department "'+(deptRaw||'(blank)')+'" doesn\'t match any department on file.');
         return;
       }
@@ -4310,7 +4539,7 @@ async function importUserCsv(inputEl){
     const id = Math.max(0,...DB.users.map(u=>u.id),0)+1;
     const portal = role==='department' ? 'department' : 'supplies';
     const newUser = {id, username, password, role, fullName, portal};
-    if(department) newUser.department = department;
+    if(deptMatch){ newUser.department = deptMatch.name; newUser.departmentSoc = deptMatch.soc||''; }
     if(role!=='department' && siteRaw){
       const site = DB.warehouses.find(w=>w.toLowerCase()===siteRaw.toLowerCase());
       if(site) newUser.site = site;
@@ -4325,7 +4554,7 @@ async function importUserCsv(inputEl){
       const deptScopeRaw = splitScope(csvField(row, ['Department Scope']));
       const acctScopeRaw = splitScope(csvField(row, ['Accountability Scope']));
       newUser.skuScope = skuScopeRaw.filter(v=>skuInfo(v));
-      newUser.departmentScope = deptScopeRaw.filter(v=>DB.departments.includes(v));
+      newUser.departmentScope = deptScopeRaw.filter(v=>deptNames().includes(v));
       newUser.accountabilityScope = acctScopeRaw.filter(v=>DB.accountability.some(a=>a.name===v));
     }
     DB.users.push(newUser);
@@ -5373,7 +5602,7 @@ function exportParcels(){
     if(stillExists){
       portalMode = saved.portalMode || stillExists.portal || 'supplies';
       adminViewSoc = saved.adminViewSoc || '';
-      session = {id:stillExists.id, username:stillExists.username, fullName:stillExists.fullName, role:stillExists.role, portal:stillExists.portal, department:stillExists.department||null, site:stillExists.site||null, processAccess:stillExists.processAccess||null};
+      session = {id:stillExists.id, username:stillExists.username, fullName:stillExists.fullName, role:stillExists.role, portal:stillExists.portal, department:stillExists.department||null, departmentSoc:stillExists.departmentSoc||null, site:stillExists.site||null, processAccess:stillExists.processAccess||null};
       route = saved.route || (portalMode==='department' ? 'ddashboard' : 'dashboard');
       subroute = saved.subroute || '';
       document.getElementById('login-screen').style.display='none';
