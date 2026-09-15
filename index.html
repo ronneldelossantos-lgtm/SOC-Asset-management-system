@@ -417,6 +417,59 @@ if(!window.storage){
           return {key, value, shared: !!shared};
         }catch(e){ console.error('storage.set failed:', e); return null; }
       },
+      /* Same compare-and-swap as set(), but across several documents in one
+         atomic transaction: the app state is split into one document per
+         top-level section (users, requests, returns, ...) instead of a
+         single blob, since that blob hit Firestore's 1 MiB per-document
+         limit as real data accumulated (requests/returns/pdas alone were
+         ~87% of it). Several sections can still need to change together in
+         one user action (e.g. filing a request bumps both DB.requests and
+         DB.counters), and that has to stay all-or-nothing exactly like the
+         single-document save did — a transaction spanning every changed
+         document is what makes that still true, not a series of separate
+         writes that could partially fail. entries: [{key, value,
+         expectedPrevious}]. Returns {conflict:true, conflicts:{key:
+         currentValue}} listing every mismatched section, not just the
+         first, so the caller can refresh all of them at once. */
+      async setMulti(entries, shared){
+        try{
+          let conflicts = null;
+          await fsDB.runTransaction(async tx=>{
+            const refs = entries.map(e=>docRef(e.key, shared));
+            const snaps = await Promise.all(refs.map(r=>tx.get(r)));
+            const localConflicts = {};
+            snaps.forEach((snap, i)=>{
+              const cur = snap.exists ? snap.data().value : null;
+              if(cur !== entries[i].expectedPrevious) localConflicts[entries[i].key] = cur;
+            });
+            if(Object.keys(localConflicts).length){ conflicts = localConflicts; return; }
+            snaps.forEach((snap, i)=>{ tx.set(refs[i], {value: entries[i].value, updatedAt: Date.now()}); });
+          });
+          if(conflicts) return {conflict:true, conflicts};
+          /* Best-effort heartbeat so pollForUpdates() can tell which
+             sections changed with one small read instead of re-fetching
+             all ~27 section documents every 4s (at real usage volumes that
+             would blow through Firestore's free-tier daily read quota in
+             well under an hour). A failure here is non-fatal — the actual
+             data write above already succeeded — it just means an
+             already-open tab elsewhere might not notice this change until
+             its next full reload instead of its next poll tick. Returns
+             the exact timestamp used so the caller can record the same
+             value locally and not mistake its own just-completed write for
+             a change made by someone else on the very next poll. */
+          const now = Date.now();
+          try{
+            const metaRef = docRef('__meta', shared);
+            await fsDB.runTransaction(async tx=>{
+              const snap = await tx.get(metaRef);
+              const meta = snap.exists ? JSON.parse(snap.data().value) : {};
+              entries.forEach(e=>{ meta[e.key] = now; });
+              tx.set(metaRef, {value: JSON.stringify(meta), updatedAt: now});
+            });
+          }catch(e){ console.error('meta heartbeat update failed (non-fatal):', e); }
+          return {ok:true, updatedAt: now};
+        }catch(e){ console.error('storage.setMulti failed:', e); return null; }
+      },
       async delete(key, shared){
         try{
           await docRef(key, shared).delete();
@@ -457,6 +510,16 @@ if(!window.storage){
       try{
         localStorage.setItem(LS_PREFIX+key, value);
         return {key, value, shared: !!shared};
+      }catch(e){ return null; }
+    },
+    /* No real conflicts possible against a single browser's own localStorage,
+       so this just writes every entry — kept for interface parity with the
+       Firestore-backed setMulti() so loadDB()/saveDB() don't need to branch
+       on which backend is active. */
+    async setMulti(entries, shared){
+      try{
+        entries.forEach(e=>{ localStorage.setItem(LS_PREFIX+e.key, e.value); });
+        return {ok:true, updatedAt: Date.now()};
       }catch(e){ return null; }
     },
     async delete(key, shared){
@@ -587,6 +650,12 @@ function defaultDB(){
     counters: {req:100, recv:100, iss:100, rep:100, trn:100, ret:100, di:100, cg:100, pl:100}
   };
 }
+/* The full set of top-level DB fields, derived once from defaultDB() rather
+   than hardcoded, so a newly added field automatically gets its own storage
+   section without this list needing to be kept in sync by hand. Each key
+   here becomes its own Firestore document ('section__'+key) — see the
+   setMulti() comment above for why the app moved off one giant document. */
+const SECTION_KEYS = Object.keys(defaultDB());
 
 function migrateDB(){
   // Old shape was DB.stock[sku] = qty (a single company-wide number per SKU).
@@ -664,22 +733,48 @@ function migrateDB(){
   });
 }
 
+/* Fetches every section document (plus the small __meta heartbeat doc used
+   by pollForUpdates — see setMulti()) in parallel. Returns each section's
+   parsed value and raw snapshot string, and whether ANY section document
+   exists yet at all (used by loadDB() to decide whether the one-time
+   migration from the old single-blob document is needed). */
+async function loadSections(){
+  const [metaRes, ...results] = await Promise.all([
+    window.storage.get('__meta', true),
+    ...SECTION_KEYS.map(k=>window.storage.get('section__'+k, true))
+  ]);
+  const data = {}, snap = {};
+  let anyExists = false;
+  SECTION_KEYS.forEach((k,i)=>{
+    const res = results[i];
+    if(res){ anyExists = true; data[k] = JSON.parse(res.value); snap[k] = res.value; }
+    else { data[k] = null; snap[k] = null; }
+  });
+  return {anyExists, data, snap, meta: metaRes ? JSON.parse(metaRes.value) : {}};
+}
+
 /* Retries once before giving up: a transient read error (a momentary
    network blip, or a security-rules propagation delay right after Firestore
    is first set up) must never be treated the same as "no data exists yet" —
    doing so used to fall through to defaultDB() and immediately overwrite the
    shared document, silently wiping every real user/record. Only an actually
-   empty document (res === null with no error) seeds defaults.
+   empty set of sections (no error, nothing there yet) seeds defaults.
    IMPORTANT: this function (and saveDB() below) has already been reverted
-   back to the unsafe version once by a direct edit that started from an
+   back to an unsafe version once by a direct edit that started from an
    older local copy of this file instead of `git pull`-ing first. If you're
    about to replace this file wholesale, pull latest first — overwriting
-   this logic silently re-enables real data loss for every user. */
+   this logic silently re-enables real data loss for every user.
+
+   The app state used to live in one Firestore document. That hit Firestore's
+   1 MiB per-document hard limit once requests/returns/pdas history
+   accumulated (they alone were ~87% of it) — every save started failing
+   outright, size limit or not, conflict or not. It's now one document per
+   top-level DB section instead, each with its own 1 MiB budget. */
 async function loadDB(){
-  let res, lastErr;
+  let sections, lastErr;
   for(let attempt=0; attempt<2; attempt++){
     try{
-      res = await window.storage.get(STORE_KEY, true);
+      sections = await loadSections();
       lastErr = null;
       break;
     }catch(e){
@@ -692,13 +787,54 @@ async function loadDB(){
     DB = defaultDB();
     migrateDB();
     lastKnownSnapshot = null;
+    sectionVersions = {};
     toast('Could not reach shared storage — showing local defaults. Reload once connection is back.');
     return;
   }
-  DB = res ? JSON.parse(res.value) : defaultDB();
+  if(!sections.anyExists){
+    /* One-time migration: no section documents exist yet. Split the old
+       single-blob document into sections if it exists, or seed fresh
+       defaults if this is a genuinely new deployment with no prior data.
+       Every section's lastKnownSnapshot starts at null (matching a
+       not-yet-existing document), so the follow-up saveDB() call below
+       goes through its normal compare-and-swap path rather than needing
+       migration-specific write logic — nothing can conflict with a
+       document that has never existed. */
+    let seed;
+    try{
+      const old = await window.storage.get(STORE_KEY, true);
+      seed = old ? JSON.parse(old.value) : defaultDB();
+    }catch(e){ seed = defaultDB(); }
+    DB = {};
+    SECTION_KEYS.forEach(k=>{ DB[k] = seed[k]!==undefined ? seed[k] : defaultDB()[k]; });
+    migrateDB();
+    lastKnownSnapshot = {};
+    SECTION_KEYS.forEach(k=>{ lastKnownSnapshot[k] = null; });
+    sectionVersions = {};
+    await saveDB();
+    return;
+  }
+  DB = {};
+  lastKnownSnapshot = {};
+  const missing = [];
+  SECTION_KEYS.forEach(k=>{
+    if(sections.data[k]!==null){
+      DB[k] = sections.data[k];
+      lastKnownSnapshot[k] = sections.snap[k];
+    } else {
+      DB[k] = defaultDB()[k];
+      lastKnownSnapshot[k] = null;
+      missing.push(k);
+    }
+  });
   migrateDB();
-  lastKnownSnapshot = res ? res.value : JSON.stringify(DB);
-  if(!res) await saveDB();
+  sectionVersions = {};
+  SECTION_KEYS.forEach(k=>{ sectionVersions['section__'+k] = sections.meta['section__'+k]; });
+  /* A section missing here (but others present) means a field was added to
+     defaultDB() after this device last saved — same idea as the old
+     if(!res) await saveDB() below, just scoped to whichever sections are
+     actually new instead of the whole document. */
+  if(missing.length) await saveDB();
 }
 
 function showModal(html){
@@ -738,45 +874,64 @@ function confirmAction(message, onConfirm){
   };
 }
 let saving = false;
+/* Per-section, not a single string, since the app state is now split across
+   one Firestore document per top-level DB field (see setMulti()'s comment).
+   {sectionKey: rawJsonStringOrNull}. null after a failed initial load. */
 let lastKnownSnapshot = null;
+/* {sectionKey (as stored in __meta, i.e. 'section__'+key): timestamp} — the
+   last heartbeat value this tab has already accounted for, so
+   pollForUpdates() only re-fetches sections that actually changed instead
+   of re-reading all ~27 of them every 4s. */
+let sectionVersions = {};
 let pollTimer = null;
 /* Set true around any action that reads a file (await) before saving to the
    shared DB — e.g. finalizeRepairAction. While true, pollForUpdates will not
    swap out the in-memory DB object, so an in-flight edit can't be silently
    dropped by an auto-refresh landing mid-action. */
 let actionInFlight = false;
+/* Applies a conflict response's per-section current values back onto DB and
+   lastKnownSnapshot. Shared between saveDB() and saveDBWithRetry() so the
+   two can't drift out of sync on how a conflict gets resolved. */
+function applySectionConflicts(conflicts){
+  Object.keys(conflicts).forEach(fullKey=>{
+    const k = fullKey.replace(/^section__/, '');
+    const cur = conflicts[fullKey];
+    DB[k] = cur!==null ? JSON.parse(cur) : defaultDB()[k];
+    lastKnownSnapshot[k] = cur;
+  });
+  migrateDB();
+}
 async function saveDB(){
   try{
-    const json = JSON.stringify(DB);
-    /* Only compare-and-swap once we actually have a known-good baseline to
-       compare against (lastKnownSnapshot is null right after a failed
-       initial load) — otherwise every save from a client in that degraded
-       state would permanently conflict against itself. */
-    const opts = lastKnownSnapshot!==null ? {expectedPrevious: lastKnownSnapshot} : undefined;
-    const res = await window.storage.set(STORE_KEY, json, true, opts);
-    /* window.storage.set swallows its own Firestore errors internally (a
-       permission-denied write, a dropped connection mid-request, etc.) and
-       returns null instead of throwing — so a null result has to be treated
-       as a failed save here, not fall through to the success path below.
-       Before this check, a null result silently marked lastKnownSnapshot as
-       if the write had landed: whatever was just added (an Ops ID, a new
-       SKU, anything) kept showing on screen for the rest of the session,
-       then quietly vanished the next time the page loaded fresh data from
-       Firestore, since it was never actually written there. */
+    /* Only the sections that actually changed get written — both to avoid
+       needless Firestore writes, and because an unchanged section should
+       never be able to conflict (nothing to lose by not touching it). */
+    const changed = SECTION_KEYS.filter(k=>JSON.stringify(DB[k]) !== lastKnownSnapshot[k]);
+    if(!changed.length) return true;
+    const entries = changed.map(k=>({key:'section__'+k, value:JSON.stringify(DB[k]), expectedPrevious: lastKnownSnapshot[k]}));
+    const res = await window.storage.setMulti(entries, true);
+    /* window.storage.setMulti swallows its own Firestore errors internally
+       and returns null instead of throwing — so a null result has to be
+       treated as a failed save here, not fall through to the success path
+       below. Before this check existed (on the old single-document save),
+       a null result silently marked lastKnownSnapshot as if the write had
+       landed: whatever was just added kept showing on screen for the rest
+       of the session, then quietly vanished on the next fresh load. */
     if(!res){
       toast('Could not save — changes were not stored. Please check your connection and try again.');
       return false;
     }
     if(res.conflict){
-      DB = res.currentValue ? JSON.parse(res.currentValue) : defaultDB();
-      migrateDB();
-      lastKnownSnapshot = res.currentValue;
+      applySectionConflicts(res.conflicts);
       navigate(route, subroute);
       toast('Someone else just saved changes here — your last action was NOT saved. Please redo it.');
       logAudit('save_conflict_rejected', {});
       return false;
     }
-    lastKnownSnapshot = json;
+    changed.forEach(k=>{
+      lastKnownSnapshot[k] = JSON.stringify(DB[k]);
+      sectionVersions['section__'+k] = res.updatedAt;
+    });
     return true;
   }catch(e){
     console.error('Storage error', e);
@@ -784,18 +939,18 @@ async function saveDB(){
     return false;
   }
 }
-/* Same shared-document save as saveDB(), but resilient to a *benign*
-   self-collision: two saves fired back-to-back from this same tab (e.g.
-   adding several employees in quick succession) can race, since the second
-   save's expectedPrevious was captured before the first one's write
-   committed. Plain saveDB() treats that exactly like a real conflict with
-   another admin — it discards the in-memory change and shows "your last
-   action was NOT saved," which silently drops the second edit. Here,
-   instead of giving up on the first conflict, we pull the fresh document,
-   re-apply the caller's intended change on top of it via mutate(), and
-   retry — only falling back to the same user-facing conflict message (and
-   giving up) if that keeps failing across every attempt, which by then is
-   far more likely a genuine concurrent edit from someone else.
+/* Same shared save as saveDB(), but resilient to a *benign* self-collision:
+   two saves fired back-to-back from this same tab (e.g. adding several
+   employees in quick succession) can race, since the second save's
+   expectedPrevious was captured before the first one's write committed.
+   Plain saveDB() treats that exactly like a real conflict with another
+   admin — it discards the in-memory change and shows "your last action was
+   NOT saved," which silently drops the second edit. Here, instead of giving
+   up on the first conflict, we pull the fresh sections, re-apply the
+   caller's intended change on top of them via mutate(), and retry — only
+   falling back to the same user-facing conflict message (and giving up) if
+   that keeps failing across every attempt, which by then is far more likely
+   a genuine concurrent edit from someone else.
    actionInFlight blocks the 4s auto-refresh poll from swapping out DB out
    from under us for the same reason it already does around other
    multi-step saves (see the flag's definition above). */
@@ -805,29 +960,25 @@ async function saveDBWithRetry(mutate, maxAttempts){
   try{
     for(let attempt=0; attempt<maxAttempts; attempt++){
       try{
-        const json = JSON.stringify(DB);
-        const opts = lastKnownSnapshot!==null ? {expectedPrevious: lastKnownSnapshot} : undefined;
-        const res = await window.storage.set(STORE_KEY, json, true, opts);
-        /* Same gap as in saveDB(): window.storage.set catches its own
-           Firestore errors and returns null instead of throwing. Without
-           this check, a null result fell through to "lastKnownSnapshot =
-           json; return true" below — reporting success for a write that
-           never reached Firestore. That's exactly what made the Ops ID
-           directory (and anything else saved through this path) look fine
-           right after adding an entry, then come back empty on the next
-           refresh: the addition only ever existed in this tab's memory. */
+        const changed = SECTION_KEYS.filter(k=>JSON.stringify(DB[k]) !== lastKnownSnapshot[k]);
+        if(!changed.length) return true;
+        const entries = changed.map(k=>({key:'section__'+k, value:JSON.stringify(DB[k]), expectedPrevious: lastKnownSnapshot[k]}));
+        const res = await window.storage.setMulti(entries, true);
+        /* Same gap as in saveDB(): a null result means the write never
+           reached Firestore and must not be reported as a success. */
         if(!res){
           toast('Could not save — changes were not stored. Please check your connection and try again.');
           return false;
         }
         if(res.conflict){
-          DB = res.currentValue ? JSON.parse(res.currentValue) : defaultDB();
-          migrateDB();
-          lastKnownSnapshot = res.currentValue;
+          applySectionConflicts(res.conflicts);
           mutate();
           continue;
         }
-        lastKnownSnapshot = json;
+        changed.forEach(k=>{
+          lastKnownSnapshot[k] = JSON.stringify(DB[k]);
+          sectionVersions['section__'+k] = res.updatedAt;
+        });
         return true;
       }catch(e){
         console.error('Storage error', e);
@@ -873,13 +1024,35 @@ function isFormScreenActive(){
   const formSubroutes = { request:'new', drequest:'new', receiving:'new', issuance:'new', dissuance:'new', dreceiving:'new', dreturn:'new', returns:'new', repair:'new' };
   return formSubroutes[route] && subroute===formSubroutes[route];
 }
+/* Reads just the small __meta heartbeat doc (one read) to see which
+   sections have changed since this tab last knew about, then only
+   re-fetches those specific sections — not all ~27 of them — every 4s.
+   Polling every section on every tick would cost ~27x the reads for no
+   benefit in the overwhelmingly common case where nothing changed, which
+   at realistic usage would exhaust Firestore's free-tier daily read quota
+   in well under an hour. */
 async function pollForUpdates(){
   if(!session || actionInFlight) return;
   try{
-    const res = await window.storage.get(STORE_KEY, true);
-    if(!res || res.value===lastKnownSnapshot) return;
-    lastKnownSnapshot = res.value;
-    DB = JSON.parse(res.value);
+    const metaRes = await window.storage.get('__meta', true);
+    if(!metaRes) return;
+    const meta = JSON.parse(metaRes.value);
+    const changedKeys = SECTION_KEYS.filter(k=>{
+      const fullKey = 'section__'+k;
+      return meta[fullKey] && meta[fullKey] !== sectionVersions[fullKey];
+    });
+    if(!changedKeys.length) return;
+    const results = await Promise.all(changedKeys.map(k=>window.storage.get('section__'+k, true)));
+    let anyApplied = false;
+    changedKeys.forEach((k,i)=>{
+      const res = results[i];
+      if(!res) return;
+      anyApplied = true;
+      lastKnownSnapshot[k] = res.value;
+      DB[k] = JSON.parse(res.value);
+      sectionVersions['section__'+k] = meta['section__'+k];
+    });
+    if(!anyApplied) return;
     migrateDB();
     if(!isFormScreenActive()){
       navigate(route, subroute);
@@ -4275,9 +4448,10 @@ async function addUser(){
     newUser.accountabilityScope = Array.from(document.getElementById('new-user-acct-scope').selectedOptions).map(o=>o.value);
   }
   DB.users.push(newUser);
-  await saveDB();
-  logAudit('user_added', {id, username, role});
-  toast('Login added.');
+  const ok = await saveDBWithRetry(()=>{
+    if(!DB.users.find(u=>u.id===id)) DB.users.push(newUser);
+  });
+  if(ok){ logAudit('user_added', {id, username, role}); toast('Login added.'); }
   renderSettings();
 }
 function openEditUser(id){
@@ -4348,44 +4522,55 @@ async function saveUserEdit(id){
   if(!fullName || !username){ toast('Full name and username are required.'); return; }
   if(DB.users.some(x=>x.id!==id && x.username.toLowerCase()===username.toLowerCase())){ toast('That username is taken.'); return; }
   const oldUsername = u.username;
-  u.fullName = fullName;
-  u.username = username;
-  if(oldUsername.toLowerCase()!==username.toLowerCase()){
-    DB.users.forEach(x=>{ if(x.approverUsername && x.approverUsername.toLowerCase()===oldUsername.toLowerCase()) x.approverUsername = username; });
-    DB.requests.forEach(r=>{ if(r.requiresApprovalFrom && r.requiresApprovalFrom.toLowerCase()===oldUsername.toLowerCase()) r.requiresApprovalFrom = username; });
-  }
-  if(pass) u.password = pass;
-  if(u.role==='department'){
-    const deptSel = parseDeptKey(document.getElementById('edit-user-dept').value);
-    u.department = deptSel.name;
-    u.departmentSoc = deptSel.soc;
-    const approverUsername = document.getElementById('edit-user-approver').value;
-    if(approverUsername) u.approverUsername = approverUsername; else delete u.approverUsername;
-  } else {
-    const site = document.getElementById('edit-user-site').value;
-    if(site) u.site = site; else delete u.site;
-    if(u.role==='staff' || u.role==='hub'){
-      u.processAccess = readProcessAccessCheckboxes('edit-user-proc');
+  /* Captured once here (not read from the DOM again inside applyEdit) so
+     the exact same edit can be safely replayed against a freshly-fetched
+     DB after a save conflict, without re-reading form fields that may no
+     longer reflect what the user actually submitted. */
+  const role = u.role;
+  const deptSel = role==='department' ? parseDeptKey(document.getElementById('edit-user-dept').value) : null;
+  const approverUsername = role==='department' ? document.getElementById('edit-user-approver').value : null;
+  const site = role!=='department' ? document.getElementById('edit-user-site').value : null;
+  const processAccess = (role==='staff'||role==='hub') ? readProcessAccessCheckboxes('edit-user-proc') : null;
+  const skuScope = role==='staff' ? Array.from(document.getElementById('edit-user-sku-scope').selectedOptions).map(o=>o.value) : null;
+  const departmentScope = role==='staff' ? Array.from(document.getElementById('edit-user-dept-scope').selectedOptions).map(o=>o.value) : null;
+  const accountabilityScope = role==='staff' ? Array.from(document.getElementById('edit-user-acct-scope').selectedOptions).map(o=>o.value) : null;
+  const applyEdit = ()=>{
+    const x = DB.users.find(y=>y.id===id);
+    if(!x) return;
+    x.fullName = fullName;
+    x.username = username;
+    if(oldUsername.toLowerCase()!==username.toLowerCase()){
+      DB.users.forEach(y=>{ if(y.approverUsername && y.approverUsername.toLowerCase()===oldUsername.toLowerCase()) y.approverUsername = username; });
+      DB.requests.forEach(r=>{ if(r.requiresApprovalFrom && r.requiresApprovalFrom.toLowerCase()===oldUsername.toLowerCase()) r.requiresApprovalFrom = username; });
     }
-    if(u.role==='staff'){
-      u.skuScope = Array.from(document.getElementById('edit-user-sku-scope').selectedOptions).map(o=>o.value);
-      u.departmentScope = Array.from(document.getElementById('edit-user-dept-scope').selectedOptions).map(o=>o.value);
-      u.accountabilityScope = Array.from(document.getElementById('edit-user-acct-scope').selectedOptions).map(o=>o.value);
+    if(pass) x.password = pass;
+    if(role==='department'){
+      x.department = deptSel.name;
+      x.departmentSoc = deptSel.soc;
+      if(approverUsername) x.approverUsername = approverUsername; else delete x.approverUsername;
+    } else {
+      if(site) x.site = site; else delete x.site;
+      if(role==='staff' || role==='hub') x.processAccess = processAccess;
+      if(role==='staff'){
+        x.skuScope = skuScope;
+        x.departmentScope = departmentScope;
+        x.accountabilityScope = accountabilityScope;
+      }
     }
-  }
-  await saveDB();
-  logAudit('user_edited', {id, oldUsername, newUsername: username});
-  closeModal();
-  toast('User updated.');
+  };
+  applyEdit();
+  const ok = await saveDBWithRetry(applyEdit);
+  if(ok){ logAudit('user_edited', {id, oldUsername, newUsername: username}); closeModal(); toast('User updated.'); }
   renderSettings();
 }
 function deleteUser(id){
   const target = DB.users.find(u=>u.id===id);
   confirmAction('Remove this user?', async ()=>{
     DB.users = DB.users.filter(u=>u.id!==id);
-    await saveDB();
-    logAudit('user_deleted', {id, username: target?target.username:'(unknown)'});
-    toast('User removed.');
+    const ok = await saveDBWithRetry(()=>{
+      DB.users = DB.users.filter(u=>u.id!==id);
+    });
+    if(ok){ logAudit('user_deleted', {id, username: target?target.username:'(unknown)'}); toast('User removed.'); }
     renderSettings();
   });
 }
@@ -4503,6 +4688,7 @@ async function importUserCsv(inputEl){
   if(!rows) return;
   let added = 0;
   const problems = [];
+  const addedUsers = [];
   rows.forEach((row, idx)=>{
     const rowNum = idx+2; // header is row 1, data starts at row 2
     const fullName = csvField(row, ['Full Name','Fullname','Name']).trim();
@@ -4558,10 +4744,19 @@ async function importUserCsv(inputEl){
       newUser.accountabilityScope = acctScopeRaw.filter(v=>DB.accountability.some(a=>a.name===v));
     }
     DB.users.push(newUser);
+    addedUsers.push(newUser);
     added++;
   });
-  if(added){ await saveDB(); logAudit('user_import', {added, skipped:problems.length}); }
-  if(problems.length){
+  let saveOk = true;
+  if(added){
+    saveOk = await saveDBWithRetry(()=>{
+      addedUsers.forEach(nu=>{ if(!DB.users.find(u=>u.id===nu.id)) DB.users.push(nu); });
+    });
+    if(saveOk) logAudit('user_import', {added, skipped:problems.length});
+  }
+  if(added && !saveOk){
+    toast('Import did not save — please try again.');
+  } else if(problems.length){
     showModal(`
       <h3>Import results</h3>
       <p style="font-size:13.5px;color:var(--muted);margin:8px 0 14px;line-height:1.5;">Imported <b>${added}</b> login${added===1?'':'s'}. ${problems.length} row${problems.length===1?'':'s'} skipped — here's why:</p>
