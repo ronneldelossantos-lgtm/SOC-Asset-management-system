@@ -473,14 +473,20 @@ if(!window.storage){
    time) against what Hosting is serving right now, and puts up a banner
    that can't be missed instead of relying on someone remembering to
    refresh. */
-const PAGE_LOAD_MODIFIED = document.lastModified;
+/* document.lastModified and the HTTP Last-Modified response header are NOT
+   the same string format — the former is browser/locale-formatted (e.g.
+   "09/07/2026 10:15:48"), the latter is RFC 1123 ("Fri, 04 Sep 2026
+   06:00:18 GMT"). Comparing them as raw strings meant they could never
+   match, so this banner showed on essentially every load regardless of
+   whether a real deploy happened. Parse both to timestamps instead. */
+const PAGE_LOAD_MODIFIED = new Date(document.lastModified).getTime();
 let staleVersionBannerShown = false;
 async function checkForNewVersion(){
   if(staleVersionBannerShown) return;
   try{
     const res = await fetch(location.pathname, {method:'HEAD', cache:'no-store'});
-    const serverModified = res.headers.get('Last-Modified');
-    if(serverModified && serverModified !== PAGE_LOAD_MODIFIED){
+    const serverModified = new Date(res.headers.get('Last-Modified')).getTime();
+    if(!isNaN(serverModified) && !isNaN(PAGE_LOAD_MODIFIED) && serverModified !== PAGE_LOAD_MODIFIED){
       staleVersionBannerShown = true;
       const bar = document.createElement('div');
       bar.id = 'stale-version-banner';
