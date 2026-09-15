@@ -473,20 +473,14 @@ if(!window.storage){
    time) against what Hosting is serving right now, and puts up a banner
    that can't be missed instead of relying on someone remembering to
    refresh. */
-/* document.lastModified and the HTTP Last-Modified response header are NOT
-   the same string format — the former is browser/locale-formatted (e.g.
-   "09/07/2026 10:15:48"), the latter is RFC 1123 ("Fri, 04 Sep 2026
-   06:00:18 GMT"). Comparing them as raw strings meant they could never
-   match, so this banner showed on essentially every load regardless of
-   whether a real deploy happened. Parse both to timestamps instead. */
-const PAGE_LOAD_MODIFIED = new Date(document.lastModified).getTime();
+const PAGE_LOAD_MODIFIED = document.lastModified;
 let staleVersionBannerShown = false;
 async function checkForNewVersion(){
   if(staleVersionBannerShown) return;
   try{
     const res = await fetch(location.pathname, {method:'HEAD', cache:'no-store'});
-    const serverModified = new Date(res.headers.get('Last-Modified')).getTime();
-    if(!isNaN(serverModified) && !isNaN(PAGE_LOAD_MODIFIED) && serverModified !== PAGE_LOAD_MODIFIED){
+    const serverModified = res.headers.get('Last-Modified');
+    if(serverModified && serverModified !== PAGE_LOAD_MODIFIED){
       staleVersionBannerShown = true;
       const bar = document.createElement('div');
       bar.id = 'stale-version-banner';
@@ -602,7 +596,7 @@ function migrateDB(){
   if(!DB.sortingStations || !DB.sortingStations.length) DB.sortingStations = ['Station 1','Station 2','Station 3','Station 4'];
   if(!DB.cages) DB.cages = [];
   if(!DB.pdas) DB.pdas = [];
-  DB.pdas.forEach(p=>{ if(p.soc===undefined) p.soc=''; if(p.exceptionStatus===undefined) p.exceptionStatus=''; });
+  DB.pdas.forEach(p=>{ if(p.soc===undefined) p.soc=''; if(p.exceptionStatus===undefined) p.exceptionStatus=''; if(p.remarks===undefined) p.remarks=''; if(p.irFile===undefined) p.irFile=''; if(p.irFileData===undefined) p.irFileData=''; });
   if(!DB.pdaLogs) DB.pdaLogs = [];
   if(!DB.pdaAllocations) DB.pdaAllocations = {};
   if(!DB.pdaDeptBuckets || !DB.pdaDeptBuckets.length) DB.pdaDeptBuckets = ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'];
@@ -4492,7 +4486,7 @@ function exportCages(){
 function renderITAssets(){
   const c = document.getElementById('content');
   const tab = subroute || 'scan';
-  if(tab==='scan'){ pdaActiveMode = null; pdaModalTarget = null; pdaReturnCondition = 'Good'; pdaReturnInProgress = false; }
+  if(tab==='scan'){ pdaActiveMode = null; pdaModalTarget = null; pdaReturnTopChoice = 'Good'; pdaReturnCondition = 'Good'; pdaReturnRemarks = ''; pdaReturnIRTiming = 'now'; pdaReturnInProgress = false; }
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='log'?'active':''}" onclick="navigate('itassets','log')">Dashboard</div>
@@ -4622,7 +4616,10 @@ function processPdaScan(){
 }
 let pdaModalTarget = null; // index into DB.pdas — kept as an index (not the PDA #) since PDA numbers can now repeat across different SOCs
 let pdaActiveMode = null; // 'borrow' | 'return' | null — which inline panel is open under the serial field
-let pdaReturnCondition = 'Good';
+let pdaReturnTopChoice = 'Good'; // 'Good' | 'Damaged' — the first check after Ops ID is confirmed
+let pdaReturnCondition = 'Good'; // final condition key saved: 'Good', 'DamagedWorking', or 'DamagedNotWorking'
+let pdaReturnRemarks = ''; // manual explanation, required when top choice is Damaged
+let pdaReturnIRTiming = 'now'; // 'now' | 'later' — when a damaged return needs an IR, whether it's attached in this session or uploaded afterward from the log
 function pdaActiveSessionHeader(){
   const pda = pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
   if(!pda) return '';
@@ -4645,23 +4642,13 @@ function renderPdaActiveSession(){
   } else if(pdaActiveMode==='return'){
     el.innerHTML = `
       <div class="section-title" style="margin-top:18px;">Returning ${pdaActiveSessionHeader()}</div>
-      <div class="card-sub" style="margin-bottom:10px;">Details fill in once the Ops ID matches. With Good condition selected, it records as returned automatically — Damaged conditions need an Incident Report attached and Confirm pressed.</div>
+      <div class="card-sub" style="margin-bottom:10px;">Details fill in once the Ops ID is entered — that alone doesn't record the return. Pick the condition (and for Damaged, the damage type and remarks), then press Confirm return.</div>
       <div class="form-row">
         <div class="field"><label>Full name</label><input id="pda-return-name" class="autofill" disabled></div>
         <div class="field"><label>Agency</label><input id="pda-return-agency" class="autofill" disabled></div>
       </div>
       <div class="field"><label>Department</label><input id="pda-return-dept" class="autofill" disabled></div>
-      <div class="field"><label>Return condition</label>
-        <div class="pill-row" id="pda-return-pills">
-          ${PDA_CONDITIONS.map(cd=>`<div class="pill ${cd.key==='Good'?'active':''}" data-cond="${cd.key}" onclick="pickPdaReturnCondition('${cd.key}')">${esc(cd.label)}</div>`).join('')}
-        </div>
-      </div>
-      <div id="pda-return-ir-wrap" style="display:none;">
-        <div class="field"><label>Upload Incident Report</label>
-          <input type="file" id="pda-return-ir-file">
-          <div class="hint">Required when the PDA is returned damaged.</div>
-        </div>
-      </div>
+      <div id="pda-return-condition-wrap">${pdaReturnConditionSectionHtml()}</div>
       <div class="footer-actions">
         <button class="btn" onclick="cancelPdaActiveSession()">Cancel</button>
         <button class="btn btn-primary" onclick="confirmPdaReturn()">Confirm return</button>
@@ -4672,7 +4659,7 @@ function renderPdaActiveSession(){
   }
 }
 function cancelPdaActiveSession(){
-  pdaActiveMode = null; pdaModalTarget = null; pdaReturnCondition = 'Good'; pdaReturnInProgress = false;
+  pdaActiveMode = null; pdaModalTarget = null; pdaReturnTopChoice = 'Good'; pdaReturnCondition = 'Good'; pdaReturnRemarks = ''; pdaReturnIRTiming = 'now'; pdaReturnInProgress = false;
   renderPdaActiveSession();
   const serialEl = document.getElementById('pda-scan-input');
   if(serialEl){ serialEl.disabled = false; serialEl.value=''; serialEl.focus(); }
@@ -4710,7 +4697,7 @@ async function confirmPdaBorrow(){
   DB.pdaLogs.push({
     id: nextCode('PL','pl'), pdaNo, opsId, borrowerName: emp.fullName, borrowerAgency: emp.agency||'', borrowerDepartment: emp.department||'',
     borrowedAt: nowISO(), returnedAt:'', returnedByOpsId:'', returnedByName:'', returnedByAgency:'', returnedByDepartment:'',
-    conditionOnReturn:'', irFile:'', irFileData:'', status:'Borrowed', soc:pda.soc
+    conditionOnReturn:'', remarks:'', irFile:'', irFileData:'', status:'Borrowed', soc:pda.soc
   });
   pda.status = 'Borrowed';
   await saveDB();
@@ -4725,29 +4712,75 @@ function pdaReturnOpsLookup(){
   document.getElementById('pda-return-name').value = emp?emp.fullName:'';
   document.getElementById('pda-return-agency').value = emp?(emp.agency||'—'):'';
   document.getElementById('pda-return-dept').value = emp?emp.department:'';
-  checkPdaAutoReturn();
+  // Scanning/typing the Ops ID only fills in who's returning it — it never
+  // completes the return by itself. The condition must be picked (and, for
+  // Damaged, the damage type + remarks filled in) and Confirm return pressed
+  // before the record is saved.
 }
-function pickPdaReturnCondition(c){
-  pdaReturnCondition = c;
-  document.querySelectorAll('#pda-return-pills .pill').forEach(p=>p.classList.toggle('active', p.dataset.cond===c));
+function pdaReturnIRWrapHtml(){
+  return `
+    <div class="field"><label>Incident Report</label>
+      <div class="pill-row" id="pda-return-ir-timing-pills">
+        <div class="pill ${pdaReturnIRTiming==='now'?'active':''}" data-timing="now" onclick="pickPdaReturnIRTiming('now')">Upload now</div>
+        <div class="pill ${pdaReturnIRTiming==='later'?'active':''}" data-timing="later" onclick="pickPdaReturnIRTiming('later')">Upload later</div>
+      </div>
+    </div>
+    <div id="pda-return-ir-file-wrap" style="display:${pdaReturnIRTiming==='now'?'block':'none'};">
+      <div class="field"><label>Upload Incident Report</label>
+        <input type="file" id="pda-return-ir-file">
+        <div class="hint">Required when the PDA is returned damaged.</div>
+      </div>
+    </div>
+    <div id="pda-return-ir-later-note" class="hint" style="display:${pdaReturnIRTiming==='later'?'block':'none'};margin:-4px 0 12px;">
+      The return will be recorded now as ${esc(pdaConditionLabel(pdaReturnCondition).toLowerCase())}. An "Upload IR" button will appear on this record in the Borrow / return log until the report is attached.
+    </div>
+  `;
+}
+function pickPdaReturnIRTiming(t){
+  pdaReturnIRTiming = t;
   const wrap = document.getElementById('pda-return-ir-wrap');
-  if(wrap) wrap.style.display = pdaConditionNeedsIR(c) ? 'block' : 'none';
-  checkPdaAutoReturn();
+  if(wrap) wrap.innerHTML = pdaReturnIRWrapHtml();
 }
-// Once the Ops ID fully matches AND a condition that needs no IR upload is set
-// (Good is the default), the return records itself — no button press needed.
-// Damaged conditions still need a manual Confirm click since a file must be attached.
+function pdaReturnConditionSectionHtml(){
+  return `
+    <div class="field"><label>Return condition</label>
+      <div class="pill-row" id="pda-return-top-pills">
+        <div class="pill ${pdaReturnTopChoice==='Good'?'active':''}" data-top="Good" onclick="pickPdaReturnTopChoice('Good')">Good condition</div>
+        <div class="pill ${pdaReturnTopChoice==='Damaged'?'active':''}" data-top="Damaged" onclick="pickPdaReturnTopChoice('Damaged')">Damaged</div>
+      </div>
+    </div>
+    <div id="pda-return-damaged-wrap" style="display:${pdaReturnTopChoice==='Damaged'?'block':'none'};">
+      <div class="field"><label>Damage type</label>
+        <div class="pill-row" id="pda-return-pills">
+          ${PDA_CONDITIONS.filter(cd=>cd.key!=='Good').map(cd=>`<div class="pill ${pdaReturnCondition===cd.key?'active':''}" data-cond="${cd.key}" onclick="pickPdaReturnSubCondition('${cd.key}')">${esc(cd.label)}</div>`).join('')}
+        </div>
+      </div>
+      <div class="field"><label>Remarks</label>
+        <textarea id="pda-return-remarks" rows="2" placeholder="Explain the damage — e.g. cracked screen, won't power on..." oninput="pdaReturnRemarks=this.value">${esc(pdaReturnRemarks)}</textarea>
+        <div class="hint">Required — briefly describe what's wrong with the unit.</div>
+      </div>
+      <div id="pda-return-ir-wrap">${pdaReturnCondition ? pdaReturnIRWrapHtml() : '<div class="hint">Pick a damage type above to continue.</div>'}</div>
+    </div>
+  `;
+}
+function pickPdaReturnTopChoice(choice){
+  pdaReturnTopChoice = choice;
+  if(choice==='Good'){ pdaReturnCondition = 'Good'; pdaReturnRemarks = ''; pdaReturnIRTiming = 'now'; }
+  else if(pdaReturnCondition==='Good'){ pdaReturnCondition = ''; } // force an explicit damage-type pick
+  const wrap = document.getElementById('pda-return-condition-wrap');
+  if(wrap) wrap.innerHTML = pdaReturnConditionSectionHtml();
+}
+function pickPdaReturnSubCondition(c){
+  pdaReturnCondition = c;
+  pdaReturnIRTiming = 'now';
+  document.querySelectorAll('#pda-return-pills .pill').forEach(p=>p.classList.toggle('active', p.dataset.cond===c));
+  const irWrap = document.getElementById('pda-return-ir-wrap');
+  if(irWrap) irWrap.innerHTML = pdaReturnIRWrapHtml();
+}
+// The return is only ever completed by pressing "Confirm return" — Good and
+// Damaged both require the condition (and for Damaged, the damage type and
+// remarks) to be set first, then an explicit Confirm click.
 let pdaReturnInProgress = false;
-function checkPdaAutoReturn(){
-  if(pdaActiveMode!=='return' || pdaReturnInProgress) return;
-  const opsEl = document.getElementById('pda-ops-input');
-  if(!opsEl) return;
-  const opsIdRaw = opsEl.value.trim();
-  const emp = empInfo(opsIdRaw);
-  if(!emp || opsIdRaw.toUpperCase()!==emp.opsId.toUpperCase()) return;
-  if(pdaConditionNeedsIR(pdaReturnCondition)) return;
-  confirmPdaReturn();
-}
 async function confirmPdaReturn(){
   const pda = pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
   const opsIdEl = document.getElementById('pda-ops-input');
@@ -4755,28 +4788,39 @@ async function confirmPdaReturn(){
   const opsId = opsIdEl.value.trim();
   const emp = empInfo(opsId);
   if(!opsId || !emp){ toast('Enter a valid Ops ID for who is returning it.'); return; }
+  if(pdaReturnTopChoice==='Damaged' && !pdaReturnCondition){ toast('Select whether it\'s damaged but working or damaged and not working.'); return; }
+  const remarksEl = document.getElementById('pda-return-remarks');
+  const remarks = pdaReturnTopChoice==='Damaged' ? (remarksEl ? remarksEl.value.trim() : pdaReturnRemarks.trim()) : '';
+  if(pdaReturnTopChoice==='Damaged' && !remarks){ toast('Add remarks explaining the damage before completing this return.'); return; }
+  const finalCondition = pdaReturnTopChoice==='Good' ? 'Good' : pdaReturnCondition;
   const pdaNo = pda.pdaNo;
   const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pdaNo && l.soc===pda.soc && l.status==='Borrowed');
   if(!log) return;
   pdaReturnInProgress = true;
   let irFile='', irFileData='';
-  if(pdaConditionNeedsIR(pdaReturnCondition)){
+  const needsIR = pdaConditionNeedsIR(finalCondition);
+  if(needsIR && pdaReturnIRTiming==='now'){
     const fileEl = document.getElementById('pda-return-ir-file');
     const irFileObj = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
-    if(!irFileObj){ toast('Upload the Incident Report before completing this return.'); pdaReturnInProgress = false; return; }
+    if(!irFileObj){ toast('Upload the Incident Report now, or switch to "Upload later" to complete the return without it.'); pdaReturnInProgress = false; return; }
     if(irFileObj.size > 4*1024*1024){ toast('IR file is too large (max 4MB).'); pdaReturnInProgress = false; return; }
     irFile = irFileObj.name;
     try{ irFileData = await readFileAsDataURL(irFileObj); }
     catch(e){ console.error('File read error', e); toast('Could not read the IR file — completing the return without it attached for viewing.'); }
   }
+  // needsIR && timing==='later': leave irFile/irFileData blank — the record stays
+  // flagged as pending until someone uses the "Upload IR" button on the log entry.
   log.returnedAt = nowISO();
   log.returnedByOpsId = opsId; log.returnedByName = emp.fullName; log.returnedByAgency = emp.agency||''; log.returnedByDepartment = emp.department||'';
-  log.conditionOnReturn = pdaReturnCondition; log.status = 'Returned'; log.irFile = irFile; log.irFileData = irFileData;
-  pda.status = 'Available'; pda.condition = pdaReturnCondition;
+  log.conditionOnReturn = finalCondition; log.status = 'Returned'; log.irFile = irFile; log.irFileData = irFileData; log.remarks = remarks;
+  // Any change in condition (and remarks) made here carries straight over onto
+  // the PDA's own masterlist record, so the masterlist always reflects the
+  // latest known condition without a separate manual update.
+  pda.status = 'Available'; pda.condition = finalCondition; pda.remarks = remarks; pda.irFile = irFile; pda.irFileData = irFileData;
   await saveDB();
   pdaReturnInProgress = false;
-  pdaActiveMode = null; pdaModalTarget = null;
-  toast(pdaNo+' returned by '+emp.fullName+' — logged as '+pdaConditionLabel(pdaReturnCondition)+'.');
+  pdaActiveMode = null; pdaModalTarget = null; pdaReturnTopChoice = 'Good'; pdaReturnRemarks = ''; pdaReturnIRTiming = 'now';
+  toast(pdaNo+' returned by '+emp.fullName+' — logged as '+pdaConditionLabel(finalCondition)+(needsIR && !irFileData ? ' (IR pending upload).' : '.'));
   renderITAssets();
 }
 function pdaMasterlistHtml(){
@@ -4814,8 +4858,8 @@ function pdaMasterlistHtml(){
   <div class="card">
     <h3>PDA masterlist (${socFilter(DB.pdas).length})</h3>
     ${socFilter(DB.pdas).length===0 ? '<div class="empty"><div class="ic">&#128241;</div>No PDAs added yet.</div>' :
-    '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition</th><th>Status</th>'+(isAdmin?'<th>SOC</th><th></th>':'')+'</tr>' +
-    DB.pdas.map((p,i)=>({p,i})).filter(x=>socVisible(x.p.soc)).map(({p,i})=>`<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td><td><select onchange="updatePdaCondition(${i}, this.value)" style="padding:5px 8px;font-size:12px;">${pdaConditionOptions(p.condition)}</select></td><td>${pdaStatusTag(p.status)}</td>${isAdmin?`<td>${socOf(p.soc)}</td><td style="white-space:nowrap;"><button class="icon-btn-view" onclick="openEditPda(${i})" title="Edit">&#9998;</button> <button class="icon-btn" onclick="removePda(${i})" title="Remove">&times;</button></td>`:''}</tr>`).join('') +
+    '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition</th><th>Remarks</th><th>IR</th><th>Status</th>'+(isAdmin?'<th>SOC</th><th></th>':'')+'</tr>' +
+    DB.pdas.map((p,i)=>({p,i})).filter(x=>socVisible(x.p.soc)).map(({p,i})=>`<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td><td><select onchange="updatePdaCondition(${i}, this.value)" style="padding:5px 8px;font-size:12px;">${pdaConditionOptions(p.condition)}</select></td><td>${p.remarks?esc(p.remarks):'<span class="small-note">—</span>'}</td><td>${pdaMasterlistIRCell(p,i)}</td><td>${pdaStatusTag(p.status)}</td>${isAdmin?`<td>${socOf(p.soc)}</td><td style="white-space:nowrap;"><button class="icon-btn-view" onclick="openEditPda(${i})" title="Edit">&#9998;</button> <button class="icon-btn" onclick="removePda(${i})" title="Remove">&times;</button></td>`:''}</tr>`).join('') +
     '</table></div>'}
   </div>`;
 }
@@ -4879,7 +4923,7 @@ async function addPda(){
   const soc = session.role==='admin' ? (socEl?socEl.value:'') : currentSoc();
   if(!pdaNo){ toast('Enter a PDA number.'); return; }
   if(pdaNoConflict(pdaNo, soc, -1)){ toast('That PDA number already exists for this SOC.'); return; }
-  DB.pdas.push({pdaNo, serial, condition, soc, exceptionStatus:'', status:'Available'});
+  DB.pdas.push({pdaNo, serial, condition, soc, exceptionStatus:'', status:'Available', remarks:'', irFile:'', irFileData:''});
   await saveDB();
   toast('PDA added.');
   renderITAssets();
@@ -4892,6 +4936,7 @@ function openEditPda(i){
     <div class="field"><label>PDA number</label><input id="edit-pda-no" value="${esc(p.pdaNo)}"></div>
     <div class="field"><label>Serial</label><input id="edit-pda-serial" value="${esc(p.serial||'')}"></div>
     <div class="field"><label>Condition</label><select id="edit-pda-condition">${pdaConditionOptions(p.condition)}</select></div>
+    <div class="field"><label>Remarks</label><textarea id="edit-pda-remarks" rows="2">${esc(p.remarks||'')}</textarea></div>
     ${isAdmin ? `<div class="field"><label>SOC (site)</label><select id="edit-pda-soc">
       <option value="" ${!p.soc?'selected':''}>— Shared / all sites —</option>
       ${DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===p.soc?'selected':''}>${esc(w)}</option>`).join('')}
@@ -4906,11 +4951,13 @@ async function savePdaEdit(i){
   const pdaNo = document.getElementById('edit-pda-no').value.trim();
   const serial = document.getElementById('edit-pda-serial').value.trim();
   const condition = document.getElementById('edit-pda-condition').value;
+  const remarksEl = document.getElementById('edit-pda-remarks');
+  const remarks = remarksEl ? remarksEl.value.trim() : (DB.pdas[i].remarks||'');
   const socEl = document.getElementById('edit-pda-soc');
   const soc = (session.role==='admin' && socEl) ? socEl.value : DB.pdas[i].soc;
   if(!pdaNo){ toast('Enter a PDA number.'); return; }
   if(pdaNoConflict(pdaNo, soc, i)){ toast('That PDA number already exists for this SOC.'); return; }
-  DB.pdas[i].pdaNo = pdaNo; DB.pdas[i].serial = serial; DB.pdas[i].condition = condition; DB.pdas[i].soc = soc;
+  DB.pdas[i].pdaNo = pdaNo; DB.pdas[i].serial = serial; DB.pdas[i].condition = condition; DB.pdas[i].remarks = remarks; DB.pdas[i].soc = soc;
   await saveDB();
   closeModal();
   toast('Updated.');
@@ -4928,6 +4975,7 @@ async function updatePdaCondition(i, value){
   const p = DB.pdas[i];
   if(!p || !socVisible(p.soc)) return;
   p.condition = value;
+  if(value==='Good'){ p.remarks = ''; p.irFile = ''; p.irFileData = ''; }
   await saveDB();
   toast(p.pdaNo+' condition set to "'+pdaConditionLabel(value)+'".');
   renderITAssets();
@@ -4956,7 +5004,7 @@ async function importPdaCsv(inputEl){
       soc = match || '';
     }
     if(!pdaNo || pdaNoConflict(pdaNo, soc, -1)){ skipped++; return; }
-    DB.pdas.push({pdaNo, serial, condition, soc, exceptionStatus:'', status:'Available'});
+    DB.pdas.push({pdaNo, serial, condition, soc, exceptionStatus:'', status:'Available', remarks:'', irFile:'', irFileData:''});
     added++;
   });
   if(added){ await saveDB(); }
@@ -4968,10 +5016,96 @@ function viewPdaLogIR(id){
   if(!l || !l.irFileData){ toast('No IR document attached to this record.'); return; }
   showFileModal(l.irFile||l.id, l.irFileData);
 }
-function pdaLogIRCell(l){
-  if(l.irFileData) return `<a href="javascript:void(0)" onclick="viewPdaLogIR('${esc(l.id)}')" style="color:var(--info);font-weight:600;text-decoration:underline;cursor:pointer;">&#128206; ${esc(l.irFile||'View IR')}</a>`;
-  if(l.irFile) return '&#128206; '+esc(l.irFile);
+function pdaMasterlistIRCell(p, i){
+  if(p.irFileData) return `<a href="javascript:void(0)" onclick="viewPdaMasterIR(${i})" class="icon-btn-view" title="View IR: ${esc(p.irFile||'')}">&#128206;</a> <button class="icon-btn-view" onclick="openPdaMasterIRUpload(${i})" title="Replace IR">&#8635;</button>`;
+  if(p.irFile) return `<span class="icon-btn-view" title="${esc(p.irFile)}">&#128206;</span> <button class="icon-btn-view" onclick="openPdaMasterIRUpload(${i})" title="Replace IR">&#8635;</button>`;
+  if(pdaConditionNeedsIR(p.condition)){
+    return `<button class="icon-btn-view" style="color:var(--danger);border-color:var(--danger-bd);" onclick="openPdaMasterIRUpload(${i})" title="Upload IR — pending">&#8613;</button>`;
+  }
   return '<span class="small-note">—</span>';
+}
+function viewPdaMasterIR(i){
+  const p = DB.pdas[i];
+  if(!p || !p.irFileData){ toast('No IR document attached to this PDA.'); return; }
+  showFileModal(p.irFile||p.pdaNo, p.irFileData);
+}
+function openPdaMasterIRUpload(i){
+  const p = DB.pdas[i];
+  if(!p) return;
+  showModal(`
+    <div class="list-head" style="margin-bottom:14px;">
+      <h3 style="margin:0;">${p.irFileData?'Replace':'Upload'} Incident Report — ${esc(p.pdaNo)}</h3>
+      <button class="btn btn-sm" onclick="closeModal()">Close</button>
+    </div>
+    <div class="card-sub" style="margin-bottom:10px;">Current condition: ${esc(pdaConditionLabel(p.condition)).toLowerCase()}${p.remarks?' — '+esc(p.remarks):''}</div>
+    <div class="field"><label>Incident Report file</label><input type="file" id="pda-master-ir-upload-file"></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitPdaMasterIRUpload(${i})">${p.irFileData?'Replace':'Upload'}</button>
+    </div>
+  `);
+}
+async function submitPdaMasterIRUpload(i){
+  const p = DB.pdas[i];
+  const fileEl = document.getElementById('pda-master-ir-upload-file');
+  const irFileObj = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+  if(!p || !irFileObj){ toast('Choose a file to upload.'); return; }
+  if(irFileObj.size > 4*1024*1024){ toast('IR file is too large (max 4MB).'); return; }
+  let irFileData = '';
+  try{ irFileData = await readFileAsDataURL(irFileObj); }
+  catch(e){ console.error('File read error', e); toast('Could not read that file — try again.'); return; }
+  p.irFile = irFileObj.name; p.irFileData = irFileData;
+  // Keep the matching Borrow / return log entry (the one that set this PDA's
+  // current condition) in sync so both views show the same attached report.
+  const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Returned' && l.conditionOnReturn===p.condition);
+  if(log){ log.irFile = p.irFile; log.irFileData = p.irFileData; }
+  await saveDB();
+  closeModal();
+  toast('Incident Report uploaded for '+p.pdaNo+'.');
+  renderITAssets();
+}
+function pdaLogIRCell(l){
+  if(l.irFileData) return `<a href="javascript:void(0)" onclick="viewPdaLogIR('${esc(l.id)}')" class="icon-btn-view" title="View IR: ${esc(l.irFile||'')}">&#128206;</a> <button class="icon-btn-view" onclick="openPdaLogIRUpload('${esc(l.id)}')" title="Replace IR">&#8635;</button>`;
+  if(l.irFile) return `<span class="icon-btn-view" title="${esc(l.irFile)}">&#128206;</span> <button class="icon-btn-view" onclick="openPdaLogIRUpload('${esc(l.id)}')" title="Replace IR">&#8635;</button>`;
+  if(l.status==='Returned' && pdaConditionNeedsIR(l.conditionOnReturn)){
+    return `<button class="icon-btn-view" style="color:var(--danger);border-color:var(--danger-bd);" onclick="openPdaLogIRUpload('${esc(l.id)}')" title="Upload IR — pending">&#8613;</button>`;
+  }
+  return '<span class="small-note">—</span>';
+}
+function openPdaLogIRUpload(id){
+  const l = DB.pdaLogs.find(x=>x.id===id);
+  if(!l) return;
+  showModal(`
+    <div class="list-head" style="margin-bottom:14px;">
+      <h3 style="margin:0;">${l.irFileData?'Replace':'Upload'} Incident Report — ${esc(l.pdaNo)}</h3>
+      <button class="btn btn-sm" onclick="closeModal()">Close</button>
+    </div>
+    <div class="card-sub" style="margin-bottom:10px;">Returned as ${esc(pdaConditionLabel(l.conditionOnReturn)).toLowerCase()} by ${esc(l.returnedByName||'—')}. Attach the report to clear the pending status.</div>
+    <div class="field"><label>Incident Report file</label><input type="file" id="pda-log-ir-upload-file"></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitPdaLogIRUpload('${esc(id)}')">${l.irFileData?'Replace':'Upload'}</button>
+    </div>
+  `);
+}
+async function submitPdaLogIRUpload(id){
+  const l = DB.pdaLogs.find(x=>x.id===id);
+  const fileEl = document.getElementById('pda-log-ir-upload-file');
+  const irFileObj = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+  if(!l || !irFileObj){ toast('Choose a file to upload.'); return; }
+  if(irFileObj.size > 4*1024*1024){ toast('IR file is too large (max 4MB).'); return; }
+  let irFileData = '';
+  try{ irFileData = await readFileAsDataURL(irFileObj); }
+  catch(e){ console.error('File read error', e); toast('Could not read that file — try again.'); return; }
+  l.irFile = irFileObj.name; l.irFileData = irFileData;
+  // Keep the PDA masterlist row's IR in sync when this log entry is the one
+  // that set the PDA's current condition.
+  const p = DB.pdas.find(x=>x.pdaNo===l.pdaNo && x.soc===l.soc);
+  if(p && p.condition===l.conditionOnReturn){ p.irFile = l.irFile; p.irFileData = l.irFileData; }
+  await saveDB();
+  closeModal();
+  toast('Incident Report uploaded for '+l.pdaNo+'.');
+  renderITAssets();
 }
 function pdaDashboardHtml(){
   const logs = socFilter(DB.pdaLogs);
@@ -5004,27 +5138,40 @@ function pdaDashboardHtml(){
   </div>
   <div id="pda-shift-report-wrap">${pdaShiftReportHtml()}</div>`;
 }
+function pdaLogSerial(l){
+  const p = DB.pdas.find(x=>x.pdaNo===l.pdaNo && x.soc===l.soc);
+  return p && p.serial ? p.serial : '—';
+}
 function pdaLogHtml(){
   const logs = socFilter(DB.pdaLogs);
   const header = `<div class="list-head"><h3>Borrow / return log (${logs.length})</h3>${dlBtn('exportPdaLog')}</div>`;
   if(logs.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#128241;</div>No borrow/return activity yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th>Ref #</th><th>PDA #</th><th>Borrowed by</th><th>Borrowed</th><th>Returned by</th><th>Returned</th><th>Condition</th><th>IR</th><th>Status</th></tr>' +
+    '<tr><th rowspan="2">PDA #</th><th rowspan="2">Serial</th><th colspan="5">Borrowed by</th><th colspan="5">Returned by</th><th rowspan="2">Condition / Status</th><th rowspan="2">IR</th></tr>' +
+    '<tr><th>Ops ID</th><th>Full Name</th><th>Agency</th><th>Department</th><th>Borrowed date and time</th>' +
+    '<th>Ops ID</th><th>Full Name</th><th>Agency</th><th>Department</th><th>Returned date and time</th></tr>' +
     logs.slice().reverse().map(l=>`<tr>
-      <td class="mono">${esc(l.id)}</td><td class="mono">${esc(l.pdaNo)}</td>
-      <td>${esc(l.borrowerName)}<div class="small-note">${esc(l.opsId)} &middot; ${esc(l.borrowerAgency||'—')} &middot; ${esc(l.borrowerDepartment||'—')}</div></td>
-      <td>${fmtDateTime(l.borrowedAt)}</td>
-      <td>${l.returnedByName ? esc(l.returnedByName)+'<div class="small-note">'+esc(l.returnedByOpsId)+' &middot; '+esc(l.returnedByAgency||'—')+'</div>' : '<span class="small-note">—</span>'}</td>
-      <td>${l.returnedAt?fmtDateTime(l.returnedAt):'—'}</td>
-      <td>${pdaConditionTag(l.conditionOnReturn)}</td>
+      <td class="mono">${esc(l.pdaNo)}</td>
+      <td class="mono">${esc(pdaLogSerial(l))}</td>
+      <td class="mono">${esc(l.opsId)}</td>
+      <td>${esc(l.borrowerName)}</td>
+      <td>${esc(l.borrowerAgency||'—')}</td>
+      <td>${esc(l.borrowerDepartment||'—')}</td>
+      <td style="white-space:nowrap;">${fmtDateTime(l.borrowedAt)}</td>
+      <td class="mono">${l.returnedByName ? esc(l.returnedByOpsId) : '<span class="small-note">—</span>'}</td>
+      <td>${esc(l.returnedByName||'')}</td>
+      <td>${l.returnedByName ? esc(l.returnedByAgency||'—') : ''}</td>
+      <td>${l.returnedByName ? esc(l.returnedByDepartment||'—') : ''}</td>
+      <td style="white-space:nowrap;">${l.returnedAt?fmtDateTime(l.returnedAt):''}</td>
+      <td style="white-space:nowrap;">${pdaConditionTag(l.conditionOnReturn)} ${l.status==='Borrowed'?'<span class="tag tag-pending">Borrowed</span>':'<span class="tag tag-approved">Returned</span>'}${l.remarks?'<div class="small-note" style="white-space:normal;">'+esc(l.remarks)+'</div>':''}</td>
       <td>${pdaLogIRCell(l)}</td>
-      <td>${l.status==='Borrowed'?'<span class="tag tag-pending">Borrowed</span>':'<span class="tag tag-approved">Returned</span>'}</td>
     </tr>`).join('') + '</table></div></div>';
 }
 function exportPdaLog(){
-  const rows = socFilter(DB.pdaLogs).map(l=>[l.id,l.pdaNo,l.opsId,l.borrowerName,l.borrowerAgency||'',l.borrowerDepartment||'',fmtDateTime(l.borrowedAt),l.returnedByOpsId||'',l.returnedByName||'',l.returnedAt?fmtDateTime(l.returnedAt):'',pdaConditionLabel(l.conditionOnReturn),l.irFile||'',l.status]);
-  downloadCSV('pda-borrow-return-log.csv', ['Ref #','PDA #','Borrower Ops ID','Borrower Name','Borrower Agency','Borrower Department','Borrowed','Returned By Ops ID','Returned By Name','Returned','Condition on return','IR file','Status'], rows);
+  const rows = socFilter(DB.pdaLogs).map(l=>[l.pdaNo,pdaLogSerial(l),l.opsId,l.borrowerName,l.borrowerAgency||'',l.borrowerDepartment||'',fmtDateTime(l.borrowedAt),l.returnedByOpsId||'',l.returnedByName||'',l.returnedByAgency||'',l.returnedByDepartment||'',l.returnedAt?fmtDateTime(l.returnedAt):'',pdaConditionLabel(l.conditionOnReturn),l.status,l.remarks||'',l.irFile||'']);
+  downloadCSV('pda-borrow-return-log.csv', ['PDA #','Serial','Borrower Ops ID','Borrower Name','Borrower Agency','Borrower Department','Borrowed date and time','Returned By Ops ID','Returned By Name','Returned By Agency','Returned By Department','Returned date and time','Condition on return','Status','Remarks','IR file'], rows);
 }
+
 
 /* ------------------------- PDA reports (AM/PM shift + department allocation) ------------------------- */
 function localDateStr(d){
