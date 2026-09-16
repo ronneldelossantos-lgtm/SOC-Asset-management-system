@@ -7,6 +7,7 @@
    group, so this is safe to run repeatedly while setting things up. */
 
 const { getAccessToken, getJoinedGroupIds, sendGroupTextMessage } = require('./seatalk-client');
+const { writeStatus } = require('./firestore-status');
 
 async function main() {
   const appId = process.env.SEATALK_APP_ID;
@@ -23,25 +24,36 @@ async function main() {
   const groupIds = await getJoinedGroupIds(token);
   console.log(`Bot is in ${groupIds.length} group(s):`, groupIds);
 
+  let testMessageSent = false;
   if (process.env.SEND_TEST_MESSAGE === 'true') {
     if (groupIds.length !== 1) {
       console.log(
         `Skipping test message — expected exactly 1 joined group, found ${groupIds.length}. ` +
           `Add the bot to exactly one group chat before sending a test message.`
       );
-      return;
+    } else {
+      console.log('Sending test message...');
+      const messageId = await sendGroupTextMessage(
+        token,
+        groupIds[0],
+        'SOC Asset Management bot connected successfully. This is a one-time test message.'
+      );
+      console.log('Sent. message_id =', messageId);
+      testMessageSent = true;
     }
-    console.log('Sending test message...');
-    const messageId = await sendGroupTextMessage(
-      token,
-      groupIds[0],
-      'SOC Asset Management bot connected successfully. This is a one-time test message.'
-    );
-    console.log('Sent. message_id =', messageId);
   }
+
+  await writeStatus('test_connection_status', {
+    ok: true,
+    groupCount: groupIds.length,
+    groupIds,
+    testMessageSent,
+    checkedAt: Date.now(),
+  });
 }
 
-main().catch(err => {
+main().catch(async err => {
   console.error('FAILED:', err.message);
+  await writeStatus('test_connection_status', { ok: false, error: err.message, checkedAt: Date.now() });
   process.exit(1);
 });
