@@ -50,7 +50,12 @@ async function getJoinedGroupIds(accessToken) {
     if (!res.ok || body.code !== 0) {
       throw new Error(`get joined groups failed: HTTP ${res.status} ${JSON.stringify(body)}`);
     }
-    groupIds.push(...((body.joined_group_chats && body.joined_group_chats.group_ids) || []));
+    /* The real field is joined_group_chats.group_id (singular) — confirmed
+       via a captured raw response. The unofficial third-party client this
+       was first modeled on used group_ids (plural), which silently matched
+       nothing here and made every check report 0 groups regardless of
+       actual bot membership. */
+    groupIds.push(...((body.joined_group_chats && body.joined_group_chats.group_id) || []));
     cursor = body.next_cursor || '';
     if (!cursor) break;
   }
