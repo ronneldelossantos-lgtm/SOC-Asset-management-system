@@ -6,7 +6,7 @@
    sent unless SEND_TEST_MESSAGE=true and the bot is already in exactly one
    group, so this is safe to run repeatedly while setting things up. */
 
-const { getAccessToken, getJoinedGroupIds, sendGroupTextMessage } = require('./seatalk-client');
+const { getAccessToken, getJoinedGroupIds, getJoinedGroupsRaw, sendGroupTextMessage } = require('./seatalk-client');
 const { writeStatus } = require('./firestore-status');
 
 async function main() {
@@ -19,6 +19,10 @@ async function main() {
   console.log('Requesting app_access_token...');
   const token = await getAccessToken(appId, appSecret);
   console.log('Auth OK.');
+
+  console.log('Fetching raw joined-groups response for diagnostics...');
+  const raw = await getJoinedGroupsRaw(token);
+  console.log('Raw response:', JSON.stringify(raw));
 
   console.log('Listing groups the bot has been added to...');
   const groupIds = await getJoinedGroupIds(token);
@@ -48,6 +52,7 @@ async function main() {
     groupCount: groupIds.length,
     groupIds,
     testMessageSent,
+    rawJoinedGroupsResponse: raw,
     checkedAt: Date.now(),
   });
 }

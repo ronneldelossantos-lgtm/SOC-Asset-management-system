@@ -21,6 +21,21 @@ async function getAccessToken(appId, appSecret) {
   return body.app_access_token;
 }
 
+/* Returns the raw, unparsed response body of the first page — used for
+   diagnostics when the parsed group list comes back empty despite the bot
+   visibly being a group member, since the exact response shape here is
+   taken from an unofficial third-party client (SeaTalk's own docs require
+   a logged-in session), not SeaTalk's own reference. */
+async function getJoinedGroupsRaw(accessToken) {
+  const url = new URL(`${HOST}/messaging/v2/group_chat/joined`);
+  url.searchParams.set('page_size', '50');
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const text = await res.text();
+  let body;
+  try { body = JSON.parse(text); } catch (e) { body = { unparsableText: text }; }
+  return { status: res.status, body };
+}
+
 async function getJoinedGroupIds(accessToken) {
   const groupIds = [];
   let cursor = '';
@@ -58,4 +73,4 @@ async function sendGroupTextMessage(accessToken, groupId, content) {
   return body.message_id;
 }
 
-module.exports = { getAccessToken, getJoinedGroupIds, sendGroupTextMessage };
+module.exports = { getAccessToken, getJoinedGroupIds, getJoinedGroupsRaw, sendGroupTextMessage };
