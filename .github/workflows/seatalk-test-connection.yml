@@ -7,13 +7,10 @@ on:
         description: 'Actually send a test message (requires the bot to already be in exactly one group)'
         type: boolean
         default: false
-  # Runs automatically every 15 minutes while setting this up, so there's no
-  # need to click "Run workflow" by hand each time. inputs.send_test_message
-  # is unset on a schedule trigger (only workflow_dispatch has inputs), which
-  # the script treats as "don't send" — a scheduled run only ever checks
-  # auth + group membership, never sends a message on its own.
-  schedule:
-    - cron: '*/15 * * * *'
+  # Was on a 15-minute schedule while debugging the connection (fixed: the
+  # joined-groups API returns group_id, singular, not group_ids — see the
+  # commit history in scripts/seatalk/). Back to manual-only now that the
+  # real recurring job (seatalk-notify.yml) handles ongoing checks.
 
 jobs:
   test:

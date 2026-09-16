@@ -1,0 +1,20 @@
+name: SeaTalk Notifications
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check for request/return/stock changes and notify SeaTalk
+        env:
+          SEATALK_APP_ID: ${{ secrets.SEATALK_APP_ID }}
+          SEATALK_APP_SECRET: ${{ secrets.SEATALK_APP_SECRET }}
+        run: node scripts/seatalk/notify.js
