@@ -1,0 +1,24 @@
+name: Test SeaTalk Connection
+
+on:
+  workflow_dispatch:
+    inputs:
+      send_test_message:
+        description: 'Actually send a test message (requires the bot to already be in exactly one group)'
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run connectivity test
+        env:
+          SEATALK_APP_ID: ${{ secrets.SEATALK_APP_ID }}
+          SEATALK_APP_SECRET: ${{ secrets.SEATALK_APP_SECRET }}
+          SEND_TEST_MESSAGE: ${{ inputs.send_test_message }}
+        run: node scripts/seatalk/test-connection.js
