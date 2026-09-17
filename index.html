@@ -1024,7 +1024,18 @@ async function pollForUpdates(){
     });
     if(!anyApplied) return;
     migrateDB();
-    if(!isFormScreenActive()){
+    // The PDA Issuance (scan) tab gets its own quiet refresh path: it has to
+    // stay live so simultaneous scans from other users show up (per-device
+    // borrow/return conflicts are already handled where the scan is saved —
+    // see confirmPdaBorrow/confirmPdaReturn), but a full navigate() here would
+    // wipe this user's own typed serial/Ops ID or drop their in-progress scan.
+    if(route==='itassets' && (subroute||'scan')==='scan'){
+      // Either it refreshed quietly, or this user is mid-scan and it
+      // deliberately did nothing — never fall through to a full navigate()
+      // here, that's exactly the disruptive re-render this path avoids.
+      refreshPdaLiveSections();
+      renderNotifBell();
+    } else if(!isFormScreenActive()){
       navigate(route, subroute);
     } else {
       renderNotifBell();
@@ -4949,18 +4960,49 @@ function pdaScanHtml(){
     <div id="pda-active-session"></div>
   </div>
   <div class="card">
-    <h3>Currently borrowed (${borrowed.length})</h3>
-    ${borrowed.length===0 ? '<div class="empty"><div class="ic">&#128241;</div>No PDAs currently out.</div>' :
-      '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Borrowed by</th><th>Agency / Dept</th><th>Since</th></tr>' +
-      borrowed.map(p=>{
-        const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Borrowed');
-        return `<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td>
-          <td>${log?esc(log.borrowerName)+' <span class="small-note">('+esc(log.opsId)+')</span>':'—'}</td>
-          <td>${log?esc(log.borrowerAgency||'—')+' / '+esc(log.borrowerDepartment||'—'):'—'}</td>
-          <td>${log?fmtDateTime(log.borrowedAt):'—'}</td></tr>`;
-      }).join('') + '</table></div>'}
+    <h3>Currently borrowed (<span id="pda-borrowed-count">${borrowed.length}</span>)</h3>
+    <div id="pda-borrowed-wrap">${pdaBorrowedTableHtml()}</div>
   </div>
-  ${pdaLogHtml()}`;
+  <div id="pda-log-wrap">${pdaLogHtml()}</div>`;
+}
+// Rows currently out, newest-borrowed-first so whoever's scanning always sees
+// the device that was just issued at the top of the list. Refreshed both on
+// full tab render and, on its own, by the live poll (see refreshPdaLiveSections)
+// so other users' scans show up here without disturbing this user's session.
+function pdaBorrowedTableHtml(){
+  const rows = socFilter(DB.pdas).filter(p=>p.status==='Borrowed').map(p=>{
+    const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Borrowed');
+    return {p, log};
+  }).sort((a,b)=> new Date(b.log?b.log.borrowedAt:0) - new Date(a.log?a.log.borrowedAt:0));
+  if(rows.length===0) return '<div class="empty"><div class="ic">&#128241;</div>No PDAs currently out.</div>';
+  return '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition</th><th>Borrowed by</th><th>Agency / Dept</th><th>Since</th></tr>' +
+    rows.map(({p,log})=>`<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td>
+      <td>${pdaConditionTag(p.condition)}</td>
+      <td>${log?esc(log.borrowerName)+' <span class="small-note">('+esc(log.opsId)+')</span>':'—'}</td>
+      <td>${log?esc(log.borrowerAgency||'—')+' / '+esc(log.borrowerDepartment||'—'):'—'}</td>
+      <td>${log?fmtDateTime(log.borrowedAt):'—'}</td></tr>`).join('') + '</table></div>';
+}
+// Lightweight live refresh for the PDA Issuance (scan) tab: updates just the
+// "Currently borrowed" board and the borrow/return log so other users' scans
+// become visible within a few seconds, without the full-tab re-render that
+// pollForUpdates normally does elsewhere — that re-render would blank out
+// whatever this user has typed into the serial/Ops ID fields, or drop an
+// in-progress borrow/return session (see renderITAssets resetting pdaActiveMode
+// on every scan-tab render). Returns false when the scan tab isn't mounted, or
+// when this user is mid-scan themselves, so callers know to leave the (already
+// updated) DB to show up on a later, quieter poll tick instead.
+function refreshPdaLiveSections(){
+  const wrap = document.getElementById('pda-borrowed-wrap');
+  if(!wrap) return false;
+  if(pdaActiveMode) return false;
+  const scanEl = document.getElementById('pda-scan-input');
+  if(scanEl && scanEl.value.trim()) return false;
+  wrap.innerHTML = pdaBorrowedTableHtml();
+  const countEl = document.getElementById('pda-borrowed-count');
+  if(countEl) countEl.textContent = socFilter(DB.pdas).filter(p=>p.status==='Borrowed').length;
+  const logWrap = document.getElementById('pda-log-wrap');
+  if(logWrap) logWrap.innerHTML = pdaLogHtml();
+  return true;
 }
 function setPdaScanStatus(text, kind){
   const el = document.getElementById('pda-scan-status');
