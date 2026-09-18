@@ -593,7 +593,8 @@ function defaultDB(){
     departments: ['IT Department','Finance Department','HR Department','Operations','Admin / Warehouse','SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'],
     suppliers: ['ABC Trading Corp','Office Depot Philippines','TechSource Solutions'],
     warehouses: ['SOC5','SOC6','SOC8','SOC9','SOC Cache'],
-    sortingStations: ['Station 1','Station 2','Station 3','Station 4'],
+    sortingStations: [{name:'Station 1',soc:'SOC5'},{name:'Station 2',soc:'SOC6'},{name:'Station 3',soc:'SOC8'},{name:'Station 4',soc:'SOC9'}],
+    handOverTo: ['Security','Parcel Sweeper','Reject Operator'],
     accountability: [
       {name:'Maria Santos', email:'maria.santos@company.com'},
       {name:'Pedro Reyes', email:'pedro.reyes@company.com'},
@@ -649,7 +650,16 @@ function migrateDB(){
   if(!DB.notifications) DB.notifications = [];
   if(!DB.warehouses || !DB.warehouses.length) DB.warehouses = ['SOC5','SOC6','SOC8','SOC9','SOC Cache'];
   if(!DB.suppliers) DB.suppliers = [];
-  if(!DB.sortingStations || !DB.sortingStations.length) DB.sortingStations = ['Station 1','Station 2','Station 3','Station 4'];
+  if(!DB.sortingStations || !DB.sortingStations.length) DB.sortingStations = [{name:'Station 1',soc:'SOC5'},{name:'Station 2',soc:'SOC6'},{name:'Station 3',soc:'SOC8'},{name:'Station 4',soc:'SOC9'}];
+  // Sorting stations used to be a flat list of name strings shared across
+  // every SOC. Each station is now tied to exactly one SOC — {name, soc} —
+  // the same way a department is, so the same physical line at two sites
+  // can be told apart and Parcel Retrieval only offers stations that belong
+  // to wherever you're currently working.
+  if(DB.sortingStations.length && typeof DB.sortingStations[0] === 'string'){
+    DB.sortingStations = DB.sortingStations.map(n=>({name:n, soc:''}));
+  }
+  if(!DB.handOverTo || !DB.handOverTo.length) DB.handOverTo = ['Security','Parcel Sweeper','Reject Operator'];
   if(!DB.cages) DB.cages = [];
   if(!DB.pdas) DB.pdas = [];
   DB.pdas.forEach(p=>{ if(p.soc===undefined) p.soc=''; if(p.exceptionStatus===undefined) p.exceptionStatus=''; if(p.remarks===undefined) p.remarks=''; if(p.irFile===undefined) p.irFile=''; if(p.irFileData===undefined) p.irFileData=''; });
@@ -1411,7 +1421,8 @@ const NAV = [
       {id:'cageloading', sub:'list', label:'Cage Log'}
     ]},
     {type:'dropdown', id:'proc-parcelretrieval', processKey:'parcelretrieval', label:'Parcel Retrieval', ic:'&#128233;', children:[
-      {id:'parcelretrieval', sub:'scan', label:'Retrieve'},
+      {id:'parcelretrieval', sub:'dashboard', label:'Dashboard'},
+      {id:'parcelretrieval', sub:'scan', label:'Parcel scanning'},
       {id:'parcelretrieval', sub:'list', label:'Retrieval Log'}
     ]}
   ]},
@@ -1841,6 +1852,7 @@ let reqDraftItems = [];
 let recvDraftItems = [];
 let cageDraftItems = [];
 let parcelSessionStation = '';
+let parcelSessionHandOver = '';
 function renderRequest(){
   const c = document.getElementById('content');
   const tab = subroute || 'new';
@@ -3847,7 +3859,7 @@ function renderSettings(){
     </div>
     <div id="set-body"></div>
   `;
-  const map = {sku:settingsSkuHtml, dept:settingsDepartmentsHtml, supplier:()=>settingsListHtml('suppliers','Supplier',true), warehouse:()=>settingsListHtml('warehouses','Warehouse',false), station:()=>settingsListHtml('sortingStations','Sorting Station',true), acct:settingsAccountabilityHtml, opsid:settingsEmployeesHtml, access:settingsAccessHtml};
+  const map = {sku:settingsSkuHtml, dept:settingsDepartmentsHtml, supplier:()=>settingsListHtml('suppliers','Supplier',true), warehouse:()=>settingsListHtml('warehouses','Warehouse',false), station:settingsStationHtml, acct:settingsAccountabilityHtml, opsid:settingsEmployeesHtml, access:settingsAccessHtml};
   const renderer = ((tab==='access' || tab==='warehouse') && !isAdmin) ? settingsSkuHtml : (map[tab]||settingsSkuHtml);
   document.getElementById('set-body').innerHTML = renderer();
   if(tab==='access' && isAdmin) toggleNewUserDept();
@@ -4091,7 +4103,7 @@ function settingsListHtml(key, label, allowCsv){
   return `<div class="card">
     <div class="list-head"><h3>Add ${label.toLowerCase()}</h3>${allowCsv ? importBtn('importListCsv_'+key, label+' (single column)') : ''}</div>
     <div style="display:flex;gap:10px;">
-      <input id="new-list-val" placeholder="${label} name" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;">
+      <input id="new-list-val-${key}" placeholder="${label} name" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;">
       <button class="btn btn-primary" onclick="addListVal('${key}')">Add</button>
     </div>
   </div>
@@ -4101,6 +4113,82 @@ function settingsListHtml(key, label, allowCsv){
       ${DB[key].map((v,i)=>`<tr><td>${esc(v)}</td><td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditListVal('${key}',${i})">Edit</button> <button class="icon-btn" onclick="removeListVal('${key}',${i})">&times;</button></td></tr>`).join('')}
     </table></div>
   </div>`;
+}
+// A sorting station is a {name, soc} entry — same name can exist under more
+// than one SOC, same pattern as departments (see deptKey/parseDeptKey above).
+const STATION_KEY_SEP = '\u241F';
+function stationKey(s){ return (s.name||'') + STATION_KEY_SEP + (s.soc||''); }
+function parseStationKey(key){
+  const idx = (key||'').lastIndexOf(STATION_KEY_SEP);
+  if(idx<0) return {name:key||'', soc:''};
+  return {name:key.slice(0,idx), soc:key.slice(idx+1)};
+}
+function stationSocOptionsHtml(selectedSoc){
+  return '<option value="">Select SOC…</option>' + DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===(selectedSoc||'')?'selected':''}>${esc(w)}</option>`).join('');
+}
+function settingsStationHtml(){
+  return `<div class="card">
+    <div class="list-head"><h3>Add sorting station</h3>${importBtn('importListCsv_sortingStations','Sorting Station, SOC')}</div>
+    <div class="card-sub">Each sorting station belongs to exactly one SOC — the same station name can be reused at a different SOC as a separate entry. Parcel scanning only offers the stations that belong to whichever SOC you're currently working in.</div>
+    <div class="form-row">
+      <input id="new-station-name" placeholder="Station name" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;">
+      <select id="new-station-soc" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;">${stationSocOptionsHtml()}</select>
+    </div>
+    <div class="footer-actions"><button class="btn btn-primary" onclick="addStation()">Add</button></div>
+  </div>
+  <div class="card">
+    <h3>Sorting station list (${DB.sortingStations.length})</h3>
+    <div class="tbl-wrap"><table><tr><th>Station</th><th>SOC</th><th></th></tr>
+      ${DB.sortingStations.map((s,i)=>`<tr><td>${esc(s.name)}</td><td>${s.soc?esc(s.soc):'<span class="small-note">Unassigned</span>'}</td>
+        <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditStation(${i})">Edit</button> <button class="icon-btn" onclick="removeStation(${i})">&times;</button></td></tr>`).join('')}
+    </table></div>
+  </div>` + settingsListHtml('handOverTo','Hand Over To',true);
+}
+async function addStation(){
+  const name = document.getElementById('new-station-name').value.trim();
+  const soc = document.getElementById('new-station-soc').value;
+  if(!name){ toast('Enter a station name.'); return; }
+  if(!soc){ toast('Select the SOC this station belongs to.'); return; }
+  if(DB.sortingStations.some(s=>s.name===name && s.soc===soc)){ toast('That station already exists for that SOC.'); return; }
+  DB.sortingStations.push({name, soc});
+  await saveDB();
+  toast('Added.');
+  renderSettings();
+}
+function openEditStation(i){
+  const s = DB.sortingStations[i];
+  if(!s) return;
+  showModal(`
+    <h3>Edit sorting station</h3>
+    <div class="field"><label>Name</label><input id="edit-station-name" value="${esc(s.name)}"></div>
+    <div class="field"><label>SOC</label><select id="edit-station-soc">${stationSocOptionsHtml(s.soc)}</select></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveStationEdit(${i})">Save changes</button>
+    </div>
+  `);
+}
+async function saveStationEdit(i){
+  const s = DB.sortingStations[i];
+  if(!s) return;
+  const name = document.getElementById('edit-station-name').value.trim();
+  const soc = document.getElementById('edit-station-soc').value;
+  if(!name){ toast('Enter a station name.'); return; }
+  if(!soc){ toast('Select the SOC this station belongs to.'); return; }
+  if(DB.sortingStations.some((x,idx)=>idx!==i && x.name===name && x.soc===soc)){ toast('That station already exists for that SOC.'); return; }
+  s.name = name; s.soc = soc;
+  await saveDB();
+  closeModal();
+  toast('Updated.');
+  renderSettings();
+}
+function removeStation(i){
+  confirmAction('Remove this sorting station from the list?', async ()=>{
+    DB.sortingStations.splice(i,1);
+    await saveDB();
+    toast('Removed.');
+    renderSettings();
+  });
 }
 function openEditListVal(key, i){
   const val = DB[key][i];
@@ -4149,7 +4237,7 @@ function cascadeDepartmentRename(oldName, newName){
   }
 }
 async function addListVal(key){
-  const v = document.getElementById('new-list-val').value.trim();
+  const v = document.getElementById('new-list-val-'+key).value.trim();
   if(!v){ toast('Enter a value first.'); return; }
   if(DB[key].includes(v)){ toast('That value already exists.'); return; }
   DB[key].push(v);
@@ -4174,7 +4262,22 @@ async function importListCsv_departments(inputEl){
   renderSettings();
 }
 async function importListCsv_suppliers(inputEl){ await importListCsv('suppliers', inputEl); }
-async function importListCsv_sortingStations(inputEl){ await importListCsv('sortingStations', inputEl); }
+async function importListCsv_sortingStations(inputEl){
+  const rows = await importCsvRows(inputEl);
+  if(!rows) return;
+  let added = 0, skipped = 0;
+  rows.forEach(row=>{
+    const name = (csvField(row, ['Station','Sorting Station','Name']).trim()) || (Object.values(row)[0]||'').trim();
+    const soc = csvField(row, ['SOC','Site','Warehouse']).trim();
+    if(!name || !soc || DB.sortingStations.some(s=>s.name===name && s.soc===soc)){ skipped++; return; }
+    DB.sortingStations.push({name, soc});
+    added++;
+  });
+  if(added){ await saveDB(); }
+  toast('Imported '+added+' entr'+(added===1?'y':'ies')+(skipped?(', skipped '+skipped+' (blank/duplicate/missing SOC).'):'.'));
+  renderSettings();
+}
+async function importListCsv_handOverTo(inputEl){ await importListCsv('handOverTo', inputEl); }
 async function importListCsv(key, inputEl){
   const rows = await importCsvRows(inputEl);
   if(!rows) return;
@@ -5765,68 +5868,237 @@ function renderParcelRetrieval(){
   const tab = subroute || 'scan';
   c.innerHTML = `
     <div class="tabs">
-      <div class="tab ${tab==='scan'?'active':''}" onclick="navigate('parcelretrieval','scan')">Retrieve</div>
+      <div class="tab ${tab==='dashboard'?'active':''}" onclick="navigate('parcelretrieval','dashboard')">Dashboard</div>
+      <div class="tab ${tab==='scan'?'active':''}" onclick="navigate('parcelretrieval','scan')">Parcel scanning</div>
       <div class="tab ${tab==='list'?'active':''}" onclick="navigate('parcelretrieval','list')">Retrieval Log (${socFilter(DB.parcels).length})</div>
     </div>
     <div id="parcel-body"></div>
   `;
-  document.getElementById('parcel-body').innerHTML = tab==='scan' ? parcelScanHtml() : parcelLogHtml();
-  if(tab==='scan'){ refreshParcelSessionTable(); }
+  document.getElementById('parcel-body').innerHTML = tab==='dashboard' ? parcelDashboardHtml() : (tab==='scan' ? parcelScanHtml() : parcelLogHtml());
+  if(tab==='scan'){ refreshPendingList(); refreshParcelSessionTable(); }
+}
+function stationsForCurrentSoc(){
+  const cs = currentSoc();
+  return cs ? DB.sortingStations.filter(s=>s.soc===cs) : DB.sortingStations;
 }
 function stationOptions(){
-  return '<option value="">Select station…</option>' + (DB.sortingStations.length ? DB.sortingStations.map(s=>`<option value="${esc(s)}" ${s===parcelSessionStation?'selected':''}>${esc(s)}</option>`).join('') : '');
+  const cs = currentSoc();
+  const list = stationsForCurrentSoc();
+  return '<option value="">Select station…</option>' + (list.length ? list.map(s=>{
+    const label = cs ? s.name : (s.name + (s.soc?' — '+s.soc:' — Unassigned'));
+    return `<option value="${esc(s.name)}" ${s.name===parcelSessionStation?'selected':''}>${esc(label)}</option>`;
+  }).join('') : '');
+}
+function handOverOptions(){
+  return '<option value="">Select recipient…</option>' + (DB.handOverTo.length ? DB.handOverTo.map(s=>`<option value="${esc(s)}" ${s===parcelSessionHandOver?'selected':''}>${esc(s)}</option>`).join('') : '');
 }
 function parcelScanHtml(){
+  const noStations = stationsForCurrentSoc().length===0;
   return `<div class="card">
-    <h3>Retrieval session</h3>
-    <div class="card-sub">Select the sorting station once, then scan each parcel as you retrieve it.</div>
+    <h3>1. Scan parcels</h3>
+    <div class="card-sub">Scan each Parcel ID — it drops into the list below by itself the instant the scanner finishes, and the field stays ready for the next scan with no need to press Enter. (Typing by hand still works — press Enter to add it right away.) Scan all of them first, then assign the station and hand-over recipient below to save the whole batch at once.</div>
+    <div class="form-row">
+      <div class="field"><label>Parcel ID</label><input id="parcel-id-input" placeholder="e.g. PCL-2044" oninput="onParcelIdInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();addPendingParcel();}"></div>
+    </div>
+    <div id="parcel-pending-list" style="margin-top:14px;"></div>
+  </div>
+  <div class="card">
+    <h3>2. Sorting station &amp; hand over</h3>
+    <div class="card-sub">Applies to every parcel scanned above.${noStations?' <span style="color:var(--danger);font-weight:600;">No sorting stations are set up for this SOC yet — add one in Settings &rarr; Sorting Station.</span>':''}</div>
     <div class="form-row">
       <div class="field"><label>Sorting station</label><select id="parcel-station" onchange="parcelSessionStation=this.value;">${stationOptions()}</select></div>
-      <div class="field"><label>Parcel ID</label><input id="parcel-id-input" placeholder="e.g. PCL-2044" onkeydown="if(event.key==='Enter'){event.preventDefault();addParcelScan();}"></div>
+      <div class="field"><label>Hand over to</label><select id="parcel-handover" onchange="parcelSessionHandOver=this.value;">${handOverOptions()}</select></div>
     </div>
-    <div class="footer-actions"><button class="btn btn-primary" onclick="addParcelScan()">Scan</button></div>
+    <div class="footer-actions"><button class="btn btn-primary" onclick="commitParcelBatch()">Save batch (<span id="parcel-pending-count">${parcelPendingIds.length}</span>)</button></div>
   </div>
   <div class="card">
     <h3>Scanned this session</h3>
     <div id="parcel-session-table"></div>
   </div>`;
 }
+let parcelPendingIds = [];
+function refreshPendingList(){
+  const el = document.getElementById('parcel-pending-list');
+  const countEl = document.getElementById('parcel-pending-count');
+  if(countEl) countEl.textContent = parcelPendingIds.length;
+  if(!el) return;
+  if(parcelPendingIds.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#128233;</div>No parcels scanned yet — scan Parcel IDs above.</div>'; return; }
+  const rowsHtml = parcelPendingIds.map((code,i)=>`<tr><td class="mono small-note">${i+1}</td><td class="mono">${esc(code)}</td><td style="text-align:right;"><button class="icon-btn" onclick="removePendingParcel(${i})" title="Remove">&times;</button></td></tr>`).reverse().join('');
+  el.innerHTML = '<div class="card-sub" style="margin-bottom:8px;">'+parcelPendingIds.length+' parcel(s) scanned, waiting to be saved — newest on top:</div>' +
+    '<div class="tbl-wrap" style="max-height:340px;overflow-y:auto;"><table><tr><th>#</th><th>Parcel ID</th><th></th></tr>' + rowsHtml + '</table></div>';
+}
+// Barcode scanners act like a very fast typist that ends with a brief pause
+// (whether or not they're configured to send a trailing Enter). We watch the
+// input for that pause and treat it as "scan finished" so the parcel drops
+// into the pending list automatically — no Enter required. A person typing
+// by hand can still press Enter to add it immediately; that click clears
+// this timer first so the parcel is never added twice.
+let parcelScanIdleTimer = null;
+const PARCEL_SCAN_IDLE_MS = 300;
+function onParcelIdInput(){
+  const input = document.getElementById('parcel-id-input');
+  if(!input) return;
+  if(parcelScanIdleTimer) clearTimeout(parcelScanIdleTimer);
+  const snapshot = input.value;
+  if(!snapshot.trim()) return;
+  parcelScanIdleTimer = setTimeout(()=>{
+    parcelScanIdleTimer = null;
+    const cur = document.getElementById('parcel-id-input');
+    // Only auto-add if the field still holds exactly what it held when the
+    // pause started (i.e. nothing was typed/scanned in the meantime).
+    if(cur && cur.value === snapshot && cur.value.trim()) addPendingParcel();
+  }, PARCEL_SCAN_IDLE_MS);
+}
+function addPendingParcel(){
+  if(parcelScanIdleTimer){ clearTimeout(parcelScanIdleTimer); parcelScanIdleTimer = null; }
+  const input = document.getElementById('parcel-id-input');
+  const code = input.value.trim();
+  if(!code) return;
+  if(DB.parcels.some(p=>p.parcelId.toUpperCase()===code.toUpperCase()) || parcelPendingIds.some(c=>c.toUpperCase()===code.toUpperCase())){
+    toast('That Parcel ID was already scanned — not added again.');
+    input.value='';
+    input.focus();
+    return;
+  }
+  parcelPendingIds.push(code);
+  input.value='';
+  refreshPendingList();
+  input.focus();
+}
+function removePendingParcel(i){
+  parcelPendingIds.splice(i,1);
+  refreshPendingList();
+}
 let parcelSessionScans = [];
 function refreshParcelSessionTable(){
   const el = document.getElementById('parcel-session-table');
   if(!el) return;
   if(parcelSessionScans.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#128233;</div>No parcels scanned yet this session.</div>'; return; }
-  el.innerHTML = '<div class="tbl-wrap"><table><tr><th>Parcel ID</th><th>Station</th><th>Retrieved</th></tr>' +
-    parcelSessionScans.slice().reverse().map(p=>`<tr><td class="mono">${esc(p.parcelId)}</td><td>${esc(p.station)}</td><td>${fmtDateTime(p.retrievedAt)}</td></tr>`).join('') +
+  el.innerHTML = '<div class="tbl-wrap"><table><tr><th>Parcel ID</th><th>Station</th><th>Hand over to</th><th>Retrieved</th></tr>' +
+    parcelSessionScans.slice().reverse().map(p=>`<tr><td class="mono">${esc(p.parcelId)}</td><td>${esc(p.station)}</td><td>${esc(p.handOverTo||'—')}</td><td>${fmtDateTime(p.retrievedAt)}</td></tr>`).join('') +
     '</table></div>';
 }
-async function addParcelScan(){
+async function commitParcelBatch(){
   const station = document.getElementById('parcel-station').value;
-  const input = document.getElementById('parcel-id-input');
-  const code = input.value.trim();
+  const handOverTo = document.getElementById('parcel-handover').value;
+  if(parcelPendingIds.length===0){ toast('Scan at least one Parcel ID first.'); return; }
   if(!station){ toast('Select a sorting station first.'); return; }
-  if(!code) return;
-  if(DB.parcels.some(p=>p.parcelId.toUpperCase()===code.toUpperCase())){ toast('That Parcel ID was already retrieved.'); input.value=''; return; }
-  const rec = {id: nextCode('PCL','pl'), parcelId: code, station, retriever: session.fullName, retrievedAt: nowISO(), soc:currentSoc()};
-  DB.parcels.push(rec);
-  parcelSessionScans.push(rec);
+  if(!handOverTo){ toast('Select who these parcels are handed over to.'); return; }
+  const retrievedAt = nowISO();
+  const soc = currentSoc();
+  const recs = parcelPendingIds
+    .filter(code=>!DB.parcels.some(p=>p.parcelId.toUpperCase()===code.toUpperCase()))
+    .map(code=>({id: nextCode('PCL','pl'), parcelId: code, station, handOverTo, retriever: session.fullName, retrievedAt, soc}));
+  recs.forEach(rec=>{ DB.parcels.push(rec); parcelSessionScans.push(rec); });
   await saveDB();
-  input.value='';
+  parcelPendingIds = [];
+  refreshPendingList();
   refreshParcelSessionTable();
-  input.focus();
+  toast('Saved '+recs.length+' parcel'+(recs.length===1?'':'s')+' to the retrieval log.');
+  const focusInput = document.getElementById('parcel-id-input');
+  if(focusInput) focusInput.focus();
 }
 function parcelLogHtml(){
   const rows = socFilter(DB.parcels);
   const header = `<div class="list-head"><h3>Parcel retrieval log (${rows.length})</h3>${dlBtn('exportParcels')}</div>`;
   if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#128233;</div>No parcels retrieved yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th>Ref #</th><th>Parcel ID</th><th>Station</th><th>Retriever</th><th>Retrieved</th></tr>' +
-    rows.slice().reverse().map(p=>`<tr><td class="mono">${esc(p.id)}</td><td class="mono">${esc(p.parcelId)}</td><td>${esc(p.station)}</td><td>${esc(p.retriever)}</td><td>${fmtDateTime(p.retrievedAt)}</td></tr>`).join('') +
+    '<tr><th>Ref #</th><th>Parcel ID</th><th>Station</th><th>Hand over to</th><th>Retriever</th><th>Retrieved</th></tr>' +
+    rows.slice().reverse().map(p=>`<tr><td class="mono">${esc(p.id)}</td><td class="mono">${esc(p.parcelId)}</td><td>${esc(p.station)}</td><td>${esc(p.handOverTo||'—')}</td><td>${esc(p.retriever)}</td><td>${fmtDateTime(p.retrievedAt)}</td></tr>`).join('') +
     '</table></div></div>';
 }
 function exportParcels(){
-  const rows = socFilter(DB.parcels).map(p=>[p.id,p.parcelId,p.station,p.retriever,fmtDateTime(p.retrievedAt)]);
-  downloadCSV('parcel-retrieval-log.csv', ['Ref #','Parcel ID','Station','Retriever','Retrieved'], rows);
+  const rows = socFilter(DB.parcels).map(p=>[p.id,p.parcelId,p.station,p.handOverTo||'',p.retriever,fmtDateTime(p.retrievedAt)]);
+  downloadCSV('parcel-retrieval-log.csv', ['Ref #','Parcel ID','Station','Hand over to','Retriever','Retrieved'], rows);
+}
+
+/* ------------------------- Parcel Retrieval Dashboard (AM/PM shift, by station) ------------------------- */
+// AM shift buckets: 6-8,8-10,10-12,12-14,14-16,16-18 (6am-6pm).
+// PM shift buckets: 18-20,20-22,22-24,24-26,26-28,28-30 (6pm to 6am the next calendar day).
+const PARCEL_BUCKET_RANGES = [[6,8],[8,10],[10,12],[12,14],[14,16],[16,18],[18,20],[20,22],[22,24],[24,26],[26,28],[28,30]];
+function parcelBucketHourLabel(h){
+  const hh = ((h%24)+24)%24;
+  const period = hh<12 ? 'am' : 'pm';
+  let disp = hh%12; if(disp===0) disp = 12;
+  return disp+period;
+}
+function parcelBucketLabels(){ return PARCEL_BUCKET_RANGES.map(r=>parcelBucketHourLabel(r[0])+'-'+parcelBucketHourLabel(r[1])); }
+function parcelBucketIndexFor(dateObj, shiftDateStr){
+  const origin = new Date(shiftDateStr+'T00:00:00');
+  const diffH = (dateObj - origin) / 3600000;
+  for(let i=0;i<PARCEL_BUCKET_RANGES.length;i++){
+    if(diffH>=PARCEL_BUCKET_RANGES[i][0] && diffH<PARCEL_BUCKET_RANGES[i][1]) return i;
+  }
+  return -1;
+}
+let parcelShiftReportDate = localDateStr();
+function parcelShiftReportRows(shiftDateStr){
+  const labels = parcelBucketLabels();
+  const cs = currentSoc();
+  const stationList = stationsForCurrentSoc();
+  const rows = stationList.map(s=>({station:s.name, soc:s.soc, buckets:new Array(labels.length).fill(0), total:0}));
+  const totals = new Array(labels.length).fill(0);
+  socFilter(DB.parcels).forEach(p=>{
+    const idx = parcelBucketIndexFor(new Date(p.retrievedAt), shiftDateStr);
+    if(idx<0) return;
+    // Scoped to one SOC: match by station name (already unambiguous). Viewing
+    // "All SOCs": match by station name AND soc, since the same station name
+    // can exist at more than one site.
+    let row = cs
+      ? rows.find(r=>r.station===p.station)
+      : rows.find(r=>r.station===p.station && (r.soc||'')===(p.soc||''));
+    if(!row){
+      row = {station:p.station||'—', soc:p.soc||'', buckets:new Array(labels.length).fill(0), total:0};
+      rows.push(row);
+    }
+    row.buckets[idx]++;
+    row.total++;
+    totals[idx]++;
+  });
+  return {rows, totals, labels, showSocColumn: !cs};
+}
+function parcelDashboardHtml(){
+  return `<div id="parcel-shift-report-wrap">${parcelShiftReportHtml()}</div>`;
+}
+function parcelShiftReportHtml(){
+  const dateStr = parcelShiftReportDate;
+  const {rows, totals, labels, showSocColumn} = parcelShiftReportRows(dateStr);
+  const amTotal = totals.slice(0,6).reduce((a,b)=>a+b,0);
+  const pmTotal = totals.slice(6).reduce((a,b)=>a+b,0);
+  const grand = amTotal+pmTotal;
+  const leadCols = showSocColumn ? 2 : 1;
+  return `<div class="card">
+    <div class="list-head"><h3>Parcels retrieved — AM / PM shift report</h3>${dlBtn('exportParcelShiftReport')}</div>
+    <div class="card-sub">Sorting station (each tied to its own SOC) on the left, 2-hour retrieval buckets across the top. AM shift 6:00 AM – 5:59 PM, PM shift 6:00 PM – 5:59 AM (spans into the next calendar day).${currentSoc()?'':' Viewing all SOCs combined — station names are grouped with the SOC they belong to.'}</div>
+    <div class="field" style="max-width:220px;"><label>Shift date</label><input type="date" id="parcel-shift-date" value="${dateStr}" onchange="onParcelShiftDateChange()"></div>
+    <div class="grid g3" style="margin:14px 0 18px;">
+      <div class="metric"><div class="lbl">AM shift</div><div class="val">${amTotal}</div><div class="sub">6:00 AM – 5:59 PM</div></div>
+      <div class="metric"><div class="lbl">PM shift</div><div class="val">${pmTotal}</div><div class="sub">6:00 PM – 5:59 AM</div></div>
+      <div class="metric success"><div class="lbl">Total retrieved</div><div class="val">${grand}</div><div class="sub">this shift date</div></div>
+    </div>
+    ${rows.length===0 ? '<div class="empty"><div class="ic">&#128233;</div>No sorting stations configured yet — add one in Settings &rarr; Sorting Station.</div>' :
+      '<div class="tbl-wrap"><table><tr><th rowspan="2">Station</th>'+(showSocColumn?'<th rowspan="2">SOC</th>':'')+'<th colspan="6">AM shift</th><th colspan="6">PM shift</th><th rowspan="2">Total</th></tr>' +
+      '<tr>' + labels.map(l=>`<th>${l}</th>`).join('') + '</tr>' +
+      rows.map(r=>`<tr><td>${esc(r.station)}</td>${showSocColumn?`<td>${r.soc?esc(r.soc):'<span class="small-note">Unassigned</span>'}</td>`:''}${r.buckets.map(v=>`<td style="text-align:right;">${v||0}</td>`).join('')}<td style="text-align:right;font-weight:700;">${r.total}</td></tr>`).join('') +
+      `<tr><td colspan="${leadCols}"><strong>Total</strong></td>${totals.map(v=>`<td style="text-align:right;"><strong>${v||0}</strong></td>`).join('')}<td style="text-align:right;"><strong>${grand}</strong></td></tr>` +
+      '</table></div>'}
+  </div>`;
+}
+function onParcelShiftDateChange(){
+  const el = document.getElementById('parcel-shift-date');
+  if(!el) return;
+  parcelShiftReportDate = el.value || localDateStr();
+  const wrap = document.getElementById('parcel-shift-report-wrap');
+  if(wrap) wrap.innerHTML = parcelShiftReportHtml();
+}
+function exportParcelShiftReport(){
+  const dateStr = parcelShiftReportDate;
+  const {rows, totals, labels, showSocColumn} = parcelShiftReportRows(dateStr);
+  const rowsCsv = rows.map(r=>showSocColumn ? [r.station, r.soc||'', ...r.buckets, r.total] : [r.station, ...r.buckets, r.total]);
+  const totalRow = showSocColumn ? ['Total', '', ...totals, totals.reduce((a,b)=>a+b,0)] : ['Total', ...totals, totals.reduce((a,b)=>a+b,0)];
+  rowsCsv.push(totalRow);
+  const headers = showSocColumn ? ['Station','SOC', ...labels, 'Total'] : ['Station', ...labels, 'Total'];
+  downloadCSV('parcel-shift-report-'+dateStr+'.csv', headers, rowsCsv);
 }
 
 /* ============================= INIT ============================= */
