@@ -1026,7 +1026,6 @@ function stopAutoRefresh(){
 function isFormScreenActive(){
   if(route==='settings') return true;
   if(route==='cyclecount') return true;
-  if(route==='repair' && subroute==='weekly') return true;
   const formSubroutes = { request:'new', drequest:'new', receiving:'new', issuance:'new', dissuance:'new', dreceiving:'new', dreturn:'new', returns:'new', repair:'new' };
   return formSubroutes[route] && subroute===formSubroutes[route];
 }
@@ -3335,7 +3334,7 @@ function pmChecklistOf(sku){ const l = DB.pmChecklists && DB.pmChecklists[sku]; 
 let pmWeekStart = '';
 let pmDeptFilter = '';
 let pmRowCache = [];
-let pmModalRowIdx = -1;
+let pmModalRow = null;
 let pmiRepairTouched = false;
 function pmMondayOf(d){ const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - ((x.getDay()+6)%7)); return x; }
 function pmCurrentWeekKey(){ return localDateStr(pmMondayOf(new Date())); }
@@ -3350,10 +3349,10 @@ function pmShiftWeek(delta){
   const key = localDateStr(d);
   if(key > pmCurrentWeekKey()) return;
   pmWeekStart = key;
-  refreshPmWeekly(false);
+  refreshPmWeekly();
 }
-function pmThisWeek(){ pmWeekStart = pmCurrentWeekKey(); refreshPmWeekly(false); }
-function pmSetDept(v){ pmDeptFilter = v; refreshPmWeekly(false); }
+function pmThisWeek(){ pmWeekStart = pmCurrentWeekKey(); refreshPmWeekly(); }
+function pmSetDept(v){ pmDeptFilter = v; refreshPmWeekly(); }
 
 /* PM assets currently sitting with a department. Source of truth is the Issuance log:
    a tagged asset is one row per tag (its latest issuance decides which department holds it);
@@ -3393,20 +3392,49 @@ function pmLastInspection(key){
   const list = (DB.pmInspections||[]).filter(p=>p.key===key).sort((a,b)=>new Date(b.date)-new Date(a.date));
   return list[0] || null;
 }
+/* The weekly count is automatic — nobody picks Found/Missing. For each PM asset in scope
+   during a week: PM checklist done that week => counted (found); no PM => recorded as missing.
+   pmSyncCounts() writes that outcome into DB.pmCounts (one record per asset per week, with a
+   fixed id so repeated syncs never create duplicates) so the history and CSV stay accurate. */
+function pmWeekEndMs(key){ const d = new Date(key+'T00:00:00'); d.setDate(d.getDate()+7); return d.getTime(); }
+function pmPrevWeekKey(key){ const d = new Date(key+'T00:00:00'); d.setDate(d.getDate()-7); return localDateStr(d); }
+function pmSyncCounts(weekKey, allRows){
+  let changed = false;
+  const endMs = pmWeekEndMs(weekKey);
+  allRows.forEach(r=>{
+    if(new Date(r.issuedDate).getTime() >= endMs) return;   // issued after that week — not in scope yet
+    const insp = DB.pmInspections.find(p=>p.weekStart===weekKey && p.key===r.key);
+    if(r.inRepair && !insp) return;                           // in repair with no PM this week — not counted
+    const want = insp ? r.qtyIssued : 0;
+    const ex = DB.pmCounts.find(c=>c.weekStart===weekKey && c.key===r.key);
+    if(ex && ex.countedQty===want && ex.qtyIssued===r.qtyIssued) return;
+    const rec = {weekStart:weekKey, key:r.key, issuanceId:r.issuanceId, sku:r.sku, description:r.description, department:r.department,
+      assetTagging:r.tag, qtyIssued:r.qtyIssued, countedQty:want,
+      remarks: insp ? ('Auto — PM done ('+insp.id+')') : 'Auto — no PM recorded',
+      countedBy: insp ? insp.performedBy : 'System (auto)', date: insp ? insp.date : nowISO(), soc:r.soc||currentSoc()};
+    if(ex) Object.assign(ex, rec);
+    else DB.pmCounts.push(Object.assign({id:'WC-'+weekKey+'-'+r.key.replace(/[^A-Za-z0-9]+/g,'-')}, rec));
+    changed = true;
+  });
+  return changed;
+}
 function pmWeeklyHtml(){
   if(!pmWeekStart) pmWeekStart = pmCurrentWeekKey();
   const all = pmIssuedAssetRows();
+  let synced = pmSyncCounts(pmWeekStart, all);
+  if(pmWeekStart===pmCurrentWeekKey()) synced = pmSyncCounts(pmPrevWeekKey(pmWeekStart), all) || synced;   // close out last week too
+  if(synced) saveDB();
   const depts = Array.from(new Set(all.map(r=>r.department))).sort();
   if(pmDeptFilter && !depts.includes(pmDeptFilter)) pmDeptFilter = '';
   const rows = all.filter(r=>!pmDeptFilter || r.department===pmDeptFilter);
   pmRowCache = rows;
   const isCurrent = pmWeekStart===pmCurrentWeekKey();
-  const countOf = r=>DB.pmCounts.find(c=>c.weekStart===pmWeekStart && c.key===r.key);
+  const endMs = pmWeekEndMs(pmWeekStart);
   const inspOf = r=>DB.pmInspections.find(p=>p.weekStart===pmWeekStart && p.key===r.key);
-  const countable = rows.filter(r=>!r.inRepair);
-  const counted = countable.filter(r=>countOf(r));
-  const variances = counted.filter(r=>countOf(r).countedQty!==r.qtyIssued).length;
-  const pmDone = rows.filter(r=>inspOf(r)).length;
+  const inScope = r=>new Date(r.issuedDate).getTime() < endMs && (!r.inRepair || !!inspOf(r));
+  const scope = rows.filter(inScope);
+  const counted = scope.filter(r=>inspOf(r));
+  const missing = scope.filter(r=>!inspOf(r));
   const pmFindings = rows.filter(r=>{ const p = inspOf(r); return p && p.failCount>0; }).length;
   const controls = `<div class="list-head" style="margin-bottom:14px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -3420,8 +3448,6 @@ function pmWeeklyHtml(){
           <option value="">All departments</option>
           ${depts.map(d=>`<option value="${esc(d)}" ${d===pmDeptFilter?'selected':''}>${esc(d)}</option>`).join('')}
         </select>
-        <button class="btn btn-sm" onclick="pmFillFound()">Mark blanks as Found</button>
-        <button class="btn btn-sm btn-primary" onclick="pmSaveAll()">Save all counts</button>
       </div>
     </div>`;
   let body;
@@ -3431,37 +3457,24 @@ function pmWeeklyHtml(){
     body = '<div class="empty"><div class="ic">&#9874;</div>Nothing to show for this department.</div>';
   } else {
     body = `<div class="tbl-wrap"><table>
-      <tr><th>Department</th><th>SKU</th><th>Item</th><th>Asset tag</th><th>Qty issued</th><th style="min-width:160px;">Count</th><th>This week</th><th>Last PM</th><th>PM checklist</th><th></th></tr>
+      <tr><th>Department</th><th>SKU</th><th>Item</th><th>Asset tag</th><th>Qty issued</th><th>This week's count</th><th>Last PM</th><th>PM checklist</th></tr>
       ${rows.map((r,i)=>{
-        const c = countOf(r), p = inspOf(r), cl = pmChecklistOf(r.sku), last = pmLastInspection(r.key);
-        let countCell, statusCell, saveCell = '';
-        if(r.inRepair){
-          countCell = '<span class="small-note">In repair — not counted</span>';
-          statusCell = '<span class="tag tag-forrepair">In repair</span>';
-        } else {
-          const ctl = r.tag
-            ? `<select id="pm-c-${i}" style="padding:5px 8px;font-size:12px;"><option value="">—</option><option value="1" ${c&&c.countedQty===1?'selected':''}>Found</option><option value="0" ${c&&c.countedQty===0?'selected':''}>Missing</option></select>`
-            : `<input type="number" min="0" id="pm-c-${i}" style="width:80px;" value="${c?c.countedQty:''}" placeholder="qty">`;
-          countCell = ctl + `<input id="pm-r-${i}" placeholder="Remarks (optional)" value="${esc(c?(c.remarks||''):'')}" style="display:block;margin-top:6px;width:100%;min-width:140px;padding:5px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px;">`;
-          if(c){
-            const v = c.countedQty - r.qtyIssued;
-            statusCell = (v===0 ? '<span class="tag tag-ok">Counted</span>'
-              : ((r.tag && c.countedQty===0) ? '<span class="tag tag-rejected">Missing</span>' : `<span class="tag tag-rejected">Variance ${v>0?'+':''}${v}</span>`))
-              + `<div class="small-note" style="margin-top:3px;">${esc(c.countedBy)} · ${fmtDate(c.date)}</div>`;
-          } else statusCell = '<span class="tag tag-pending">Pending</span>';
-          saveCell = `<button class="btn btn-sm" onclick="pmSaveCount(${i})">Save</button>`;
-        }
+        const p = inspOf(r), cl = pmChecklistOf(r.sku), last = pmLastInspection(r.key);
+        let statusCell;
+        if(!inScope(r)) statusCell = r.inRepair ? '<span class="tag tag-forrepair">In repair</span><div class="small-note" style="margin-top:3px;">not counted</div>' : '<span class="small-note">Not issued yet this week</span>';
+        else if(p) statusCell = `<span class="tag tag-ok">Counted</span><div class="small-note" style="margin-top:3px;">via PM · ${fmtDate(p.date)}${r.inRepair?' · now in repair':''}</div>`;
+        else statusCell = '<span class="tag tag-rejected">Missing</span><div class="small-note" style="margin-top:3px;">no PM recorded</div>';
         let pmCell;
         if(p) pmCell = `<span class="tag ${p.failCount?'tag-forrepair':'tag-ok'}">${p.failCount?('Findings ('+p.failCount+')'):'Done'}</span> <button class="btn btn-sm" onclick="viewPmInspection('${esc(p.id)}')">View</button>`;
-        else if(r.inRepair) pmCell = '<span class="small-note">—</span>';
+        else if(!inScope(r)) pmCell = '<span class="small-note">—</span>';
         else if(cl.length) pmCell = `<button class="btn btn-sm btn-amber" onclick="openPmChecklist(${i})">Start PM</button> <span class="small-note">${cl.length} items</span>`;
         else pmCell = '<span class="small-note" style="color:var(--warn);">No checklist set</span>';
         return `<tr>
           <td>${esc(r.department)}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
           <td class="mono">${r.tag?esc(r.tag):'<span class="small-note">untagged</span>'}</td><td>${r.qtyIssued}</td>
-          <td>${countCell}</td><td>${statusCell}</td>
+          <td>${statusCell}</td>
           <td>${last?fmtDate(last.date):'<span class="small-note">Never</span>'}</td>
-          <td>${pmCell}</td><td>${saveCell}</td>
+          <td>${pmCell}</td>
         </tr>`;
       }).join('')}
     </table></div>`;
@@ -3469,93 +3482,26 @@ function pmWeeklyHtml(){
   const hist = socFilter(DB.pmCounts).slice().sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,15);
   return `<div class="card">
     <h3>Weekly cycle count — PM assets issued to departments</h3>
-    <div class="card-sub">Every asset flagged for preventive maintenance that is currently issued to a department. Count each one once a week (Monday–Sunday), then run its PM checklist from the same row. Tagged assets are marked Found or Missing; untagged lines take a quantity.</div>
+    <div class="card-sub">Every asset flagged for preventive maintenance that is currently issued to a department. The count is automatic: once an asset's PM checklist is done for the week (Monday–Sunday) it is counted; an asset with no PM recorded is recorded as missing.</div>
     ${controls}
     <div class="grid g4" style="margin-bottom:16px;">
-      <div class="metric"><div class="lbl">Assets in scope</div><div class="val">${countable.length}</div><div class="sub">issued to departments${rows.length!==countable.length?' · '+(rows.length-countable.length)+' in repair':''}</div></div>
-      <div class="metric success"><div class="lbl">Counted</div><div class="val">${counted.length}</div><div class="sub">${countable.length-counted.length} still pending</div></div>
-      <div class="metric ${variances?'danger':''}"><div class="lbl">Missing / variance</div><div class="val">${variances}</div><div class="sub">count differs from issued</div></div>
-      <div class="metric amber"><div class="lbl">PM checklists done</div><div class="val">${pmDone}</div><div class="sub">${pmFindings} with findings</div></div>
+      <div class="metric"><div class="lbl">Assets in scope</div><div class="val">${scope.length}</div><div class="sub">issued to departments${rows.length!==scope.length?' · '+(rows.length-scope.length)+' not counted':''}</div></div>
+      <div class="metric success"><div class="lbl">Counted</div><div class="val">${counted.length}</div><div class="sub">PM done this week</div></div>
+      <div class="metric ${missing.length?'danger':''}"><div class="lbl">Missing</div><div class="val">${missing.length}</div><div class="sub">no PM recorded yet</div></div>
+      <div class="metric amber"><div class="lbl">PM with findings</div><div class="val">${pmFindings}</div><div class="sub">failed at least one item</div></div>
     </div>
     ${body}
     <div class="list-head" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);"><div class="section-title" style="margin:0;padding-top:0;border-top:none;">Recent weekly counts</div>${dlBtn('exportPmCounts')}</div>
     ${hist.length===0 ? '<div class="empty"><div class="ic">&#8635;</div>No weekly counts recorded yet.</div>' :
-      '<div class="tbl-wrap"><table><tr><th>Week of</th><th>Department</th><th>SKU</th><th>Asset tag</th><th>Issued</th><th>Counted</th><th>Variance</th><th>Remarks</th><th>Counted by</th><th>Date</th></tr>' +
+      '<div class="tbl-wrap"><table><tr><th>Week of</th><th>Department</th><th>SKU</th><th>Asset tag</th><th>Issued</th><th>Counted</th><th>Variance</th><th>Basis</th><th>Recorded by</th><th>Date</th></tr>' +
       hist.map(c=>{ const v = c.countedQty-c.qtyIssued; return `<tr><td>${esc(pmWeekLabel(c.weekStart))}</td><td>${esc(c.department)}</td><td class="mono">${esc(c.sku)}</td><td class="mono">${esc(c.assetTagging||'—')}</td><td>${c.qtyIssued}</td><td>${c.countedQty}</td>
         <td style="color:${v<0?'var(--danger)':(v>0?'var(--success)':'var(--muted)')};font-weight:700;">${v>0?'+':''}${v}</td><td>${esc(c.remarks||'—')}</td><td>${esc(c.countedBy)}</td><td>${fmtDate(c.date)}</td></tr>`; }).join('') + '</table></div>'}
   </div>`;
 }
-/* Keeps whatever the person has typed into other rows when one row is saved and the
-   screen re-renders — the weekly sheet is worked through row by row. */
-function pmSnapshotInputs(){
-  const m = {};
-  pmRowCache.forEach((r,i)=>{
-    const c = document.getElementById('pm-c-'+i), rm = document.getElementById('pm-r-'+i);
-    if(c) m[r.key] = {c:c.value, r:rm?rm.value:''};
-  });
-  return m;
-}
-function pmRestoreInputs(m){
-  pmRowCache.forEach((r,i)=>{
-    const s = m[r.key]; if(!s) return;
-    const c = document.getElementById('pm-c-'+i), rm = document.getElementById('pm-r-'+i);
-    if(c) c.value = s.c;
-    if(rm) rm.value = s.r;
-  });
-}
-function refreshPmWeekly(keepInputs){
-  const snap = keepInputs ? pmSnapshotInputs() : null;
-  renderRepair();
-  if(snap) pmRestoreInputs(snap);
-}
-function pmReadCount(i){
-  const el = document.getElementById('pm-c-'+i);
-  if(!el || el.value==='') return null;
-  const v = Number(el.value);
-  return (isNaN(v) || v<0) ? null : v;
-}
-function pmApplyCount(r, val, remarks){
-  const rec = {weekStart:pmWeekStart, key:r.key, issuanceId:r.issuanceId, sku:r.sku, description:r.description, department:r.department,
-    assetTagging:r.tag, qtyIssued:r.qtyIssued, countedQty:val, remarks:remarks||'', countedBy:session.fullName, date:nowISO(), soc:r.soc||currentSoc()};
-  const ex = DB.pmCounts.find(c=>c.weekStart===pmWeekStart && c.key===r.key);
-  if(ex) Object.assign(ex, rec);
-  else DB.pmCounts.push(Object.assign({id:nextCode('WC','wc')}, rec));
-}
-async function pmSaveCount(i){
-  const r = pmRowCache[i]; if(!r) return;
-  const v = pmReadCount(i);
-  if(v===null){ toast(r.tag ? 'Choose Found or Missing first.' : 'Enter a counted quantity first.'); return; }
-  pmApplyCount(r, v, ((document.getElementById('pm-r-'+i)||{}).value||'').trim());
-  await saveDB();
-  toast('Count saved for '+(r.tag||r.sku)+'.');
-  refreshPmWeekly(true);
-}
-async function pmSaveAll(){
-  let n = 0;
-  pmRowCache.forEach((r,i)=>{
-    if(r.inRepair) return;
-    const v = pmReadCount(i); if(v===null) return;
-    const rem = ((document.getElementById('pm-r-'+i)||{}).value||'').trim();
-    const ex = DB.pmCounts.find(c=>c.weekStart===pmWeekStart && c.key===r.key);
-    if(ex && ex.countedQty===v && (ex.remarks||'')===rem) return;
-    pmApplyCount(r, v, rem); n++;
-  });
-  if(!n){ toast('Nothing new to save — fill in a count first.'); return; }
-  await saveDB();
-  toast(n+' count'+(n===1?'':'s')+' saved.');
-  refreshPmWeekly(true);
-}
-function pmFillFound(){
-  let n = 0;
-  pmRowCache.forEach((r,i)=>{
-    const el = document.getElementById('pm-c-'+i);
-    if(el && el.tagName==='SELECT' && el.value===''){ el.value = '1'; n++; }
-  });
-  toast(n ? (n+' blank tagged asset'+(n===1?'':'s')+' set to Found — press Save all counts to record.') : 'No blank tagged assets to fill.');
-}
+function refreshPmWeekly(){ renderRepair(); }
 function exportPmCounts(){
   const rows = socFilter(DB.pmCounts).map(c=>[c.id, c.weekStart, c.department, c.sku, c.description, c.assetTagging||'', c.qtyIssued, c.countedQty, c.countedQty-c.qtyIssued, c.remarks||'', c.countedBy, fmtDate(c.date)]);
-  downloadCSV('weekly-asset-count.csv', ['Ref #','Week starting','Department','SKU','Item','Asset tagging','Qty issued','Counted qty','Variance','Remarks','Counted by','Date'], rows);
+  downloadCSV('weekly-asset-count.csv', ['Ref #','Week starting','Department','SKU','Item','Asset tagging','Qty issued','Counted qty','Variance','Basis','Recorded by','Date'], rows);
 }
 
 /* ---- PM checklist: fill in ---- */
@@ -3563,8 +3509,8 @@ function openPmChecklist(i){
   const r = pmRowCache[i]; if(!r) return;
   const items = pmChecklistOf(r.sku);
   if(!items.length){ toast('No PM checklist set for '+r.sku+' — add one in Settings → PM Checklist.'); return; }
-  if(DB.pmInspections.find(p=>p.weekStart===pmWeekStart && p.key===r.key)){ toast('PM is already recorded for this asset this week.'); refreshPmWeekly(true); return; }
-  pmModalRowIdx = i; pmiRepairTouched = false;
+  if(DB.pmInspections.find(p=>p.weekStart===pmWeekStart && p.key===r.key)){ toast('PM is already recorded for this asset this week.'); refreshPmWeekly(); return; }
+  pmModalRow = r; pmiRepairTouched = false;
   showModal(`
     <h3>PM checklist</h3>
     <div class="card-sub"><span class="mono">${esc(r.tag||r.sku)}</span> · ${esc(r.description)} · ${esc(r.department)}<br>Week of ${esc(pmWeekLabel(pmWeekStart))}</div>
@@ -3588,7 +3534,7 @@ function pmiOnChange(){
   const cb = document.getElementById('pmi-repair'); if(cb) cb.checked = anyFail;
 }
 async function savePmInspection(){
-  const r = pmRowCache[pmModalRowIdx]; if(!r) return;
+  const r = pmModalRow; if(!r) return;
   const tpl = pmChecklistOf(r.sku);
   if(!tpl.length){ toast('This checklist is empty now — reopen it.'); closeModal(); return; }
   const items = [];
@@ -3597,7 +3543,7 @@ async function savePmInspection(){
     if(!sel){ toast('Mark every item Pass, Fail or N/A — item '+(k+1)+' is still blank.'); return; }
     items.push({text:tpl[k].text, result:sel.value});
   }
-  if(DB.pmInspections.find(p=>p.weekStart===pmWeekStart && p.key===r.key)){ toast('PM was just recorded for this asset by someone else.'); closeModal(); refreshPmWeekly(true); return; }
+  if(DB.pmInspections.find(p=>p.weekStart===pmWeekStart && p.key===r.key)){ toast('PM was just recorded for this asset by someone else.'); closeModal(); refreshPmWeekly(); return; }
   const fails = items.filter(x=>x.result==='Fail');
   const remarks = (document.getElementById('pmi-remarks').value||'').trim();
   const id = nextCode('PMI','pmi');
@@ -3618,7 +3564,7 @@ async function savePmInspection(){
   await saveDB();
   closeModal();
   toast(id+' saved — '+(fails.length ? (fails.length+' item'+(fails.length===1?'':'s')+' failed'+(repairId?', logged to repair register':'')) : 'all clear')+'.');
-  refreshPmWeekly(true);
+  refreshPmWeekly();
 }
 
 /* ---- PM log ---- */
