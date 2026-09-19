@@ -262,6 +262,21 @@ tr:last-child td{border-bottom:none;}
 .list-head h3{margin-bottom:0;}
 .dl-btn{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;}
 .status-stack{display:flex;flex-direction:column;gap:4px;align-items:flex-start;}
+/* ---------- PM checklist / weekly count ---------- */
+.pm-item{padding:12px 0;border-bottom:1px solid var(--border);}
+.pm-item:last-child{border-bottom:none;}
+.pm-item-text{font-size:13.5px;font-weight:500;margin-bottom:8px;line-height:1.4;}
+.pm-res{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;}
+.pm-opt{cursor:pointer;}
+.pm-opt input{position:absolute;opacity:0;pointer-events:none;}
+.pm-opt span{display:inline-block;padding:5px 16px;border-radius:20px;border:1px solid var(--border);font-size:12px;font-weight:600;color:var(--muted);background:#fff;transition:all .12s;}
+.pm-opt:hover span{border-color:var(--faint);}
+.pm-opt.pass input:checked + span{background:var(--success-bg);border-color:var(--success-bd);color:var(--success);}
+.pm-opt.fail input:checked + span{background:var(--danger-bg);border-color:var(--danger-bd);color:var(--danger);}
+.pm-opt.na input:checked + span{background:#DDE2E8;border-color:#C3CAD3;color:var(--ink);}
+.pm-opt input:focus-visible + span{outline:2px solid var(--amber);outline-offset:2px;}
+.pmcl-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:#fbfbfc;font-size:13.5px;}
+.pmcl-n{width:24px;height:24px;border-radius:50%;background:var(--navy);color:#fff;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
 </style>
 </head>
 <body>
@@ -608,6 +623,9 @@ function defaultDB(){
     cycleCountConsumable: [],
     cycleCountAsset: [],
     repairs: [],
+    pmChecklists: {},
+    pmCounts: [],
+    pmInspections: [],
     returns: [],
     deptIssuance: [],
     notifications: [],
@@ -618,7 +636,7 @@ function defaultDB(){
     pdaDeptBuckets: ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'],
     departmentSoc: {},
     parcels: [],
-    counters: {req:100, recv:100, iss:100, rep:100, trn:100, ret:100, di:100, cg:100, pl:100}
+    counters: {req:100, recv:100, iss:100, rep:100, trn:100, ret:100, di:100, cg:100, pl:100, pmi:100, wc:100}
   };
 }
 /* The full set of top-level DB fields, derived once from defaultDB() rather
@@ -669,6 +687,11 @@ function migrateDB(){
   if(!DB.parcels) DB.parcels = [];
   if(!DB.counters.cg) DB.counters.cg = 100;
   if(!DB.counters.pl) DB.counters.pl = 100;
+  if(!DB.counters.pmi) DB.counters.pmi = 100;
+  if(!DB.counters.wc) DB.counters.wc = 100;
+  if(!DB.pmChecklists || typeof DB.pmChecklists!=='object' || Array.isArray(DB.pmChecklists)) DB.pmChecklists = {};
+  if(!DB.pmCounts) DB.pmCounts = [];
+  if(!DB.pmInspections) DB.pmInspections = [];
   if(!DB.departments) DB.departments = [];
   if(!DB.employees) DB.employees = [];
   if(!DB.departmentSoc) DB.departmentSoc = {};
@@ -698,6 +721,8 @@ function migrateDB(){
   DB.users.forEach(u=>{ if(!u.portal) u.portal = (u.role==='department') ? 'department' : 'supplies'; });
   DB.issuance.forEach(i=>{ if(i.deptReceived===undefined) i.deptReceived = false; });
   DB.sku.forEach(s=>{ if(s.type==='Asset' && !s.assetCondition) s.assetCondition = 'Repairable'; });
+  // PM flag: only assets can be for preventive maintenance; anything unset is "No".
+  DB.sku.forEach(s=>{ s.pm = (s.type==='Asset' && s.pm===true); });
   DB.sku.forEach(s=>{ if(![7,15,30].includes(s.safetyStockDays)) s.safetyStockDays = 7; });
   DB.requests.forEach(r=>{ if(r.status==='Completed') r.status = 'Issued'; });
   DB.requests.forEach(r=>{
@@ -1001,6 +1026,7 @@ function stopAutoRefresh(){
 function isFormScreenActive(){
   if(route==='settings') return true;
   if(route==='cyclecount') return true;
+  if(route==='repair' && subroute==='weekly') return true;
   const formSubroutes = { request:'new', drequest:'new', receiving:'new', issuance:'new', dissuance:'new', dreceiving:'new', dreturn:'new', returns:'new', repair:'new' };
   return formSubroutes[route] && subroute===formSubroutes[route];
 }
@@ -1437,7 +1463,7 @@ const TITLES = {
   issuance:['Issuance / Accountability','Auto-generated log of items issued from completed requests'],
   returns:['Department Returns','Receive items returned by departments back into inventory'],
   cyclecount:['Cycle Count','Reconcile physical counts against system stock'],
-  repair:['Repair & Maintenance','Track damaged assets through repair status'],
+  repair:['Repair & Maintenance','Track damaged assets, weekly asset counts and preventive maintenance'],
   cageloading:['Cage Loading','Scan items into a cage and dispatch it to its destination'],
   itassets:['IT Assets','Scan a PDA\'s serial number to issue or return it'],
   parcelretrieval:['Parcel Retrieval','Scan parcels retrieved from each sack sorting station'],
@@ -3098,10 +3124,13 @@ function renderRepair(){
     <div class="tabs">
       <div class="tab ${tab==='new'?'active':''}" onclick="navigate('repair','new')">Log damaged asset</div>
       <div class="tab ${tab==='list'?'active':''}" onclick="navigate('repair','list')">Repair register (${socFilter(DB.repairs).length})</div>
+      <div class="tab ${tab==='weekly'?'active':''}" onclick="navigate('repair','weekly')">Weekly count &amp; PM</div>
+      <div class="tab ${tab==='pmlog'?'active':''}" onclick="navigate('repair','pmlog')">PM log (${socFilter(DB.pmInspections).length})</div>
     </div>
     <div id="rep-body"></div>
   `;
-  document.getElementById('rep-body').innerHTML = tab==='new' ? repairFormHtml() : repairListHtml();
+  const views = {new:repairFormHtml, list:repairListHtml, weekly:pmWeeklyHtml, pmlog:pmLogHtml};
+  document.getElementById('rep-body').innerHTML = (views[tab] || repairListHtml)();
 }
 function repairFormHtml(){
   return `<div class="card">
@@ -3293,6 +3322,501 @@ async function finalizeRepairAction(id, action){
     toast(r.id+' marked backloaded and removed from issued assets.');
   }
   navigate('repair','list');
+}
+
+/* ============================= PM: WEEKLY ASSET COUNT & PM CHECKLIST (under Repair & Maintenance) ============================= */
+/* Which assets are "for preventive maintenance" is set per SKU (Settings → SKU code → PM).
+   The checklist each PM asset goes through lives in DB.pmChecklists[sku] = [{id,text}, ...]
+   (Settings → PM Checklist) — one checklist per asset SKU. Weekly counts live in DB.pmCounts
+   and completed checklists in DB.pmInspections (each keeps a snapshot of the checklist
+   wording at the time, so later edits to a checklist never rewrite history). */
+function skuIsPM(s){ return !!(s && s.type==='Asset' && s.pm===true); }
+function pmChecklistOf(sku){ const l = DB.pmChecklists && DB.pmChecklists[sku]; return Array.isArray(l) ? l : []; }
+let pmWeekStart = '';
+let pmDeptFilter = '';
+let pmRowCache = [];
+let pmModalRowIdx = -1;
+let pmiRepairTouched = false;
+function pmMondayOf(d){ const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - ((x.getDay()+6)%7)); return x; }
+function pmCurrentWeekKey(){ return localDateStr(pmMondayOf(new Date())); }
+function pmWeekLabel(key){
+  const a = new Date(key+'T00:00:00'); const b = new Date(a); b.setDate(b.getDate()+6);
+  const f = (d,y)=>d.toLocaleDateString('en-US', y ? {month:'short',day:'numeric',year:'numeric'} : {month:'short',day:'numeric'});
+  return f(a)+' – '+f(b,true);
+}
+function pmShiftWeek(delta){
+  const d = new Date((pmWeekStart||pmCurrentWeekKey())+'T00:00:00');
+  d.setDate(d.getDate()+delta*7);
+  const key = localDateStr(d);
+  if(key > pmCurrentWeekKey()) return;
+  pmWeekStart = key;
+  refreshPmWeekly(false);
+}
+function pmThisWeek(){ pmWeekStart = pmCurrentWeekKey(); refreshPmWeekly(false); }
+function pmSetDept(v){ pmDeptFilter = v; refreshPmWeekly(false); }
+
+/* PM assets currently sitting with a department. Source of truth is the Issuance log:
+   a tagged asset is one row per tag (its latest issuance decides which department holds it);
+   an untagged asset line is one row with its issued qty. A tag drops out once the department's
+   return is received (or it was repaired and put back into inventory) after that issuance. */
+function pmIssuedAssetRows(){
+  const recs = socFilter(DB.issuance).filter(i=>i.type==='Asset' && skuIsPM(skuInfo(i.sku)))
+    .slice().sort((a,b)=>new Date(a.date)-new Date(b.date));
+  const left = (tagUp, sinceMs)=>{
+    const returned = (DB.returns||[]).some(r=>(r.status==='Received'||r.status==='Asset Received') && r.assetTagging
+      && String(r.assetTagging).split(',').map(t=>t.trim().toUpperCase()).includes(tagUp)
+      && new Date(r.dateReceived||r.dateReturned||0).getTime() >= sinceMs);
+    if(returned) return true;
+    return (DB.repairs||[]).some(rp=>rp.status==='Added to Inventory' && String(rp.assetTagging||'').trim().toUpperCase()===tagUp
+      && new Date(rp.inventoryDate||0).getTime() >= sinceMs);
+  };
+  const latest = {};
+  const rows = [];
+  recs.forEach(r=>{
+    const tags = String(r.assetTagging||'').split(',').map(t=>t.trim()).filter(t=>t);
+    if(!tags.length){
+      rows.push({key:'ISS:'+r.id, issuanceId:r.id, sku:r.sku, description:r.description, department:r.department, tag:'', qtyIssued:Number(r.qty)||0, issuedDate:r.date, soc:r.soc||'', inRepair:false});
+    } else {
+      tags.forEach(t=>{ latest[t.toUpperCase()] = {rec:r, tag:t}; });
+    }
+  });
+  Object.keys(latest).forEach(T=>{
+    const {rec, tag} = latest[T];
+    if(left(T, new Date(rec.date).getTime())) return;
+    const inRepair = (DB.repairs||[]).some(rp=>REPAIR_EDITABLE_STATUSES.includes(rp.status) && String(rp.assetTagging||'').trim().toUpperCase()===T);
+    rows.push({key:'TAG:'+T, issuanceId:rec.id, sku:rec.sku, description:rec.description, department:rec.department, tag, qtyIssued:1, issuedDate:rec.date, soc:rec.soc||'', inRepair});
+  });
+  rows.sort((a,b)=>(a.department||'').localeCompare(b.department||'') || a.sku.localeCompare(b.sku) || (a.tag||'').localeCompare(b.tag||'', undefined, {numeric:true}));
+  return rows;
+}
+function pmLastInspection(key){
+  const list = (DB.pmInspections||[]).filter(p=>p.key===key).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  return list[0] || null;
+}
+function pmWeeklyHtml(){
+  if(!pmWeekStart) pmWeekStart = pmCurrentWeekKey();
+  const all = pmIssuedAssetRows();
+  const depts = Array.from(new Set(all.map(r=>r.department))).sort();
+  if(pmDeptFilter && !depts.includes(pmDeptFilter)) pmDeptFilter = '';
+  const rows = all.filter(r=>!pmDeptFilter || r.department===pmDeptFilter);
+  pmRowCache = rows;
+  const isCurrent = pmWeekStart===pmCurrentWeekKey();
+  const countOf = r=>DB.pmCounts.find(c=>c.weekStart===pmWeekStart && c.key===r.key);
+  const inspOf = r=>DB.pmInspections.find(p=>p.weekStart===pmWeekStart && p.key===r.key);
+  const countable = rows.filter(r=>!r.inRepair);
+  const counted = countable.filter(r=>countOf(r));
+  const variances = counted.filter(r=>countOf(r).countedQty!==r.qtyIssued).length;
+  const pmDone = rows.filter(r=>inspOf(r)).length;
+  const pmFindings = rows.filter(r=>{ const p = inspOf(r); return p && p.failCount>0; }).length;
+  const controls = `<div class="list-head" style="margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-sm" onclick="pmShiftWeek(-1)">&lsaquo; Prev</button>
+        <div style="font-weight:700;font-size:13.5px;min-width:190px;text-align:center;">${esc(pmWeekLabel(pmWeekStart))}</div>
+        <button class="btn btn-sm" onclick="pmShiftWeek(1)" ${isCurrent?'disabled style="opacity:.45;cursor:not-allowed;"':''}>Next &rsaquo;</button>
+        ${isCurrent ? '<span class="tag tag-ok">This week</span>' : '<button class="btn btn-sm" onclick="pmThisWeek()">Back to this week</button>'}
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <select onchange="pmSetDept(this.value)" style="padding:6px 10px;font-size:12.5px;border:1px solid var(--border);border-radius:8px;background:#fff;">
+          <option value="">All departments</option>
+          ${depts.map(d=>`<option value="${esc(d)}" ${d===pmDeptFilter?'selected':''}>${esc(d)}</option>`).join('')}
+        </select>
+        <button class="btn btn-sm" onclick="pmFillFound()">Mark blanks as Found</button>
+        <button class="btn btn-sm btn-primary" onclick="pmSaveAll()">Save all counts</button>
+      </div>
+    </div>`;
+  let body;
+  if(all.length===0){
+    body = `<div class="empty"><div class="ic">&#9874;</div>No PM assets are currently issued to a department.<br><span class="small-note">Flag an asset SKU as <b>Preventive maintenance = Yes</b> in Settings &rarr; SKU code, then issue it to a department.</span></div>`;
+  } else if(rows.length===0){
+    body = '<div class="empty"><div class="ic">&#9874;</div>Nothing to show for this department.</div>';
+  } else {
+    body = `<div class="tbl-wrap"><table>
+      <tr><th>Department</th><th>SKU</th><th>Item</th><th>Asset tag</th><th>Qty issued</th><th style="min-width:160px;">Count</th><th>This week</th><th>Last PM</th><th>PM checklist</th><th></th></tr>
+      ${rows.map((r,i)=>{
+        const c = countOf(r), p = inspOf(r), cl = pmChecklistOf(r.sku), last = pmLastInspection(r.key);
+        let countCell, statusCell, saveCell = '';
+        if(r.inRepair){
+          countCell = '<span class="small-note">In repair — not counted</span>';
+          statusCell = '<span class="tag tag-forrepair">In repair</span>';
+        } else {
+          const ctl = r.tag
+            ? `<select id="pm-c-${i}" style="padding:5px 8px;font-size:12px;"><option value="">—</option><option value="1" ${c&&c.countedQty===1?'selected':''}>Found</option><option value="0" ${c&&c.countedQty===0?'selected':''}>Missing</option></select>`
+            : `<input type="number" min="0" id="pm-c-${i}" style="width:80px;" value="${c?c.countedQty:''}" placeholder="qty">`;
+          countCell = ctl + `<input id="pm-r-${i}" placeholder="Remarks (optional)" value="${esc(c?(c.remarks||''):'')}" style="display:block;margin-top:6px;width:100%;min-width:140px;padding:5px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px;">`;
+          if(c){
+            const v = c.countedQty - r.qtyIssued;
+            statusCell = (v===0 ? '<span class="tag tag-ok">Counted</span>'
+              : ((r.tag && c.countedQty===0) ? '<span class="tag tag-rejected">Missing</span>' : `<span class="tag tag-rejected">Variance ${v>0?'+':''}${v}</span>`))
+              + `<div class="small-note" style="margin-top:3px;">${esc(c.countedBy)} · ${fmtDate(c.date)}</div>`;
+          } else statusCell = '<span class="tag tag-pending">Pending</span>';
+          saveCell = `<button class="btn btn-sm" onclick="pmSaveCount(${i})">Save</button>`;
+        }
+        let pmCell;
+        if(p) pmCell = `<span class="tag ${p.failCount?'tag-forrepair':'tag-ok'}">${p.failCount?('Findings ('+p.failCount+')'):'Done'}</span> <button class="btn btn-sm" onclick="viewPmInspection('${esc(p.id)}')">View</button>`;
+        else if(r.inRepair) pmCell = '<span class="small-note">—</span>';
+        else if(cl.length) pmCell = `<button class="btn btn-sm btn-amber" onclick="openPmChecklist(${i})">Start PM</button> <span class="small-note">${cl.length} items</span>`;
+        else pmCell = '<span class="small-note" style="color:var(--warn);">No checklist set</span>';
+        return `<tr>
+          <td>${esc(r.department)}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
+          <td class="mono">${r.tag?esc(r.tag):'<span class="small-note">untagged</span>'}</td><td>${r.qtyIssued}</td>
+          <td>${countCell}</td><td>${statusCell}</td>
+          <td>${last?fmtDate(last.date):'<span class="small-note">Never</span>'}</td>
+          <td>${pmCell}</td><td>${saveCell}</td>
+        </tr>`;
+      }).join('')}
+    </table></div>`;
+  }
+  const hist = socFilter(DB.pmCounts).slice().sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,15);
+  return `<div class="card">
+    <h3>Weekly cycle count — PM assets issued to departments</h3>
+    <div class="card-sub">Every asset flagged for preventive maintenance that is currently issued to a department. Count each one once a week (Monday–Sunday), then run its PM checklist from the same row. Tagged assets are marked Found or Missing; untagged lines take a quantity.</div>
+    ${controls}
+    <div class="grid g4" style="margin-bottom:16px;">
+      <div class="metric"><div class="lbl">Assets in scope</div><div class="val">${countable.length}</div><div class="sub">issued to departments${rows.length!==countable.length?' · '+(rows.length-countable.length)+' in repair':''}</div></div>
+      <div class="metric success"><div class="lbl">Counted</div><div class="val">${counted.length}</div><div class="sub">${countable.length-counted.length} still pending</div></div>
+      <div class="metric ${variances?'danger':''}"><div class="lbl">Missing / variance</div><div class="val">${variances}</div><div class="sub">count differs from issued</div></div>
+      <div class="metric amber"><div class="lbl">PM checklists done</div><div class="val">${pmDone}</div><div class="sub">${pmFindings} with findings</div></div>
+    </div>
+    ${body}
+    <div class="list-head" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);"><div class="section-title" style="margin:0;padding-top:0;border-top:none;">Recent weekly counts</div>${dlBtn('exportPmCounts')}</div>
+    ${hist.length===0 ? '<div class="empty"><div class="ic">&#8635;</div>No weekly counts recorded yet.</div>' :
+      '<div class="tbl-wrap"><table><tr><th>Week of</th><th>Department</th><th>SKU</th><th>Asset tag</th><th>Issued</th><th>Counted</th><th>Variance</th><th>Remarks</th><th>Counted by</th><th>Date</th></tr>' +
+      hist.map(c=>{ const v = c.countedQty-c.qtyIssued; return `<tr><td>${esc(pmWeekLabel(c.weekStart))}</td><td>${esc(c.department)}</td><td class="mono">${esc(c.sku)}</td><td class="mono">${esc(c.assetTagging||'—')}</td><td>${c.qtyIssued}</td><td>${c.countedQty}</td>
+        <td style="color:${v<0?'var(--danger)':(v>0?'var(--success)':'var(--muted)')};font-weight:700;">${v>0?'+':''}${v}</td><td>${esc(c.remarks||'—')}</td><td>${esc(c.countedBy)}</td><td>${fmtDate(c.date)}</td></tr>`; }).join('') + '</table></div>'}
+  </div>`;
+}
+/* Keeps whatever the person has typed into other rows when one row is saved and the
+   screen re-renders — the weekly sheet is worked through row by row. */
+function pmSnapshotInputs(){
+  const m = {};
+  pmRowCache.forEach((r,i)=>{
+    const c = document.getElementById('pm-c-'+i), rm = document.getElementById('pm-r-'+i);
+    if(c) m[r.key] = {c:c.value, r:rm?rm.value:''};
+  });
+  return m;
+}
+function pmRestoreInputs(m){
+  pmRowCache.forEach((r,i)=>{
+    const s = m[r.key]; if(!s) return;
+    const c = document.getElementById('pm-c-'+i), rm = document.getElementById('pm-r-'+i);
+    if(c) c.value = s.c;
+    if(rm) rm.value = s.r;
+  });
+}
+function refreshPmWeekly(keepInputs){
+  const snap = keepInputs ? pmSnapshotInputs() : null;
+  renderRepair();
+  if(snap) pmRestoreInputs(snap);
+}
+function pmReadCount(i){
+  const el = document.getElementById('pm-c-'+i);
+  if(!el || el.value==='') return null;
+  const v = Number(el.value);
+  return (isNaN(v) || v<0) ? null : v;
+}
+function pmApplyCount(r, val, remarks){
+  const rec = {weekStart:pmWeekStart, key:r.key, issuanceId:r.issuanceId, sku:r.sku, description:r.description, department:r.department,
+    assetTagging:r.tag, qtyIssued:r.qtyIssued, countedQty:val, remarks:remarks||'', countedBy:session.fullName, date:nowISO(), soc:r.soc||currentSoc()};
+  const ex = DB.pmCounts.find(c=>c.weekStart===pmWeekStart && c.key===r.key);
+  if(ex) Object.assign(ex, rec);
+  else DB.pmCounts.push(Object.assign({id:nextCode('WC','wc')}, rec));
+}
+async function pmSaveCount(i){
+  const r = pmRowCache[i]; if(!r) return;
+  const v = pmReadCount(i);
+  if(v===null){ toast(r.tag ? 'Choose Found or Missing first.' : 'Enter a counted quantity first.'); return; }
+  pmApplyCount(r, v, ((document.getElementById('pm-r-'+i)||{}).value||'').trim());
+  await saveDB();
+  toast('Count saved for '+(r.tag||r.sku)+'.');
+  refreshPmWeekly(true);
+}
+async function pmSaveAll(){
+  let n = 0;
+  pmRowCache.forEach((r,i)=>{
+    if(r.inRepair) return;
+    const v = pmReadCount(i); if(v===null) return;
+    const rem = ((document.getElementById('pm-r-'+i)||{}).value||'').trim();
+    const ex = DB.pmCounts.find(c=>c.weekStart===pmWeekStart && c.key===r.key);
+    if(ex && ex.countedQty===v && (ex.remarks||'')===rem) return;
+    pmApplyCount(r, v, rem); n++;
+  });
+  if(!n){ toast('Nothing new to save — fill in a count first.'); return; }
+  await saveDB();
+  toast(n+' count'+(n===1?'':'s')+' saved.');
+  refreshPmWeekly(true);
+}
+function pmFillFound(){
+  let n = 0;
+  pmRowCache.forEach((r,i)=>{
+    const el = document.getElementById('pm-c-'+i);
+    if(el && el.tagName==='SELECT' && el.value===''){ el.value = '1'; n++; }
+  });
+  toast(n ? (n+' blank tagged asset'+(n===1?'':'s')+' set to Found — press Save all counts to record.') : 'No blank tagged assets to fill.');
+}
+function exportPmCounts(){
+  const rows = socFilter(DB.pmCounts).map(c=>[c.id, c.weekStart, c.department, c.sku, c.description, c.assetTagging||'', c.qtyIssued, c.countedQty, c.countedQty-c.qtyIssued, c.remarks||'', c.countedBy, fmtDate(c.date)]);
+  downloadCSV('weekly-asset-count.csv', ['Ref #','Week starting','Department','SKU','Item','Asset tagging','Qty issued','Counted qty','Variance','Remarks','Counted by','Date'], rows);
+}
+
+/* ---- PM checklist: fill in ---- */
+function openPmChecklist(i){
+  const r = pmRowCache[i]; if(!r) return;
+  const items = pmChecklistOf(r.sku);
+  if(!items.length){ toast('No PM checklist set for '+r.sku+' — add one in Settings → PM Checklist.'); return; }
+  if(DB.pmInspections.find(p=>p.weekStart===pmWeekStart && p.key===r.key)){ toast('PM is already recorded for this asset this week.'); refreshPmWeekly(true); return; }
+  pmModalRowIdx = i; pmiRepairTouched = false;
+  showModal(`
+    <h3>PM checklist</h3>
+    <div class="card-sub"><span class="mono">${esc(r.tag||r.sku)}</span> · ${esc(r.description)} · ${esc(r.department)}<br>Week of ${esc(pmWeekLabel(pmWeekStart))}</div>
+    <div>${items.map((it,k)=>`
+      <div class="pm-item">
+        <div class="pm-item-text">${k+1}. ${esc(it.text)}</div>
+        <div class="pm-res">${['Pass','Fail','N/A'].map(v=>`<label class="pm-opt ${v==='Pass'?'pass':(v==='Fail'?'fail':'na')}"><input type="radio" name="pmi-res-${k}" value="${v}" onchange="pmiOnChange()"><span>${v}</span></label>`).join('')}</div>
+      </div>`).join('')}</div>
+    <div class="field" style="margin-top:14px;"><label>Remarks</label><textarea id="pmi-remarks" rows="2" placeholder="Optional — one remark for the whole checklist"></textarea></div>
+    <label class="proc-access-item"><input type="checkbox" id="pmi-repair" onchange="pmiRepairTouched=true"> Also log this asset in the Repair register (For Repair)</label>
+    <div class="hint">Ticks itself if any item is marked Fail — untick it if the fault doesn't need a repair.</div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="savePmInspection()">Save PM record</button>
+    </div>`);
+  const m = document.querySelector('#modal-root .modal'); if(m) m.classList.add('modal-wide');
+}
+function pmiOnChange(){
+  if(pmiRepairTouched) return;
+  const anyFail = !!document.querySelector('#modal-root input[type=radio][value="Fail"]:checked');
+  const cb = document.getElementById('pmi-repair'); if(cb) cb.checked = anyFail;
+}
+async function savePmInspection(){
+  const r = pmRowCache[pmModalRowIdx]; if(!r) return;
+  const tpl = pmChecklistOf(r.sku);
+  if(!tpl.length){ toast('This checklist is empty now — reopen it.'); closeModal(); return; }
+  const items = [];
+  for(let k=0;k<tpl.length;k++){
+    const sel = document.querySelector('input[name="pmi-res-'+k+'"]:checked');
+    if(!sel){ toast('Mark every item Pass, Fail or N/A — item '+(k+1)+' is still blank.'); return; }
+    items.push({text:tpl[k].text, result:sel.value});
+  }
+  if(DB.pmInspections.find(p=>p.weekStart===pmWeekStart && p.key===r.key)){ toast('PM was just recorded for this asset by someone else.'); closeModal(); refreshPmWeekly(true); return; }
+  const fails = items.filter(x=>x.result==='Fail');
+  const remarks = (document.getElementById('pmi-remarks').value||'').trim();
+  const id = nextCode('PMI','pmi');
+  let repairId = '';
+  if(document.getElementById('pmi-repair').checked){
+    const T = String(r.tag||'').trim().toUpperCase();
+    const alreadyOpen = T && DB.repairs.some(rp=>REPAIR_EDITABLE_STATUSES.includes(rp.status) && String(rp.assetTagging||'').trim().toUpperCase()===T);
+    if(alreadyOpen){
+      toast('This asset already has an open repair record — not logging a second one.');
+    } else {
+      repairId = nextCode('REP','rep');
+      DB.repairs.push({id:repairId, assetTagging:r.tag, sku:r.sku, description:r.description, dateReceived:nowISO(), status:'For Repair',
+        remarks:'From PM '+id+(fails.length ? (' — failed: '+fails.map(f=>f.text).join('; ')) : '')+(remarks?(' — '+remarks):''), soc:r.soc||currentSoc()});
+    }
+  }
+  DB.pmInspections.push({id, weekStart:pmWeekStart, key:r.key, sku:r.sku, description:r.description, department:r.department, assetTagging:r.tag,
+    items, failCount:fails.length, overall: fails.length ? 'With findings' : 'Passed', remarks, performedBy:session.fullName, date:nowISO(), soc:r.soc||currentSoc(), repairId});
+  await saveDB();
+  closeModal();
+  toast(id+' saved — '+(fails.length ? (fails.length+' item'+(fails.length===1?'':'s')+' failed'+(repairId?', logged to repair register':'')) : 'all clear')+'.');
+  refreshPmWeekly(true);
+}
+
+/* ---- PM log ---- */
+function pmLogHtml(){
+  const rows = socFilter(DB.pmInspections).slice().sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const head = `<div class="list-head"><h3>PM log (${rows.length})</h3>${dlBtn('exportPmInspections')}</div>`;
+  if(!rows.length) return `<div class="card">${head}<div class="empty"><div class="ic">&#9745;</div>No PM checklists completed yet — start one from the Weekly count &amp; PM tab.</div></div>`;
+  return `<div class="card">${head}
+    <div class="tbl-wrap"><table>
+      <tr><th>Ref #</th><th>Week of</th><th>Department</th><th>SKU</th><th>Item</th><th>Asset tag</th><th>Result</th><th>Performed by</th><th>Date</th><th>Repair ref</th><th></th></tr>
+      ${rows.map(p=>`<tr>
+        <td class="mono">${esc(p.id)}</td><td>${esc(pmWeekLabel(p.weekStart))}</td><td>${esc(p.department)}</td><td class="mono">${esc(p.sku)}</td><td>${esc(p.description)}</td>
+        <td class="mono">${esc(p.assetTagging||'—')}</td>
+        <td><span class="tag ${p.failCount?'tag-forrepair':'tag-ok'}">${p.failCount?('Findings ('+p.failCount+')'):'Passed'}</span></td>
+        <td>${esc(p.performedBy)}</td><td>${fmtDate(p.date)}</td><td class="mono">${esc(p.repairId||'—')}</td>
+        <td><button class="btn btn-sm" onclick="viewPmInspection('${esc(p.id)}')">View</button></td>
+      </tr>`).join('')}
+    </table></div></div>`;
+}
+function viewPmInspection(id){
+  const p = DB.pmInspections.find(x=>x.id===id); if(!p) return;
+  const tagCls = {Pass:'tag-ok', Fail:'tag-rejected', 'N/A':'tag-pending'};
+  showModal(`
+    <h3>PM record ${esc(p.id)}</h3>
+    <div class="card-sub"><span class="mono">${esc(p.assetTagging||p.sku)}</span> · ${esc(p.description)} · ${esc(p.department)}<br>Week of ${esc(pmWeekLabel(p.weekStart))} · ${esc(p.performedBy)} · ${fmtDateTime(p.date)}${p.repairId?' · Repair ref '+esc(p.repairId):''}</div>
+    <div class="tbl-wrap"><table>
+      <tr><th>#</th><th>Checklist item</th><th>Result</th>${p.items.some(it=>it.note)?'<th>Note</th>':''}</tr>
+      ${p.items.map((it,k)=>`<tr><td>${k+1}</td><td>${esc(it.text)}</td><td><span class="tag ${tagCls[it.result]||''}">${esc(it.result)}</span></td>${p.items.some(x=>x.note)?`<td>${esc(it.note||'—')}</td>`:''}</tr>`).join('')}
+    </table></div>
+    ${p.remarks?`<div class="field" style="margin-top:12px;"><label>Remarks</label><div style="font-size:13px;">${esc(p.remarks)}</div></div>`:''}
+    <div class="footer-actions">
+      ${session.role==='admin' ? `<button class="btn btn-danger" onclick="deletePmInspection('${esc(p.id)}')" style="margin-right:auto;">Delete</button>` : ''}
+      <button class="btn" onclick="printModalContent()">Print</button>
+      <button class="btn btn-primary" onclick="closeModal()">Close</button>
+    </div>`);
+  const m = document.querySelector('#modal-root .modal'); if(m) m.classList.add('modal-wide');
+}
+function deletePmInspection(id){
+  confirmAction('Delete PM record '+id+'? A repair record created from it (if any) will NOT be removed.', async ()=>{
+    DB.pmInspections = DB.pmInspections.filter(x=>x.id!==id);
+    await saveDB();
+    toast('PM record '+id+' deleted.');
+    renderRepair();
+  });
+}
+function exportPmInspections(){
+  const rows = [];
+  socFilter(DB.pmInspections).forEach(p=>p.items.forEach(it=>rows.push([p.id, p.weekStart, p.department, p.sku, p.description, p.assetTagging||'', it.text, it.result, p.overall, p.remarks||'', p.performedBy, fmtDate(p.date), p.repairId||''])));
+  downloadCSV('pm-checklist-log.csv', ['Ref #','Week starting','Department','SKU','Item','Asset tagging','Checklist item','Result','Overall','Remarks','Performed by','Date','Repair ref'], rows);
+}
+
+/* ---- Settings → PM Checklist (one checklist per asset SKU) ---- */
+let pmclSku = '';
+function pmNewItemId(){ return 'c'+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36); }
+function pmclPick(sku){ pmclSku = sku; renderSettings(); }
+function settingsPmChecklistHtml(){
+  const skus = DB.sku.filter(skuIsPM);
+  if(!skus.length){
+    return `<div class="card"><div class="empty"><div class="ic">&#9745;</div>No assets are flagged for preventive maintenance yet.<br><span class="small-note">Open <b>SKU code</b> and set <b>PM</b> to Yes on an asset — it will then show up here so you can build its checklist.</span></div></div>`;
+  }
+  if(!pmclSku || !skus.some(s=>s.sku===pmclSku)) pmclSku = skus[0].sku;
+  const cur = skuInfo(pmclSku);
+  const items = pmChecklistOf(pmclSku);
+  const others = skus.filter(s=>s.sku!==pmclSku && pmChecklistOf(s.sku).length);
+  return `<div class="card">
+    <div class="list-head"><h3>PM checklist by asset</h3>${importBtn('importPmChecklistCsv', 'SKU, Checklist item — one row per item; SKU must be an asset already flagged PM')}</div>
+    <div class="card-sub">Every PM asset gets its own checklist — a laptop, a printer and a forklift won't be checked the same way. Staff work through it under Repair &amp; Maintenance &rarr; Weekly count &amp; PM.</div>
+    <div class="field" style="max-width:460px;"><label>Asset</label>
+      <select onchange="pmclPick(this.value)">${skus.map(s=>`<option value="${esc(s.sku)}" ${s.sku===pmclSku?'selected':''}>${esc(s.sku)} — ${esc(s.description)} (${pmChecklistOf(s.sku).length} items)</option>`).join('')}</select>
+    </div>
+    <div class="section-title">Checklist · ${esc(cur.description)} <span class="mono" style="text-transform:none;">${esc(cur.sku)}</span></div>
+    ${items.length===0 ? '<div class="empty" style="padding:20px;"><div class="ic">&#9745;</div>No checklist items yet — add the first one below.</div>' :
+      items.map((it,k)=>`<div class="pmcl-row">
+        <div class="pmcl-n">${k+1}</div>
+        <div style="flex:1;min-width:0;">${esc(it.text)}</div>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button class="btn btn-sm" onclick="pmclMove(${k},-1)" ${k===0?'disabled style="opacity:.4;"':''} title="Move up">&uarr;</button>
+          <button class="btn btn-sm" onclick="pmclMove(${k},1)" ${k===items.length-1?'disabled style="opacity:.4;"':''} title="Move down">&darr;</button>
+          <button class="btn btn-sm" onclick="pmclEdit(${k})">Edit</button>
+          <button class="btn btn-sm btn-danger" onclick="pmclDelete(${k})">Delete</button>
+        </div></div>`).join('')}
+    <div style="display:flex;gap:10px;align-items:flex-end;margin-top:14px;">
+      <div class="field" style="flex:1;margin:0;"><label>Add checklist item</label><input id="pmcl-new" placeholder="e.g. Clean air filter and check for damage" onkeydown="if(event.key==='Enter'){pmclAdd();}"></div>
+      <button class="btn btn-primary" onclick="pmclAdd()">Add item</button>
+    </div>
+    ${others.length ? `<div style="display:flex;gap:10px;align-items:flex-end;margin-top:16px;padding-top:14px;border-top:1px dashed var(--border);">
+      <div class="field" style="flex:1;margin:0;"><label>Start from another asset's checklist</label>
+        <select id="pmcl-copy-from">${others.map(s=>`<option value="${esc(s.sku)}">${esc(s.sku)} — ${esc(s.description)} (${pmChecklistOf(s.sku).length} items)</option>`).join('')}</select></div>
+      <button class="btn" onclick="pmclCopy()">Copy items</button>
+    </div><div class="hint">Copies items that aren't already on this checklist — edit them afterwards to suit this asset.</div>` : ''}
+  </div>
+  <div class="card">
+    <h3>PM assets overview (${skus.length})</h3>
+    <div class="card-sub">Assets flagged for preventive maintenance and whether each has a checklist ready.</div>
+    <div class="tbl-wrap"><table><tr><th>SKU</th><th>Description</th><th>Checklist items</th><th>Status</th><th></th></tr>
+      ${skus.map(s=>{ const n = pmChecklistOf(s.sku).length; return `<tr>
+        <td class="mono">${esc(s.sku)}</td><td>${esc(s.description)}</td><td>${n}</td>
+        <td>${n?'<span class="tag tag-ok">Ready</span>':'<span class="tag tag-pending">No checklist</span>'}</td>
+        <td><button class="btn btn-sm" onclick="pmclPick('${esc(s.sku)}')">${n?'Edit':'Build'}</button></td></tr>`; }).join('')}
+    </table></div>
+  </div>`;
+}
+async function pmclAdd(){
+  const el = document.getElementById('pmcl-new'); if(!el) return;
+  const text = el.value.trim();
+  if(!text){ toast('Type a checklist item first.'); return; }
+  const list = pmChecklistOf(pmclSku).slice();
+  if(list.some(x=>x.text.toLowerCase()===text.toLowerCase())){ toast('That item is already on this checklist.'); return; }
+  list.push({id:pmNewItemId(), text});
+  DB.pmChecklists[pmclSku] = list;
+  await saveDB();
+  renderSettings();
+  const n = document.getElementById('pmcl-new'); if(n) n.focus();
+}
+async function pmclMove(k, dir){
+  const list = pmChecklistOf(pmclSku).slice();
+  const j = k+dir;
+  if(j<0 || j>=list.length) return;
+  const t = list[k]; list[k] = list[j]; list[j] = t;
+  DB.pmChecklists[pmclSku] = list;
+  await saveDB();
+  renderSettings();
+}
+function pmclEdit(k){
+  const it = pmChecklistOf(pmclSku)[k]; if(!it) return;
+  showModal(`
+    <h3>Edit checklist item</h3>
+    <div class="card-sub mono">${esc(pmclSku)} · item ${k+1}</div>
+    <div class="field"><label>Checklist item</label><textarea id="pmcl-edit-text" rows="3">${esc(it.text)}</textarea></div>
+    <div class="hint">Past PM records keep the wording they were done with.</div>
+    <div class="footer-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="pmclSaveEdit(${k})">Save</button></div>`);
+}
+async function pmclSaveEdit(k){
+  const text = document.getElementById('pmcl-edit-text').value.trim();
+  if(!text){ toast('The item can\'t be blank.'); return; }
+  const list = pmChecklistOf(pmclSku).slice();
+  if(!list[k]) return;
+  if(list.some((x,i)=>i!==k && x.text.toLowerCase()===text.toLowerCase())){ toast('That item is already on this checklist.'); return; }
+  list[k] = Object.assign({}, list[k], {text});
+  DB.pmChecklists[pmclSku] = list;
+  await saveDB();
+  closeModal();
+  renderSettings();
+}
+function pmclDelete(k){
+  const it = pmChecklistOf(pmclSku)[k]; if(!it) return;
+  confirmAction('Remove "'+it.text+'" from this checklist? PM records already completed are not affected.', async ()=>{
+    DB.pmChecklists[pmclSku] = pmChecklistOf(pmclSku).filter((x,i)=>i!==k);
+    await saveDB();
+    renderSettings();
+  });
+}
+async function pmclCopy(){
+  const from = document.getElementById('pmcl-copy-from').value;
+  const src = pmChecklistOf(from);
+  const list = pmChecklistOf(pmclSku).slice();
+  let n = 0;
+  src.forEach(it=>{
+    if(!list.some(x=>x.text.toLowerCase()===it.text.toLowerCase())){ list.push({id:pmNewItemId(), text:it.text}); n++; }
+  });
+  if(!n){ toast('Nothing new to copy — those items are already here.'); return; }
+  DB.pmChecklists[pmclSku] = list;
+  await saveDB();
+  toast(n+' item'+(n===1?'':'s')+' copied from '+from+'.');
+  renderSettings();
+}
+async function importPmChecklistCsv(inputEl){
+  const rows = await importCsvRows(inputEl);
+  if(!rows) return;
+  let added = 0, skipped = 0;
+  rows.forEach(row=>{
+    const sku = csvField(row, ['SKU','SKU Code']).trim();
+    const text = csvField(row, ['Checklist item','Checklist','Item','Task']).trim();
+    const info = skuInfo(sku);
+    if(!text || !skuIsPM(info)){ skipped++; return; }
+    const list = pmChecklistOf(info.sku).slice();
+    if(list.some(x=>x.text.toLowerCase()===text.toLowerCase())){ skipped++; return; }
+    list.push({id:pmNewItemId(), text});
+    DB.pmChecklists[info.sku] = list;
+    added++;
+  });
+  if(added) await saveDB();
+  toast('Imported '+added+' checklist item'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (blank, duplicate, or SKU not flagged PM).'):'.'));
+  renderSettings();
+}
+async function updateSkuPM(sku, value){
+  const info = skuInfo(sku); if(!info) return;
+  info.pm = (info.type==='Asset' && value==='Yes');
+  await saveDB();
+  toast(sku+(info.pm ? ' flagged for preventive maintenance — build its checklist under PM Checklist.' : ' no longer flagged for preventive maintenance.'));
+  renderSettings();
+}
+function skuPmCellHtml(s){
+  if(s.type!=='Asset') return '<span class="small-note">—</span>';
+  const n = pmChecklistOf(s.sku).length;
+  return `<select onchange="updateSkuPM('${esc(s.sku)}', this.value)" style="padding:5px 8px;font-size:12px;">
+      <option value="No" ${s.pm?'':'selected'}>No</option><option value="Yes" ${s.pm?'selected':''}>Yes</option></select>`
+    + (s.pm ? `<div class="small-note" style="margin-top:4px;${n?'':'color:var(--warn);'}">${n?(n+' checklist item'+(n===1?'':'s')):'No checklist yet'}</div>` : '');
 }
 
 /* ============================= RETURNS MODULE (Supplies Portal — receives dept returns) ============================= */
@@ -3856,41 +4380,47 @@ function renderSettings(){
       <div class="tab ${tab==='acct'?'active':''}" onclick="navigate('settings','acct')">Accountability</div>
       <div class="tab ${tab==='opsid'?'active':''}" onclick="navigate('settings','opsid')">Ops ID Directory</div>
       ${isAdmin ? `<div class="tab ${tab==='access'?'active':''}" onclick="navigate('settings','access')">Access</div>` : ''}
+      <div class="tab ${tab==='pmcl'?'active':''}" onclick="navigate('settings','pmcl')">PM Checklist</div>
     </div>
     <div id="set-body"></div>
   `;
-  const map = {sku:settingsSkuHtml, dept:settingsDepartmentsHtml, supplier:()=>settingsListHtml('suppliers','Supplier',true), warehouse:()=>settingsListHtml('warehouses','Warehouse',false), station:settingsStationHtml, acct:settingsAccountabilityHtml, opsid:settingsEmployeesHtml, access:settingsAccessHtml};
+  const map = {sku:settingsSkuHtml, dept:settingsDepartmentsHtml, supplier:()=>settingsListHtml('suppliers','Supplier',true), warehouse:()=>settingsListHtml('warehouses','Warehouse',false), station:settingsStationHtml, acct:settingsAccountabilityHtml, opsid:settingsEmployeesHtml, access:settingsAccessHtml, pmcl:settingsPmChecklistHtml};
   const renderer = ((tab==='access' || tab==='warehouse') && !isAdmin) ? settingsSkuHtml : (map[tab]||settingsSkuHtml);
   document.getElementById('set-body').innerHTML = renderer();
   if(tab==='access' && isAdmin) toggleNewUserDept();
 }
 function settingsSkuHtml(){
   return `<div class="card">
-    <div class="list-head"><h3>Add SKU code</h3>${importBtn('importSkuCsv', 'SKU, Description, Type (Asset/Consumable), UOM, Qty (optional)')}</div>
+    <div class="list-head"><h3>Add SKU code</h3>${importBtn('importSkuCsv', 'SKU, Description, Type (Asset/Consumable), UOM, Qty (optional), PM (optional: Yes/No, assets only)')}</div>
     <div class="form-row3">
       <div class="field"><label>SKU code</label><input id="new-sku-code" placeholder="e.g. CON-0006"></div>
       <div class="field"><label>Item description</label><input id="new-sku-desc" placeholder="Item name"></div>
       <div class="field"><label>Type</label><select id="new-sku-type" onchange="toggleNewSkuQty()"><option>Asset</option><option>Consumable</option></select></div>
     </div>
-    <div class="form-row">
+    <div class="form-row3">
       <div class="field"><label>UOM</label><input id="new-sku-uom" placeholder="e.g. pc, ream, unit"></div>
       <div class="field"><label>Initial on-hand qty</label><input id="new-sku-qty" type="number" min="0" value="0">
         <div class="hint" id="new-sku-qty-hint" style="display:none;">Consumables must start at 0 — bring in stock through Receiving.</div>
       </div>
+      <div class="field"><label>Preventive maintenance (PM)</label>
+        <select id="new-sku-pm"><option value="No">No</option><option value="Yes">Yes — asset needs PM</option></select>
+        <div class="hint">Assets only. PM assets get a weekly count and a PM checklist under Repair &amp; Maintenance.</div>
+      </div>
     </div>
-    <div class="hint">Or import several at once — <b>Import CSV</b> above accepts columns: SKU, Description, Type, UOM, Qty (optional; ignored for consumables).</div>
+    <div class="hint">Or import several at once — <b>Import CSV</b> above accepts columns: SKU, Description, Type, UOM, Qty (optional; ignored for consumables), PM (optional Yes/No; assets only).</div>
     <div class="footer-actions"><button class="btn btn-primary" onclick="addSku()">Add SKU</button></div>
   </div>
   <div class="card">
     <h3>SKU master list (${DB.sku.length})</h3>
-    <div class="card-sub">For assets, set a classification — it reflects on the Supplies Portal's Department Returns module for both admin and staff. Safety stock (days) sets the coverage window used to calculate each SKU's safety stock on the Dashboard.${session.role==='admin'?` "On hand" reflects whichever SOC you're currently viewing (top-right switcher) — <b>${esc(adminViewSoc||'All SOCs combined')}</b>.`:''}</div>
-    <div class="tbl-wrap"><table><tr><th>SKU</th><th>Description</th><th>Type</th><th>UOM</th><th>On hand</th><th>Asset condition</th><th>Safety stock (days)</th><th></th></tr>
+    <div class="card-sub">For assets, set a classification — it reflects on the Supplies Portal's Department Returns module for both admin and staff. Set <b>PM</b> to Yes on assets that need preventive maintenance — they then appear in Repair &amp; Maintenance &rarr; Weekly count &amp; PM, and you build each one's checklist under Settings &rarr; PM Checklist. Safety stock (days) sets the coverage window used to calculate each SKU's safety stock on the Dashboard.${session.role==='admin'?` "On hand" reflects whichever SOC you're currently viewing (top-right switcher) — <b>${esc(adminViewSoc||'All SOCs combined')}</b>.`:''}</div>
+    <div class="tbl-wrap"><table><tr><th>SKU</th><th>Description</th><th>Type</th><th>UOM</th><th>On hand</th><th>Asset condition</th><th>PM</th><th>Safety stock (days)</th><th></th></tr>
       ${DB.sku.map(s=>`<tr><td class="mono">${esc(s.sku)}</td><td>${esc(s.description)}</td>
         <td>${s.type==='Asset'?'<span class="tag tag-asset">Asset</span>':'<span class="tag tag-consumable">Consumable</span>'}</td>
         <td>${esc(s.uom)}</td><td>${stockOf(s.sku)}</td>
         <td>${s.type==='Asset' ? `<select onchange="updateSkuAssetCondition('${esc(s.sku)}', this.value)" style="padding:5px 8px;font-size:12px;">
             ${['Repairable','Disposable','Backload'].map(c=>`<option ${c===(s.assetCondition||'Repairable')?'selected':''}>${c}</option>`).join('')}
           </select>` : '<span class="small-note">—</span>'}</td>
+        <td>${skuPmCellHtml(s)}</td>
         <td><select onchange="updateSkuSafetyDays('${esc(s.sku)}', this.value)" style="padding:5px 8px;font-size:12px;">
             ${[7,15,30].map(d=>`<option value="${d}" ${d===(s.safetyStockDays||7)?'selected':''}>${d} days</option>`).join('')}
           </select></td>
@@ -3929,6 +4459,10 @@ function openEditSku(sku){
       </select>
     </div>
     <div class="field"><label>UOM</label><input id="edit-sku-uom" value="${esc(info.uom)}"></div>
+    <div class="field"><label>Preventive maintenance (PM)</label>
+      <select id="edit-sku-pm"><option value="No">No</option><option value="Yes" ${info.pm?'selected':''}>Yes — asset needs PM</option></select>
+      <div class="hint">Assets only — ignored if the type is Consumable.</div>
+    </div>
     <div class="field"><label>On-hand quantity${session.role==='admin'?` <span class="small-note">(for ${esc(adminViewSoc||'All SOCs — shared bucket')})</span>`:''}</label><input id="edit-sku-qty" type="number" min="0" value="${stockOf(sku)}"></div>
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -3945,6 +4479,7 @@ async function saveSkuEdit(sku){
   info.description = desc;
   info.type = document.getElementById('edit-sku-type').value;
   info.uom = uom;
+  info.pm = (info.type==='Asset' && document.getElementById('edit-sku-pm').value==='Yes');
   setStock(sku, Number(document.getElementById('edit-sku-qty').value)||0, currentSoc());
   await saveDB();
   closeModal();
@@ -3958,6 +4493,8 @@ function toggleNewSkuQty(){
   if(isConsumable){ qtyEl.value = 0; qtyEl.disabled = true; }
   else{ qtyEl.disabled = false; }
   if(hint) hint.style.display = isConsumable ? 'block' : 'none';
+  const pmEl = document.getElementById('new-sku-pm');
+  if(pmEl){ if(isConsumable){ pmEl.value = 'No'; pmEl.disabled = true; } else { pmEl.disabled = false; } }
 }
 async function addSku(){
   const sku = document.getElementById('new-sku-code').value.trim();
@@ -3967,17 +4504,18 @@ async function addSku(){
   const qty = type==='Consumable' ? 0 : (Number(document.getElementById('new-sku-qty').value)||0);
   if(!sku || !desc || !uom){ toast('Fill out SKU code, description, and UOM.'); return; }
   if(skuInfo(sku)){ toast('That SKU code already exists.'); return; }
-  DB.sku.push({sku, description:desc, type, uom, assetCondition: type==='Asset' ? 'Repairable' : undefined, safetyStockDays: 7});
+  const pm = type==='Asset' && document.getElementById('new-sku-pm').value==='Yes';
+  DB.sku.push({sku, description:desc, type, uom, assetCondition: type==='Asset' ? 'Repairable' : undefined, pm, safetyStockDays: 7});
   setStock(sku, qty, currentSoc());
   DB.reorderPoint[sku] = 0;
   await saveDB();
-  toast('SKU '+sku+' added'+(type==='Consumable'?' — starts at 0 on-hand; receive stock via Receiving.':'.'));
+  toast('SKU '+sku+' added'+(type==='Consumable'?' — starts at 0 on-hand; receive stock via Receiving.':(pm?' — flagged for PM; build its checklist under PM Checklist.':'.')));
   renderSettings();
 }
 function deleteSku(sku){
   confirmAction('Remove SKU '+sku+' from the master list? This will also clear its stock and reorder-point records.', async ()=>{
     DB.sku = DB.sku.filter(s=>s.sku!==sku);
-    delete DB.reorderPoint[sku]; deleteStockAllSocs(sku);
+    delete DB.reorderPoint[sku]; deleteStockAllSocs(sku); delete DB.pmChecklists[sku];
     await saveDB();
     toast('SKU '+sku+' removed.');
     renderSettings();
@@ -3993,10 +4531,12 @@ async function importSkuCsv(inputEl){
     let type = csvField(row, ['Type']).trim();
     const uom = csvField(row, ['UOM']).trim();
     const qtyRaw = csvField(row, ['Qty','Quantity','On Hand','Initial on-hand qty']).trim();
+    const pmRaw = csvField(row, ['PM','Preventive Maintenance','For PM']).trim();
     type = /^asset$/i.test(type) ? 'Asset' : (/^consumable$/i.test(type) ? 'Consumable' : '');
     if(!sku || !desc || !type || !uom || skuInfo(sku)){ skipped++; return; }
     const qty = type==='Consumable' ? 0 : (Number(qtyRaw)||0);
-    DB.sku.push({sku, description:desc, type, uom, assetCondition: type==='Asset' ? 'Repairable' : undefined, safetyStockDays: 7});
+    const pm = type==='Asset' && /^(y|yes|true|1)$/i.test(pmRaw);
+    DB.sku.push({sku, description:desc, type, uom, assetCondition: type==='Asset' ? 'Repairable' : undefined, pm, safetyStockDays: 7});
     setStock(sku, qty, currentSoc());
     DB.reorderPoint[sku] = 0;
     added++;
