@@ -593,10 +593,10 @@ function defaultDB(){
   return {
     users: [
       {id:1, username:'admin', password:'admin123', role:'admin', fullName:'System Administrator', portal:'supplies'},
-      {id:2, username:'staff', password:'staff123', role:'staff', fullName:'Juan Dela Cruz', portal:'supplies'},
+      {id:2, username:'staff', password:'staff123', role:'staff', fullName:'Juan Dela Cruz', portal:'supplies', site:'SOC5'},
       {id:3, username:'dept.it', password:'dept123', role:'department', fullName:'Pedro Reyes', portal:'department', department:'IT Department'},
       {id:4, username:'dept.hr', password:'dept123', role:'department', fullName:'Ana Lim', portal:'department', department:'HR Department'},
-      {id:5, username:'hub', password:'hub123', role:'hub', fullName:'Mark Santos', portal:'supplies', processAccess:['itassets','cageloading','parcelretrieval']}
+      {id:5, username:'hub', password:'hub123', role:'hub', fullName:'Mark Santos', portal:'supplies', site:'SOC5', processAccess:['itassets','cageloading','parcelretrieval']}
     ],
     employees: [
       {opsId:'OPS-1001', fullName:'Juan Dela Cruz', agency:'Direct Hire', department:'Operations'},
@@ -630,13 +630,14 @@ function defaultDB(){
     deptIssuance: [],
     notifications: [],
     cages: [],
+    cageCycleCounts: [],
     pdas: [],
     pdaLogs: [],
     pdaAllocations: {},
     pdaDeptBuckets: ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'],
     departmentSoc: {},
     parcels: [],
-    counters: {req:100, recv:100, iss:100, rep:100, trn:100, ret:100, di:100, cg:100, pl:100, pmi:100, wc:100}
+    counters: {req:100, recv:100, iss:100, rep:100, trn:100, ret:100, di:100, cg:100, pl:100, pmi:100, wc:100, ccage:100}
   };
 }
 /* The full set of top-level DB fields, derived once from defaultDB() rather
@@ -689,6 +690,8 @@ function migrateDB(){
   if(!DB.counters.pl) DB.counters.pl = 100;
   if(!DB.counters.pmi) DB.counters.pmi = 100;
   if(!DB.counters.wc) DB.counters.wc = 100;
+  if(!DB.counters.ccage) DB.counters.ccage = 100;
+  if(!DB.cageCycleCounts) DB.cageCycleCounts = [];
   if(!DB.pmChecklists || typeof DB.pmChecklists!=='object' || Array.isArray(DB.pmChecklists)) DB.pmChecklists = {};
   if(!DB.pmCounts) DB.pmCounts = [];
   if(!DB.pmInspections) DB.pmInspections = [];
@@ -1328,7 +1331,7 @@ function processLabel(key){ const p = PROCESS_LIST.find(x=>x.key===key); return 
 function defaultLandingRoute(){
   if(userHasProcess(session, 'supplies')) return {route:'dashboard', sub:'asset'};
   if(userHasProcess(session, 'itassets')) return {route:'itassets', sub:'log'};
-  if(userHasProcess(session, 'cageloading')) return {route:'cageloading', sub:'list'};
+  if(userHasProcess(session, 'cageloading')) return {route:'cageloading', sub:'dashboard'};
   if(userHasProcess(session, 'parcelretrieval')) return {route:'parcelretrieval', sub:'scan'};
   return {route:'settings', sub:''};
 }
@@ -1375,9 +1378,19 @@ function stockOf(sku, soc){
   if(soc===undefined) soc = currentSoc();
   if(!DB.stock) DB.stock = {};
   if(!soc){
-    let total = 0;
-    Object.keys(DB.stock).forEach(k=>{ total += Number((DB.stock[k]||{})[sku]||0); });
-    return total;
+    // '' means "All SOCs combined" — but that combined, cross-site total is
+    // only ever meant for an admin who has deliberately left the SOC
+    // switcher on "All SOCs". A Staff/Hub login should never land here
+    // through its own site being blank/misconfigured, since that would leak
+    // every other site's on-hand stock into their dashboard. So: real admin
+    // all-view sums every SOC; anything else with a blank soc only sees the
+    // shared/legacy bucket, exactly like a specific site would.
+    if(session && session.role==='admin'){
+      let total = 0;
+      Object.keys(DB.stock).forEach(k=>{ total += Number((DB.stock[k]||{})[sku]||0); });
+      return total;
+    }
+    return Number(((DB.stock['']||{})[sku])||0);
   }
   const own = Number(((DB.stock[soc]||{})[sku])||0);
   const shared = Number(((DB.stock['']||{})[sku])||0);
@@ -1442,8 +1455,11 @@ const NAV = [
       {id:'itassets', sub:'log', label:'Dashboard'}
     ]},
     {type:'dropdown', id:'proc-cageloading', processKey:'cageloading', label:'Cage Loading', ic:'&#128666;', children:[
-      {id:'cageloading', sub:'new', label:'Load Cage'},
-      {id:'cageloading', sub:'list', label:'Cage Log'}
+      {id:'cageloading', sub:'dashboard', label:'Dashboard'},
+      {id:'cageloading', sub:'new', label:'Cage Issuance'},
+      {id:'cageloading', sub:'receive', label:'Receive Cage'},
+      {id:'cageloading', sub:'list', label:'Cage Log'},
+      {id:'cageloading', sub:'cyclecount', label:'Cycle Count'}
     ]},
     {type:'dropdown', id:'proc-parcelretrieval', processKey:'parcelretrieval', label:'Parcel Retrieval', ic:'&#128233;', children:[
       {id:'parcelretrieval', sub:'dashboard', label:'Dashboard'},
@@ -1463,7 +1479,7 @@ const TITLES = {
   returns:['Department Returns','Receive items returned by departments back into inventory'],
   cyclecount:['Cycle Count','Reconcile physical counts against system stock'],
   repair:['Repair & Maintenance','Track damaged assets, weekly asset counts and preventive maintenance'],
-  cageloading:['Cage Loading','Scan items into a cage and dispatch it to its destination'],
+  cageloading:['Cage Loading','Issue cages to their destination, receive incoming cages, and track activity'],
   itassets:['IT Assets','Scan a PDA\'s serial number to issue or return it'],
   parcelretrieval:['Parcel Retrieval','Scan parcels retrieved from each sack sorting station'],
   settings:['Settings','Manage master data and system access']
@@ -1701,8 +1717,8 @@ function globalSearchResults(q){
   }
 
   if(sessionHasProcess('cageloading')){
-    const cageHits = socFilter(DB.cages).filter(c=>hit(c.id, c.cageId, c.loader, c.source, c.dest));
-    groups.push(gsearchGroup('Cages', cap(cageHits).map(c=>({ title:c.cageId, sub:c.dest||'', go:()=>gsearchNav('cageloading','list') }))));
+    const cageHits = socFilter(DB.cages).filter(c=>hit(c.id, c.cageId, c.lhTripNumber, c.hubName, c.plateNumber, ...(c.amsTags||[])));
+    groups.push(gsearchGroup('Cages', cap(cageHits).map(c=>({ title:c.cageId, sub:c.hubName||'', go:()=>gsearchNav('cageloading','list') }))));
   }
 
   if(sessionHasProcess('parcelretrieval')){
@@ -1875,7 +1891,6 @@ function dashConsumable(){
 /* ============================= REQUEST MODULE ============================= */
 let reqDraftItems = [];
 let recvDraftItems = [];
-let cageDraftItems = [];
 let parcelSessionStation = '';
 let parcelSessionHandOver = '';
 function renderRequest(){
@@ -4878,7 +4893,7 @@ function readProcessAccessCheckboxes(idPrefix){
 function settingsAccessHtml(){
   return `<div class="card">
     <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department/hub), Password, Site/SOC (if role=admin/staff/hub), Department (if role=department), Department SOC (optional — only needed to disambiguate if that department name exists under more than one SOC), Process Access (staff/hub only — semicolon-separated: supplies;itassets;cageloading;parcelretrieval — blank = all), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
-    <div class="card-sub">Every login signs in with just a username and password — no portal or site picker. Set the role (and, for Staff/Hub/Admin, which SOC they work out of; for Department, which department) right here when creating the login.</div>
+    <div class="card-sub">Every login signs in with just a username and password — no portal or site picker. Set the role (and, for Staff/Hub/Admin, which SOC they work out of; for Department, which department) right here when creating the login. <b>Site is required for Staff and Hub</b> — their dashboard and inventory are scoped to that one SOC only. Admin is the only role that can leave it blank, to view all SOCs combined.</div>
     <div class="form-row3">
       <div class="field"><label>Full name</label><input id="new-user-name" placeholder="Full name"></div>
       <div class="field"><label>Username</label><input id="new-user-username" placeholder="username"></div>
@@ -4890,10 +4905,7 @@ function settingsAccessHtml(){
       <div class="field"><label>Requires approval from</label><select id="new-user-approver"><option value="">— No additional approval —</option></select></div>
     </div>
     <div class="form-row" id="new-user-site-wrap">
-      <div class="field"><label>Site (SOC)</label><select id="new-user-site">
-        <option value="">— Not site-specific —</option>
-        ${DB.warehouses.map(w=>`<option value="${esc(w)}">${esc(w)}</option>`).join('')}
-      </select></div>
+      <div class="field"><label>Site (SOC)<span id="new-user-site-required" style="color:var(--danger);"></span></label><select id="new-user-site"></select></div>
       <div class="field" id="new-user-pass-wrap"><label>Password</label><input id="new-user-pass" type="text" placeholder="Set a password"></div>
     </div>
     <div id="new-user-process-wrap" style="display:none;">
@@ -4918,7 +4930,7 @@ function settingsAccessHtml(){
       ${DB.users.map(u=>`<tr><td>${esc(u.fullName)}</td><td class="mono">${esc(u.username)}</td>
       <td>${u.portal==='department'?'Department':'Supplies'}</td>
       <td><span class="badge ${roleBadgeClass(u.role)}">${u.role.toUpperCase()}</span></td>
-      <td>${esc(u.department || u.site || '—')}${u.approverUsername?`<div class="small-note">Needs approval from: ${esc(u.approverUsername)}</div>`:''}</td>
+      <td>${esc(u.department || u.site || '—')}${((u.role==='staff'||u.role==='hub') && !u.site)?'<div style="color:var(--danger);font-size:11px;font-weight:700;margin-top:2px;">&#9888; No SOC assigned — sees only shared/legacy stock. Edit to fix.</div>':''}${u.approverUsername?`<div class="small-note">Needs approval from: ${esc(u.approverUsername)}</div>`:''}</td>
       <td>${processAccessCell(u)}</td>
       <td>${userScopeCell(u)}</td>
       <td style="white-space:nowrap;">${u.id===session.id?'<span class="small-note">current user</span>':`<button class="btn btn-sm" onclick="openEditUser(${u.id})">Edit</button> <button class="icon-btn" onclick="deleteUser(${u.id})">&times;</button>`}</td></tr>`).join('')}
@@ -4985,6 +4997,18 @@ function toggleNewUserDept(){
   const scopeWrap = document.getElementById('new-user-staff-scope-wrap');
   if(scopeWrap) scopeWrap.style.display = isStaff ? 'block' : 'none';
   if(isDept) refreshNewUserApproverOptions();
+  // Site (SOC): required for Staff/Hub — their whole dashboard and inventory
+  // are scoped to it, so no "Not site-specific" escape hatch for them. Admin
+  // is the only role allowed to leave it blank (that's how the SOC switcher's
+  // "All SOCs" combined view is reached).
+  const siteSel = document.getElementById('new-user-site');
+  if(siteSel){
+    const siteRequired = isStaff || isHub;
+    siteSel.innerHTML = (siteRequired ? '' : '<option value="">— Not site-specific —</option>') +
+      DB.warehouses.map(w=>`<option value="${esc(w)}">${esc(w)}</option>`).join('');
+  }
+  const reqMark = document.getElementById('new-user-site-required');
+  if(reqMark) reqMark.textContent = (isStaff || isHub) ? ' *' : '';
 }
 async function addUser(){
   const fullName = document.getElementById('new-user-name').value.trim();
@@ -4997,6 +5021,7 @@ async function addUser(){
   const deptSel = isDept ? parseDeptKey(document.getElementById('new-user-dept').value) : undefined;
   const site = !isDept ? document.getElementById('new-user-site').value : undefined;
   if(!fullName||!username||!pass){ toast('Fill out all fields.'); return; }
+  if((isStaff||isHub) && !site){ toast('Pick a Site (SOC) for this Staff/Hub login — required so their dashboard and inventory are scoped to that one SOC.'); return; }
   if(isDept && !deptSel.name){ toast('Add a department in Settings first.'); return; }
   if(DB.users.find(u=>u.username.toLowerCase()===username.toLowerCase())){ toast('That username is taken.'); return; }
   const id = Math.max(0,...DB.users.map(u=>u.id))+1;
@@ -5030,14 +5055,15 @@ function openEditUser(id){
   const isDept = u.role==='department';
   const isStaff = u.role==='staff';
   const isHub = u.role==='hub';
+  const siteRequired = isStaff || isHub;
   const deptFieldsHtml = isDept ? `
     <div class="field"><label>Department</label><select id="edit-user-dept" onchange="refreshEditUserApproverOptions(${id})">${deptOptionsHtml(deptKey({name:u.department, soc:u.departmentSoc||''}))}</select></div>
     <div class="field"><label>Requires approval from</label><select id="edit-user-approver"></select></div>
   ` : `
-    <div class="field"><label>Site (SOC)</label><select id="edit-user-site">
-      <option value="" ${!u.site?'selected':''}>— Not site-specific —</option>
+    <div class="field"><label>Site (SOC)${siteRequired?' <span style="color:var(--danger);">*</span>':''}</label><select id="edit-user-site">
+      ${siteRequired ? (u.site ? '' : '<option value="" disabled selected>— Select a SOC —</option>') : `<option value="" ${!u.site?'selected':''}>— Not site-specific —</option>`}
       ${DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===u.site?'selected':''}>${esc(w)}</option>`).join('')}
-    </select></div>
+    </select>${siteRequired ? '<div class="card-sub" style="margin-top:4px;">Required — Staff/Hub dashboards and inventory are scoped to this one SOC.</div>' : ''}</div>
   `;
   const processHtml = (isStaff || isHub) ? `
     <div class="section-title">Process access</div>
@@ -5100,6 +5126,7 @@ async function saveUserEdit(id){
   const deptSel = role==='department' ? parseDeptKey(document.getElementById('edit-user-dept').value) : null;
   const approverUsername = role==='department' ? document.getElementById('edit-user-approver').value : null;
   const site = role!=='department' ? document.getElementById('edit-user-site').value : null;
+  if((role==='staff'||role==='hub') && !site){ toast('Pick a Site (SOC) for this Staff/Hub login — required so their dashboard and inventory are scoped to that one SOC.'); return; }
   const processAccess = (role==='staff'||role==='hub') ? readProcessAccessCheckboxes('edit-user-proc') : null;
   const skuScope = role==='staff' ? Array.from(document.getElementById('edit-user-sku-scope').selectedOptions).map(o=>o.value) : null;
   const departmentScope = role==='staff' ? Array.from(document.getElementById('edit-user-dept-scope').selectedOptions).map(o=>o.value) : null;
@@ -5343,138 +5370,413 @@ async function importUserCsv(inputEl){
 }
 
 /* ============================= CAGE LOADING MODULE ============================= */
+function cagePendingList(){ return socFilter(DB.cages).filter(cg=>cg.status!=='Received'); }
+let cageAmsBatch = [];
+let cageReceiveBatch = [];
+let cageAmsScanTimer = null; // debounce for auto-add on the Cage Issuance scan field
+let cageReceiveScanTimer = null; // debounce for auto-add on the Receive Cage scan field
 function renderCageLoading(){
   const c = document.getElementById('content');
-  const tab = subroute || 'new';
+  const tab = subroute || 'dashboard';
   c.innerHTML = `
     <div class="tabs">
-      <div class="tab ${tab==='new'?'active':''}" onclick="navigate('cageloading','new')">Load Cage</div>
+      <div class="tab ${tab==='dashboard'?'active':''}" onclick="navigate('cageloading','dashboard')">Dashboard</div>
+      <div class="tab ${tab==='new'?'active':''}" onclick="navigate('cageloading','new')">Cage Issuance</div>
+      <div class="tab ${tab==='receive'?'active':''}" onclick="navigate('cageloading','receive')">Receive Cage (${cagePendingList().length})</div>
       <div class="tab ${tab==='list'?'active':''}" onclick="navigate('cageloading','list')">Cage Log (${socFilter(DB.cages).length})</div>
+      <div class="tab ${tab==='cyclecount'?'active':''}" onclick="navigate('cageloading','cyclecount')">Cycle Count</div>
     </div>
     <div id="cage-body"></div>
   `;
-  document.getElementById('cage-body').innerHTML = tab==='new' ? cageLoadingFormHtml() : cageLoadingListHtml();
-  if(tab==='new'){ refreshCageItemsTable(); }
+  const body = document.getElementById('cage-body');
+  if(tab==='dashboard') body.innerHTML = cageDashboardHtml();
+  else if(tab==='receive'){ body.innerHTML = cageReceiveHtml(); refreshReceiveBatchTable(); }
+  else if(tab==='list') body.innerHTML = cageLoadingListHtml();
+  else if(tab==='cyclecount'){ cageCycleScanned = []; body.innerHTML = cageCycleCountHtml(); refreshCageCycleCountView(); }
+  else { body.innerHTML = cageLoadingFormHtml(); refreshAmsBatchTable(); }
 }
-function whOptions(sel){
-  return DB.warehouses.length ? DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===sel?'selected':''}>${esc(w)}</option>`).join('') : '<option value="">No warehouses set up — add one in Settings &rarr; Warehouse</option>';
+function cageStatusTag(cg){
+  if(cg.status==='Received') return '<span class="tag tag-ok">Received</span>';
+  return '<span class="tag tag-pending">'+esc(cg.status||'In Transit')+'</span>';
 }
-function cageLoadingFormHtml(){
-  return `
-  <div class="card">
-    <h3>Cage details</h3>
-    <div class="form-row3">
-      <div class="field"><label>Cage ID</label><input id="cage-id" placeholder="e.g. CAGE-014"></div>
-      <div class="field"><label>Loader</label><input id="cage-loader" value="${esc(session.fullName)}"></div>
-      <div class="field"><label>Source</label><select id="cage-source">${whOptions()}</select></div>
-    </div>
-    <div class="form-row">
-      <div class="field"><label>Destination</label><select id="cage-dest">${whOptions()}</select></div>
-    </div>
-  </div>
-  <div class="card">
-    <h3>Scan items into this cage</h3>
-    <div class="card-sub">Scan or enter each item's code, then add it to the cage manifest.</div>
-    <div class="form-row3">
-      <div class="field"><label>Item code</label><input id="cage-item-code" placeholder="e.g. AST-0001" oninput="cageItemLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();addCageItem();}"></div>
-      <div class="field"><label>Item description</label><input id="cage-item-desc" class="autofill" disabled></div>
-      <div class="field"><label>Quantity</label><input id="cage-item-qty" type="number" min="1" value="1" onkeydown="if(event.key==='Enter'){event.preventDefault();addCageItem();}"></div>
-    </div>
-    <div class="footer-actions" style="margin-top:6px;">
-      <button class="btn" onclick="scanCageItem()">&#128247; Scan to add</button>
-      <button class="btn btn-amber" onclick="addCageItem()">+ Add to cage</button>
-    </div>
-    <div class="section-title">Items in this cage</div>
-    <div id="cage-items-table"></div>
-    <div class="footer-actions">
-      <button class="btn" onclick="cageDraftItems=[];refreshCageItemsTable();">Clear items</button>
-      <button class="btn btn-primary" onclick="submitCageDispatch()">Dispatch cage</button>
-    </div>
-  </div>`;
+function amsTagsSummary(cg){
+  const tags = cg.amsTags||[];
+  if(tags.length===0) return '<span class="small-note">—</span>';
+  if(tags.length<=3) return tags.map(t=>esc(t)).join(', ');
+  return tags.slice(0,3).map(t=>esc(t)).join(', ')+' <span class="small-note">+'+(tags.length-3)+' more</span>';
 }
-function cageItemLookup(){
-  const v = document.getElementById('cage-item-code').value;
-  const info = skuInfo(v);
-  document.getElementById('cage-item-desc').value = info ? info.description : '';
-}
-function scanCageItem(){
-  showModal(`
-    <h3>Simulated barcode / QR scan</h3>
-    <div class="field"><label>Enter the item code to scan</label><input id="scan-cage-input" placeholder="e.g. AST-0001" onkeydown="if(event.key==='Enter')confirmScanCageItem()"></div>
-    <div class="footer-actions">
-      <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="confirmScanCageItem()">Scan</button>
-    </div>
-  `);
-  setTimeout(()=>{ const el=document.getElementById('scan-cage-input'); if(el) el.focus(); }, 50);
-}
-function confirmScanCageItem(){
-  const code = document.getElementById('scan-cage-input').value.trim();
-  closeModal();
-  if(code){ document.getElementById('cage-item-code').value = code; cageItemLookup(); toast('Scanned '+code+'. Confirm quantity and add to cage.'); }
-}
-function addCageItem(){
-  const code = document.getElementById('cage-item-code').value.trim();
-  if(!code){ toast('Enter or scan an item code first.'); return; }
-  const info = skuInfo(code);
-  const qty = Number(document.getElementById('cage-item-qty').value) || 1;
-  cageDraftItems.push({code, description: info?info.description:'', qty, scannedAt: nowISO()});
-  document.getElementById('cage-item-code').value=''; document.getElementById('cage-item-desc').value=''; document.getElementById('cage-item-qty').value='1';
-  refreshCageItemsTable();
-  document.getElementById('cage-item-code').focus();
-}
-function removeCageItem(i){ cageDraftItems.splice(i,1); refreshCageItemsTable(); }
-function refreshCageItemsTable(){
-  const el = document.getElementById('cage-items-table');
-  if(!el) return;
-  if(cageDraftItems.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#128230;</div>No items scanned yet.</div>'; return; }
-  el.innerHTML = '<div class="tbl-wrap"><table><tr><th>Code</th><th>Description</th><th>Qty</th><th>Scanned</th><th></th></tr>' +
-    cageDraftItems.map((it,i)=>`<tr><td class="mono">${esc(it.code)}</td><td>${esc(it.description||'—')}</td><td>${it.qty}</td><td>${fmtDateTime(it.scannedAt)}</td><td><button class="icon-btn" onclick="removeCageItem(${i})">&times;</button></td></tr>`).join('') +
-    '</table></div>';
-}
-async function submitCageDispatch(){
-  const cageId = document.getElementById('cage-id').value.trim();
-  const loader = document.getElementById('cage-loader').value.trim();
-  const source = document.getElementById('cage-source').value;
-  const dest = document.getElementById('cage-dest').value;
-  if(!cageId){ toast('Enter a Cage ID first.'); return; }
-  if(!loader){ toast('Enter the loader\'s name.'); return; }
-  if(!source || !dest){ toast('Select a source and destination — add one in Settings &rarr; Warehouse if empty.'); return; }
-  if(cageDraftItems.length===0){ toast('Scan at least one item into the cage first.'); return; }
-  const id = nextCode('CG','cg');
-  DB.cages.push({id, cageId, loader, source, dest, items: cageDraftItems.slice(), itemCount: cageDraftItems.reduce((a,b)=>a+b.qty,0), status:'Dispatched', dispatchedAt: nowISO(), soc:currentSoc()});
-  cageDraftItems = [];
-  await saveDB();
-  toast('Cage '+cageId+' dispatched ('+id+').');
-  navigate('cageloading','list');
-}
-function cageLoadingListHtml(){
-  const rows = socFilter(DB.cages);
-  const header = `<div class="list-head"><h3>Cage log (${rows.length})</h3>${dlBtn('exportCages')}</div>`;
-  if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#128230;</div>No cages dispatched yet.</div></div>';
-  return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th>Ref #</th><th>Cage ID</th><th>Loader</th><th>Source</th><th>Destination</th><th>Items</th><th>Dispatched</th><th></th></tr>' +
-    rows.slice().reverse().map(cg=>`<tr>
-      <td class="mono">${esc(cg.id)}</td><td class="mono">${esc(cg.cageId)}</td><td>${esc(cg.loader)}</td>
-      <td>${esc(cg.source)}</td><td>${esc(cg.dest)}</td><td style="font-weight:700;">${cg.itemCount}</td>
-      <td>${fmtDateTime(cg.dispatchedAt)}</td><td><button class="btn btn-sm" onclick="viewCageItems('${esc(cg.id)}')">View items</button></td>
-    </tr>`).join('') + '</table></div></div>';
-}
-function viewCageItems(id){
+function viewAmsTags(id){
   const cg = DB.cages.find(x=>x.id===id);
   if(!cg) return;
+  const tags = cg.amsTags||[];
   showModal(`
-    <h3>${esc(cg.cageId)} — items (${cg.items.length})</h3>
-    <div class="tbl-wrap"><table><tr><th>Code</th><th>Description</th><th>Qty</th></tr>
-      ${cg.items.map(it=>`<tr><td class="mono">${esc(it.code)}</td><td>${esc(it.description||'—')}</td><td>${it.qty}</td></tr>`).join('')}
+    <h3>${esc(cg.cageId)} — AMS tags (${tags.length})</h3>
+    <div class="tbl-wrap" style="max-height:320px;overflow-y:auto;"><table><tr><th>#</th><th>AMS Tag</th></tr>
+      ${tags.map((t,i)=>`<tr><td class="small-note">${i+1}</td><td class="mono">${esc(t)}</td></tr>`).join('')}
     </table></div>
     <div class="footer-actions"><button class="btn btn-primary" onclick="closeModal()">Close</button></div>
   `);
 }
-function exportCages(){
-  const rows = socFilter(DB.cages).map(cg=>[cg.id,cg.cageId,cg.loader,cg.source,cg.dest,cg.itemCount,fmtDateTime(cg.dispatchedAt)]);
-  downloadCSV('cage-loading-log.csv', ['Ref #','Cage ID','Loader','Source','Destination','Items','Dispatched'], rows);
+function cageDashboardHtml(){
+  const rows = socFilter(DB.cages);
+  const pending = rows.filter(cg=>cg.status!=='Received');
+  const received = rows.filter(cg=>cg.status==='Received');
+  const recent = rows.slice().reverse().slice(0,8);
+  return `<div class="card">
+    <h3>Cage activity overview</h3>
+    <div class="card-sub">Snapshot of cages issued from Cage Issuance and confirmed through Receive Cage.</div>
+    <div class="grid g3" style="margin-top:14px;">
+      <div class="metric"><div class="lbl">Total cages</div><div class="val">${rows.length}</div><div class="sub">all-time</div></div>
+      <div class="metric amber"><div class="lbl">In transit</div><div class="val">${pending.length}</div><div class="sub">issued, not yet received</div></div>
+      <div class="metric success"><div class="lbl">Received</div><div class="val">${received.length}</div><div class="sub">confirmed at destination</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="list-head"><h3>Recent cages</h3></div>
+    ${recent.length===0 ? '<div class="empty"><div class="ic">&#128666;</div>No cages logged yet.</div>' :
+      '<div class="tbl-wrap"><table><tr><th>Cage ID</th><th>AMS Tags</th><th>LH Trip #</th><th>Hub</th><th>Plate #</th><th>Status</th><th>Issued</th></tr>' +
+      recent.map(cg=>`<tr><td class="mono">${esc(cg.cageId)}</td><td>${(cg.amsTags||[]).length}</td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cg.hubName||'—')}</td><td class="mono">${esc(cg.plateNumber||'—')}</td><td>${cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td></tr>`).join('') +
+      '</table></div>'}
+  </div>`;
 }
+/* ---------- Cage Issuance: scan multiple AMS tags into a batch first ---------- */
+function hubDatalistOptions(){
+  return (DB.warehouses||[]).map(w=>`<option value="${esc(w)}"></option>`).join('');
+}
+function cageLoadingFormHtml(){
+  return `
+  <div class="card">
+    <h3>1. Scan AMS tags</h3>
+    <div class="card-sub">Scan each AMS tag — it drops into the batch below automatically as soon as it's scanned, no need to press Enter. The field stays ready for the next scan, however many you have.</div>
+    <div class="form-row">
+      <div class="field"><label>AMS Tag</label><input id="cage-ams-scan" placeholder="Scan AMS tag" oninput="onCageAmsScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();addAmsTagToBatch();}"></div>
+    </div>
+    <div class="section-title">Batch (<span id="cage-batch-count">${cageAmsBatch.length}</span>)</div>
+    <div id="cage-batch-table"></div>
+  </div>
+  <div class="card">
+    <h3>2. LH trip &amp; vehicle</h3>
+    <div class="card-sub">Applies to every AMS tag scanned above — all issued together as one cage batch.</div>
+    <div class="form-row" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="field"><label>LH Trip #</label><input id="cage-lhtrip" placeholder="Scan or type LH trip number"></div>
+      <div class="field"><label>Plate Number</label><input id="cage-plate" placeholder="e.g. NGP-1234" style="text-transform:uppercase;"></div>
+      <div class="field"><label>Hub Name</label><input id="cage-hub" list="cage-hub-options" placeholder="Type to search hubs…" autocomplete="off"><datalist id="cage-hub-options">${hubDatalistOptions()}</datalist></div>
+    </div>
+    <div class="footer-actions">
+      <button class="btn" onclick="cageAmsBatch=[];refreshAmsBatchTable();">Clear batch</button>
+      <button class="btn btn-primary" onclick="submitCageIssuance()">Issue Item</button>
+    </div>
+  </div>`;
+}
+// Fires on every keystroke in the AMS tag field. A scanner types the whole
+// code in one burst; once input goes quiet for a moment we treat that as "a
+// tag has been scanned" and add it automatically — no Enter, no button, and
+// this repeats for every scan (not just the first one or two), since the
+// timer is reset and reused each time rather than only firing once.
+function onCageAmsScanInput(){
+  const el = document.getElementById('cage-ams-scan');
+  if(!el) return;
+  clearTimeout(cageAmsScanTimer);
+  const v = el.value.trim();
+  if(!v) return;
+  cageAmsScanTimer = setTimeout(()=>{
+    const cur = document.getElementById('cage-ams-scan');
+    if(cur && cur.value.trim()===v) addAmsTagToBatch();
+  }, 150);
+}
+function addAmsTagToBatch(){
+  clearTimeout(cageAmsScanTimer);
+  const el = document.getElementById('cage-ams-scan');
+  const v = (el?el.value:'').trim();
+  if(!v){ toast('Scan or enter an AMS tag first.'); return; }
+  if(cageAmsBatch.some(t=>t.toLowerCase()===v.toLowerCase())){ toast('That AMS tag is already in this batch.'); if(el){ el.value=''; el.focus(); } return; }
+  cageAmsBatch.push(v);
+  if(el){ el.value=''; el.focus(); }
+  refreshAmsBatchTable();
+}
+function removeAmsTagFromBatch(i){ cageAmsBatch.splice(i,1); refreshAmsBatchTable(); }
+function refreshAmsBatchTable(){
+  const el = document.getElementById('cage-batch-table');
+  const countEl = document.getElementById('cage-batch-count');
+  if(countEl) countEl.textContent = cageAmsBatch.length;
+  if(!el) return;
+  if(cageAmsBatch.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#128230;</div>No AMS tags scanned yet.</div>'; return; }
+  const rowsHtml = cageAmsBatch.map((t,i)=>`<tr><td class="mono small-note">${i+1}</td><td class="mono">${esc(t)}</td><td style="text-align:right;"><button class="icon-btn" onclick="removeAmsTagFromBatch(${i})" title="Remove">&times;</button></td></tr>`).reverse().join('');
+  el.innerHTML = '<div class="tbl-wrap" style="max-height:320px;overflow-y:auto;"><table><tr><th>#</th><th>AMS Tag</th><th></th></tr>' + rowsHtml + '</table></div>';
+}
+async function submitCageIssuance(){
+  const lhTripNumber = document.getElementById('cage-lhtrip').value.trim();
+  const hubName = document.getElementById('cage-hub').value.trim();
+  const plateNumber = document.getElementById('cage-plate').value.trim();
+  if(cageAmsBatch.length===0){ toast('Scan at least one AMS tag first.'); return; }
+  if(!lhTripNumber){ toast('Enter the LH trip number.'); return; }
+  if(!hubName){ toast('Choose or type a hub name.'); return; }
+  if(!plateNumber){ toast('Enter the vehicle plate number.'); return; }
+  const id = nextCode('CG','cg');
+  const amsTags = cageAmsBatch.slice();
+  DB.cages.push({id, cageId:id, amsTags, lhTripNumber, hubName, plateNumber, issuedBy: session.fullName, status:'In Transit', dispatchedAt: nowISO(), receivedBy:null, receivedAt:null, soc:currentSoc()});
+  cageAmsBatch = [];
+  await saveDB();
+  toast('Cage '+id+' issued with '+amsTags.length+' AMS tag(s) — now in transit.');
+  navigate('cageloading','list');
+}
+/* ---------- Receive Cage: scan multiple AMS tags into a batch, confirm all at once ---------- */
+function cageReceiveHtml(){
+  const pending = cagePendingList();
+  return `<div class="card">
+    <h3>1. Scan AMS tags to receive</h3>
+    <div class="card-sub">Scan each AMS tag — its cage drops into the batch below automatically as soon as it's scanned, no need to press Enter. Scan tags from more than one cage if you like, then confirm them all together.</div>
+    <div class="form-row">
+      <div class="field"><label>AMS Tag</label><input id="receive-ams-scan" placeholder="Scan AMS tag" oninput="onCageReceiveScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();scanAmsTagToReceive();}"></div>
+    </div>
+    <div class="section-title">Batch to receive (<span id="receive-batch-count">${cageReceiveBatch.length}</span>)</div>
+    <div id="receive-batch-table"></div>
+    <div class="form-row" style="grid-template-columns:1fr 1fr 1fr;margin-top:10px;">
+      <div class="field"><label>LH Trip #</label><input id="receive-batch-lhtrip" placeholder="Scan or type LH trip number"></div>
+      <div class="field"><label>SOC / Hub Name</label><input id="receive-batch-hub" list="cage-hub-options" placeholder="Type to search hubs…" autocomplete="off"><datalist id="cage-hub-options">${hubDatalistOptions()}</datalist></div>
+      <div class="field"><label>Received by</label><input id="receive-batch-by" value="${esc(session.fullName)}"></div>
+    </div>
+    <div class="footer-actions">
+      <button class="btn" onclick="cageReceiveBatch=[];refreshReceiveBatchTable();">Clear batch</button>
+      <button class="btn btn-success" onclick="confirmReceiveBatch()">Confirm receipt for batch</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="list-head"><h3>Awaiting receipt (${pending.length})</h3></div>
+    ${pending.length===0 ? '<div class="empty"><div class="ic">&#128666;</div>No cages currently awaiting receipt.</div>' :
+      '<div class="tbl-wrap"><table><tr><th>Cage ID</th><th>AMS Tags</th><th>LH Trip #</th><th>Hub</th><th>Plate #</th><th>Status</th><th>Issued</th><th></th></tr>' +
+      pending.slice().reverse().map(cg=>`<tr>
+        <td class="mono">${esc(cg.cageId)}</td><td>${amsTagsSummary(cg)} <button class="btn btn-sm" onclick="viewAmsTags('${esc(cg.id)}')">View</button></td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cg.hubName||'—')}</td><td class="mono">${esc(cg.plateNumber||'—')}</td>
+        <td>${cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td><td><button class="btn btn-sm btn-success" onclick="openReceiveCage('${esc(cg.id)}')">Receive</button></td>
+      </tr>`).join('') + '</table></div>'}
+  </div>`;
+}
+// Same auto-detect pattern as onCageAmsScanInput: once the scanner's burst of
+// input goes quiet, add it — no Enter needed, and it fires again for every
+// subsequent scan, not just the first couple.
+function onCageReceiveScanInput(){
+  const el = document.getElementById('receive-ams-scan');
+  if(!el) return;
+  clearTimeout(cageReceiveScanTimer);
+  const v = el.value.trim();
+  if(!v) return;
+  cageReceiveScanTimer = setTimeout(()=>{
+    const cur = document.getElementById('receive-ams-scan');
+    if(cur && cur.value.trim()===v) scanAmsTagToReceive();
+  }, 150);
+}
+function scanAmsTagToReceive(){
+  clearTimeout(cageReceiveScanTimer);
+  const el = document.getElementById('receive-ams-scan');
+  const v = (el?el.value:'').trim();
+  if(!v){ toast('Scan or enter an AMS tag first.'); return; }
+  const cg = cagePendingList().find(c=>(c.amsTags||[]).some(t=>t.toLowerCase()===v.toLowerCase()));
+  if(!cg){ toast('No pending cage found with that AMS tag.'); if(el){ el.value=''; el.focus(); } return; }
+  if(!cageReceiveBatch.includes(cg.id)) cageReceiveBatch.push(cg.id);
+  else toast('Cage '+cg.cageId+' is already in this batch.');
+  if(el){ el.value=''; el.focus(); }
+  refreshReceiveBatchTable();
+}
+function removeFromReceiveBatch(id){ cageReceiveBatch = cageReceiveBatch.filter(x=>x!==id); refreshReceiveBatchTable(); }
+function refreshReceiveBatchTable(){
+  const el = document.getElementById('receive-batch-table');
+  const countEl = document.getElementById('receive-batch-count');
+  if(countEl) countEl.textContent = cageReceiveBatch.length;
+  if(!el) return;
+  if(cageReceiveBatch.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#128230;</div>No cages matched yet.</div>'; return; }
+  const rowsHtml = cageReceiveBatch.map(id=>{
+    const cg = DB.cages.find(x=>x.id===id);
+    if(!cg) return '';
+    return `<tr><td class="mono">${esc(cg.cageId)}</td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cg.hubName||'—')}</td><td class="mono">${esc(cg.plateNumber||'—')}</td><td>${amsTagsSummary(cg)}</td><td style="text-align:right;"><button class="icon-btn" onclick="removeFromReceiveBatch('${esc(id)}')" title="Remove">&times;</button></td></tr>`;
+  }).join('');
+  el.innerHTML = '<div class="tbl-wrap"><table><tr><th>Cage ID</th><th>LH Trip #</th><th>Hub</th><th>Plate #</th><th>AMS Tags</th><th></th></tr>' + rowsHtml + '</table></div>';
+}
+async function confirmReceiveBatch(){
+  if(cageReceiveBatch.length===0){ toast('Scan at least one AMS tag first.'); return; }
+  const lhtripEl = document.getElementById('receive-batch-lhtrip');
+  const hubEl = document.getElementById('receive-batch-hub');
+  const receivedLhTripNumber = lhtripEl ? lhtripEl.value.trim() : '';
+  const receivedHubName = hubEl ? hubEl.value.trim() : '';
+  if(!receivedLhTripNumber){ toast('Enter the LH trip number.'); return; }
+  if(!receivedHubName){ toast('Choose or type the SOC / hub name.'); return; }
+  const byEl = document.getElementById('receive-batch-by');
+  const receivedBy = (byEl && byEl.value.trim()) || session.fullName;
+  const now = nowISO();
+  let n = 0;
+  cageReceiveBatch.forEach(id=>{
+    const cg = DB.cages.find(x=>x.id===id);
+    if(cg && cg.status!=='Received'){ cg.status='Received'; cg.receivedBy=receivedBy; cg.receivedAt=now; cg.receivedLhTripNumber=receivedLhTripNumber; cg.receivedHubName=receivedHubName; n++; }
+  });
+  cageReceiveBatch = [];
+  await saveDB();
+  toast(n+' cage(s) marked received.');
+  navigate('cageloading','receive');
+}
+function openReceiveCage(id){
+  const cg = DB.cages.find(x=>x.id===id);
+  if(!cg) return;
+  showModal(`
+    <h3>Receive ${esc(cg.cageId)}</h3>
+    <div class="card-sub">LH Trip #: <span class="mono">${esc(cg.lhTripNumber||'—')}</span> &middot; Hub: ${esc(cg.hubName||'—')} &middot; issued ${fmtDateTime(cg.dispatchedAt)} by ${esc(cg.issuedBy||'—')}</div>
+    <div class="card-sub">AMS Tags (${(cg.amsTags||[]).length}): ${amsTagsSummary(cg)} &middot; Plate #: <span class="mono">${esc(cg.plateNumber||'—')}</span> &middot; Status: ${cageStatusTag(cg)}</div>
+    <div class="field" style="margin-top:14px;"><label>LH Trip #</label><input id="receive-lhtrip" placeholder="Scan or type LH trip number"></div>
+    <div class="field"><label>SOC / Hub Name</label><input id="receive-hub" list="cage-hub-options-modal" placeholder="Type to search hubs…" autocomplete="off"><datalist id="cage-hub-options-modal">${hubDatalistOptions()}</datalist></div>
+    <div class="field"><label>Received by</label><input id="receive-by" value="${esc(session.fullName)}"></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-success" onclick="confirmReceiveCage('${esc(cg.id)}')">Confirm receipt</button>
+    </div>
+  `);
+}
+async function confirmReceiveCage(id){
+  const cg = DB.cages.find(x=>x.id===id);
+  if(!cg) return;
+  const lhtripEl = document.getElementById('receive-lhtrip');
+  const hubEl = document.getElementById('receive-hub');
+  const receivedLhTripNumber = lhtripEl ? lhtripEl.value.trim() : '';
+  const receivedHubName = hubEl ? hubEl.value.trim() : '';
+  if(!receivedLhTripNumber){ toast('Enter the LH trip number.'); return; }
+  if(!receivedHubName){ toast('Choose or type the SOC / hub name.'); return; }
+  const byEl = document.getElementById('receive-by');
+  const receivedBy = (byEl && byEl.value.trim()) || session.fullName;
+  cg.status = 'Received';
+  cg.receivedBy = receivedBy;
+  cg.receivedAt = nowISO();
+  cg.receivedLhTripNumber = receivedLhTripNumber;
+  cg.receivedHubName = receivedHubName;
+  closeModal();
+  await saveDB();
+  toast('Cage '+cg.cageId+' marked received.');
+  navigate('cageloading','receive');
+}
+function cageLoadingListHtml(){
+  const rows = socFilter(DB.cages);
+  const header = `<div class="list-head"><h3>Cage log (${rows.length})</h3>${dlBtn('exportCages')}</div>`;
+  if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#128230;</div>No cages issued yet.</div></div>';
+  return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
+    '<tr><th>Cage ID</th><th>AMS Tags</th><th>LH Trip #</th><th>Hub</th><th>Plate #</th><th>Issued By</th><th>Status</th><th>Issued</th><th>Received</th></tr>' +
+    rows.slice().reverse().map(cg=>`<tr>
+      <td class="mono">${esc(cg.cageId)}</td><td>${amsTagsSummary(cg)} <button class="btn btn-sm" onclick="viewAmsTags('${esc(cg.id)}')">View</button></td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cg.hubName||'—')}</td><td class="mono">${esc(cg.plateNumber||'—')}</td>
+      <td>${esc(cg.issuedBy||'—')}</td><td>${cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td>
+      <td>${cg.receivedAt ? fmtDateTime(cg.receivedAt)+(cg.receivedBy?' &middot; '+esc(cg.receivedBy):'')+(cg.receivedLhTripNumber||cg.receivedHubName?'<div class="small-note">LH Trip '+esc(cg.receivedLhTripNumber||'—')+' &middot; '+esc(cg.receivedHubName||'—')+'</div>':'') : '<span class="small-note">—</span>'}</td>
+    </tr>`).join('') + '</table></div></div>';
+}
+function exportCages(){
+  const rows = socFilter(DB.cages).map(cg=>[cg.cageId,(cg.amsTags||[]).join('; '),cg.lhTripNumber||'',cg.hubName||'',cg.plateNumber||'',cg.issuedBy||'',cg.status||'In Transit',fmtDateTime(cg.dispatchedAt),cg.receivedAt?fmtDateTime(cg.receivedAt):'',cg.receivedBy||'',cg.receivedLhTripNumber||'',cg.receivedHubName||'']);
+  downloadCSV('cage-loading-log.csv', ['Cage ID','AMS Tags','LH Trip #','Hub','Plate #','Issued By','Status','Issued','Received At','Received By','Received LH Trip #','Received SOC/Hub'], rows);
+}
+/* ---------- Cage Cycle Count: scan AMS tags on hand, reconcile against
+   every AMS tag the system still expects to be out there (cages that
+   haven't been marked Received yet, scoped to the current SOC). ---------- */
+let cageCycleScanned = []; // AMS tags scanned so far this count session
+let cageCycleScanTimer = null;
+function cageExpectedAmsTags(){
+  const seen = new Set();
+  cagePendingList().forEach(cg=>(cg.amsTags||[]).forEach(t=>{ if(t) seen.add(t); }));
+  return seen;
+}
+function cageCycleCountHtml(){
+  return `<div class="card">
+    <h3>Scan AMS tags on hand</h3>
+    <div class="card-sub">Scan every AMS tag physically on site right now — it's checked off automatically as soon as it's scanned, no need to press Enter. Compares against every cage the system still shows as in transit${currentSoc()?' for '+esc(currentSoc()):' (all SOCs)'}.</div>
+    <div class="field scan-field">
+      <label>AMS Tag</label>
+      <input id="cage-cyclecount-scan" placeholder="Scan AMS tag" oninput="onCageCycleScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();addCageCycleScan();}">
+    </div>
+    <div class="field" style="max-width:260px;margin-top:10px;"><label>Counted by</label><input id="cage-cyclecount-by" value="${esc(session.fullName)}"></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="cageCycleScanned=[];refreshCageCycleCountView();">Clear scanned</button>
+      <button class="btn btn-primary" onclick="saveCageCycleCount()">Save cycle count</button>
+    </div>
+  </div>
+  <div id="cage-cyclecount-summary"></div>
+  <div class="card">
+    <div class="list-head"><h3>Recent cycle counts</h3>${dlBtn('exportCageCycleCounts')}</div>
+    <div id="cage-cyclecount-history">${cageCycleCountHistoryHtml()}</div>
+  </div>`;
+}
+// Fires on every keystroke — once the scanner's burst of input goes quiet,
+// treat it as "a tag has been scanned" and check it off automatically, the
+// same debounce pattern used for the AMS tag batch scans elsewhere in this
+// module. Works for every scan in the session, not just the first couple.
+function onCageCycleScanInput(){
+  const el = document.getElementById('cage-cyclecount-scan');
+  if(!el) return;
+  clearTimeout(cageCycleScanTimer);
+  const v = el.value.trim();
+  if(!v) return;
+  cageCycleScanTimer = setTimeout(()=>{
+    const cur = document.getElementById('cage-cyclecount-scan');
+    if(cur && cur.value.trim()===v) addCageCycleScan();
+  }, 150);
+}
+function addCageCycleScan(){
+  clearTimeout(cageCycleScanTimer);
+  const el = document.getElementById('cage-cyclecount-scan');
+  const v = (el?el.value:'').trim();
+  if(!v){ toast('Scan or enter an AMS tag first.'); return; }
+  if(cageCycleScanned.some(t=>t.toLowerCase()===v.toLowerCase())){ toast('That AMS tag has already been scanned this count.'); if(el){ el.value=''; el.focus(); } return; }
+  cageCycleScanned.push(v);
+  if(el){ el.value=''; el.focus(); }
+  refreshCageCycleCountView();
+}
+function removeCageCycleScan(i){ cageCycleScanned.splice(i,1); refreshCageCycleCountView(); }
+function refreshCageCycleCountView(){
+  const el = document.getElementById('cage-cyclecount-summary');
+  if(!el) return;
+  const expected = cageExpectedAmsTags();
+  const expectedArr = [...expected];
+  const scannedUpper = cageCycleScanned.map(t=>t.toUpperCase());
+  const matched = cageCycleScanned.filter(t=>expected.has(t) || [...expected].some(e=>e.toUpperCase()===t.toUpperCase()));
+  const unexpected = cageCycleScanned.filter(t=>!expectedArr.some(e=>e.toUpperCase()===t.toUpperCase()));
+  const missing = expectedArr.filter(e=>!scannedUpper.includes(e.toUpperCase()));
+  el.innerHTML = `<div class="card">
+    <div class="grid g3" style="margin-bottom:14px;">
+      <div class="metric"><div class="lbl">Expected</div><div class="val">${expectedArr.length}</div><div class="sub">AMS tags still in transit</div></div>
+      <div class="metric success"><div class="lbl">Matched</div><div class="val">${matched.length}</div><div class="sub">scanned &amp; expected</div></div>
+      <div class="metric ${unexpected.length?'danger':''}"><div class="lbl">Unexpected</div><div class="val">${unexpected.length}</div><div class="sub">scanned, not expected</div></div>
+    </div>
+    <div class="section-title">Scanned this session (${cageCycleScanned.length})</div>
+    ${cageCycleScanned.length===0 ? '<div class="empty"><div class="ic">&#128230;</div>No AMS tags scanned yet.</div>' :
+      '<div class="tbl-wrap" style="max-height:260px;overflow-y:auto;"><table><tr><th>#</th><th>AMS Tag</th><th>Result</th><th></th></tr>' +
+      cageCycleScanned.map((t,i)=>{
+        const isExpected = expectedArr.some(e=>e.toUpperCase()===t.toUpperCase());
+        return `<tr><td class="mono small-note">${i+1}</td><td class="mono">${esc(t)}</td><td>${isExpected?'<span class="tag tag-ok">Matched</span>':'<span class="tag tag-rejected">Unexpected</span>'}</td><td style="text-align:right;"><button class="icon-btn" onclick="removeCageCycleScan(${i})" title="Remove">&times;</button></td></tr>`;
+      }).reverse().join('') + '</table></div>'}
+    ${missing.length ? '<div class="section-title">Missing (' + missing.length + ') — expected but not yet scanned</div><div class="tbl-wrap" style="max-height:220px;overflow-y:auto;"><table><tr><th>AMS Tag</th></tr>' + missing.map(t=>`<tr><td class="mono">${esc(t)}</td></tr>`).join('') + '</table></div>' : ''}
+  </div>`;
+}
+async function saveCageCycleCount(){
+  const expectedArr = [...cageExpectedAmsTags()];
+  const scannedUpper = cageCycleScanned.map(t=>t.toUpperCase());
+  const matched = cageCycleScanned.filter(t=>expectedArr.some(e=>e.toUpperCase()===t.toUpperCase()));
+  const unexpected = cageCycleScanned.filter(t=>!expectedArr.some(e=>e.toUpperCase()===t.toUpperCase()));
+  const missing = expectedArr.filter(e=>!scannedUpper.includes(e.toUpperCase()));
+  if(cageCycleScanned.length===0 && expectedArr.length===0){ toast('Nothing to count — no AMS tags are currently in transit.'); return; }
+  const byEl = document.getElementById('cage-cyclecount-by');
+  const countedBy = (byEl && byEl.value.trim()) || session.fullName;
+  DB.cageCycleCounts.push({id: nextCode('CC','ccage'), soc: currentSoc(), expectedCount: expectedArr.length, scannedCount: cageCycleScanned.length, matchedCount: matched.length, missing, unexpected, countedBy, date: nowISO()});
+  cageCycleScanned = [];
+  await saveDB();
+  toast('Cycle count saved — '+matched.length+' matched, '+missing.length+' missing, '+unexpected.length+' unexpected.');
+  refreshCageCycleCountView();
+  const hist = document.getElementById('cage-cyclecount-history');
+  if(hist) hist.innerHTML = cageCycleCountHistoryHtml();
+}
+function cageCycleCountHistoryHtml(){
+  const rows = socFilter(DB.cageCycleCounts).slice().reverse().slice(0,15);
+  if(rows.length===0) return '<div class="empty"><div class="ic">&#8635;</div>No cycle counts recorded yet.</div>';
+  return '<div class="tbl-wrap"><table><tr><th>Date</th><th>SOC</th><th>Expected</th><th>Scanned</th><th>Matched</th><th>Missing</th><th>Unexpected</th><th>Counted by</th></tr>' +
+    rows.map(r=>`<tr><td>${fmtDateTime(r.date)}</td><td>${esc(r.soc||'—')}</td><td>${r.expectedCount}</td><td>${r.scannedCount}</td>
+      <td>${r.matchedCount}</td><td>${(r.missing||[]).length?'<span class="tag tag-pending">'+(r.missing||[]).length+'</span>':'0'}</td>
+      <td>${(r.unexpected||[]).length?'<span class="tag tag-rejected">'+(r.unexpected||[]).length+'</span>':'0'}</td><td>${esc(r.countedBy)}</td></tr>`).join('') + '</table></div>';
+}
+function exportCageCycleCounts(){
+  const rows = socFilter(DB.cageCycleCounts).map(r=>[fmtDateTime(r.date), r.soc||'', r.expectedCount, r.scannedCount, r.matchedCount, (r.missing||[]).join('; '), (r.unexpected||[]).join('; '), r.countedBy]);
+  downloadCSV('cage-cycle-count.csv', ['Date','SOC','Expected','Scanned','Matched','Missing AMS Tags','Unexpected AMS Tags','Counted By'], rows);
+}
+
+
 
 /* ============================= IT ASSETS (PDA) MODULE ============================= */
 function renderITAssets(){
