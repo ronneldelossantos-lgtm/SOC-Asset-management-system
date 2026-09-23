@@ -2738,14 +2738,19 @@ function receivingFormHtml(){
     <h3>Receive incoming supplies</h3>
     <div class="card-sub">Add one or more SKUs to this delivery, then receive them all together.</div>
     <div class="section-title">Add item</div>
-    <div class="form-row3">
+    <div class="form-row" id="recv-sku-row" style="grid-template-columns:1fr;">
       <div class="field"><label>SKU code</label><input id="recv-sku" placeholder="e.g. AST-0001" oninput="recvSkuLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}"></div>
-      <div class="field"><label>Item description</label><input id="recv-desc" class="autofill" disabled></div>
-      <div class="field"><label>Type of supply</label><input id="recv-type" class="autofill" disabled></div>
+      <div class="field" id="recv-asset-code-field" style="display:none;"><label>Asset Code(s)</label><textarea id="recv-asset-code" oninput="updateRecvAssetQty()" placeholder="Scan or enter asset codes; one code per line"></textarea><div class="hint">Quantity is calculated from the number of asset codes.</div></div>
     </div>
-    <div class="form-row">
+    <div class="form-row" id="recv-ams-row" style="grid-template-columns:1fr;">
+      <div class="field" id="recv-ams-tagging-field" style="display:none;"><label>AMS Asset Tagging</label><input id="recv-ams-tagging" placeholder="Scan or type AMS tag(s); separate multiple tags with commas"></div>
+      <div class="field"><label>Item description</label><input id="recv-desc" class="autofill" disabled></div>
+    </div>
+    <div class="form-row3">
+      <div class="field"><label>Type of supply</label><input id="recv-type" class="autofill" disabled></div>
       <div class="field"><label>UOM</label><input id="recv-uom" class="autofill" disabled></div>
-      <div class="field"><label>Quantity received</label><input id="recv-qty" type="number" min="1" placeholder="0" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}"></div>
+      <div class="field" id="recv-qty-field"><label>Quantity received</label><input id="recv-qty" type="number" min="1" placeholder="0" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}"></div>
+      <div class="field" id="recv-derived-qty-field" style="display:none;"><label>Quantity from asset codes</label><input id="recv-derived-qty" class="autofill" value="0" disabled></div>
     </div>
     <div id="recv-sku-hint" class="hint"></div>
     <div class="footer-actions" style="margin-top:6px;">
@@ -2776,8 +2781,39 @@ function recvSkuLookup(){
   document.getElementById('recv-desc').value = info?info.description:'';
   document.getElementById('recv-type').value = info?info.type:'';
   document.getElementById('recv-uom').value = info?info.uom:'';
+  const isAsset = !!info && info.type==='Asset';
+  document.getElementById('recv-asset-code-field').style.display = isAsset ? '' : 'none';
+  document.getElementById('recv-ams-tagging-field').style.display = isAsset ? '' : 'none';
+  document.getElementById('recv-sku-row').style.gridTemplateColumns = isAsset ? 'repeat(2,minmax(0,1fr))' : '1fr';
+  document.getElementById('recv-ams-row').style.gridTemplateColumns = isAsset ? 'repeat(2,minmax(0,1fr))' : '1fr';
+  document.getElementById('recv-qty-field').style.display = isAsset ? 'none' : '';
+  document.getElementById('recv-derived-qty-field').style.display = isAsset ? '' : 'none';
+  if(!isAsset){
+    document.getElementById('recv-asset-code').value = '';
+    document.getElementById('recv-ams-tagging').value = '';
+  } else {
+    updateRecvAssetQty();
+  }
   const hintEl = document.getElementById('recv-sku-hint');
   if(hintEl) hintEl.innerHTML = info ? '' : (v?'SKU not found in master list.':'');
+}
+function recvAssetCodes(value){
+  const seen = new Set();
+  return String(value||'').split(/[,;\n]+/).map(code=>code.trim()).filter(code=>{
+    if(!code) return false;
+    const key = code.toUpperCase();
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+function recvAssetCodesOf(r){
+  return r && Array.isArray(r.assetCodes) ? recvAssetCodes(r.assetCodes.join('\n')) : recvAssetCodes(r && r.assetCode || '');
+}
+function updateRecvAssetQty(){
+  const codeEl = document.getElementById('recv-asset-code');
+  const qtyEl = document.getElementById('recv-derived-qty');
+  if(codeEl && qtyEl) qtyEl.value = recvAssetCodes(codeEl.value).length;
 }
 function scanReceive(){
   showModal(`
@@ -2798,11 +2834,17 @@ function confirmScanReceive(){
 function addRecvItem(){
   const sku = document.getElementById('recv-sku').value.trim();
   const info = skuInfo(sku);
-  const qty = Number(document.getElementById('recv-qty').value);
   if(!info){ toast('Enter a valid SKU code first.'); return; }
+  const assetCodes = info.type==='Asset' ? recvAssetCodes(document.getElementById('recv-asset-code').value) : [];
+  const qty = info.type==='Asset' ? assetCodes.length : Number(document.getElementById('recv-qty').value);
+  if(info.type==='Asset' && assetCodes.length===0){ toast('Enter at least one Asset Code. Quantity is based on the asset codes entered.'); return; }
   if(!qty || qty<=0){ toast('Enter a quantity greater than 0.'); return; }
-  recvDraftItems.push({sku:info.sku, description:info.description, type:info.type, uom:info.uom, qty});
+  const assetCode = info.type==='Asset' ? document.getElementById('recv-asset-code').value.trim() : '';
+  const amsTags = info.type==='Asset' ? document.getElementById('recv-ams-tagging').value.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean) : [];
+  recvDraftItems.push({sku:info.sku, description:info.description, type:info.type, uom:info.uom, qty, assetCode, assetCodes, amsTags});
   document.getElementById('recv-sku').value=''; document.getElementById('recv-desc').value=''; document.getElementById('recv-type').value=''; document.getElementById('recv-uom').value=''; document.getElementById('recv-qty').value='';
+  document.getElementById('recv-asset-code').value=''; document.getElementById('recv-ams-tagging').value='';
+  recvSkuLookup();
   const hintEl = document.getElementById('recv-sku-hint'); if(hintEl) hintEl.innerHTML='';
   refreshRecvItemsTable();
   const skuEl = document.getElementById('recv-sku'); if(skuEl) skuEl.focus();
@@ -2813,8 +2855,8 @@ function refreshRecvItemsTable(){
   if(!el) return;
   if(recvDraftItems.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#8615;</div>No items added yet.</div>'; return; }
   el.innerHTML = '<div class="line-items">' +
-    '<div class="li-row li-head"><span>SKU</span><span>Description</span><span>Type</span><span>Qty</span><span></span></div>' +
-    recvDraftItems.map((it,i)=>`<div class="li-row"><span class="mono">${esc(it.sku)}</span><span>${esc(it.description)}</span><span>${esc(it.type)}</span><span>${it.qty} ${esc(it.uom)}</span><span><button class="icon-btn" onclick="removeRecvItem(${i})">&times;</button></span></div>`).join('')
+    '<div class="li-row li-head"><span>SKU / Asset details</span><span>Description</span><span>Type</span><span>Qty</span><span></span></div>' +
+    recvDraftItems.map((it,i)=>`<div class="li-row"><span class="mono">${esc(it.sku)}${it.assetCodes&&it.assetCodes.length?'<div class="small-note">Asset Code(s): '+esc(it.assetCodes.join(', '))+'</div>':''}${it.amsTags&&it.amsTags.length?'<div class="small-note">AMS: '+esc(it.amsTags.join(', '))+'</div>':''}</span><span>${esc(it.description)}</span><span>${esc(it.type)}</span><span>${it.qty} ${esc(it.uom)}</span><span><button class="icon-btn" onclick="removeRecvItem(${i})">&times;</button></span></div>`).join('')
   + '</div>';
 }
 function readFileAsDataURL(file){
@@ -2843,7 +2885,7 @@ async function submitReceiving(){
   recvDraftItems.forEach(it=>{
     const id = nextCode('RCV','recv');
     ids.push(id);
-    DB.receiving.push({id, sku:it.sku, description:it.description, type:it.type, uom:it.uom, from, qty:it.qty, date, receivedBy:session.fullName, transmittal:file?file.name:'', transmittalFile, soc});
+    DB.receiving.push({id, sku:it.sku, assetCode:it.assetCode||'', assetCodes:it.assetCodes||[], amsTags:it.amsTags||[], description:it.description, type:it.type, uom:it.uom, from, qty:it.qty, date, receivedBy:session.fullName, transmittal:file?file.name:'', transmittalFile, soc});
     addStock(it.sku, it.qty, soc);
   });
   recvDraftItems = [];
@@ -2872,9 +2914,9 @@ function receivingListHtml(){
   const header = `<div class="list-head"><h3>Receiving log (${rows.length})</h3>${dlBtn('exportReceiving')}</div>`;
   if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#8615;</div>No receiving transactions logged yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th>Ref #</th><th>SKU</th><th>Item</th><th>Type</th><th>From</th><th>Qty</th><th>Date</th><th>Received by</th><th>Transmittal</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
+    '<tr><th>Ref #</th><th>SKU</th><th>Asset Code(s)</th><th>AMS Asset Tagging</th><th>Item</th><th>Type</th><th>From</th><th>Qty</th><th>Date</th><th>Received by</th><th>Transmittal</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
     rows.slice().reverse().map(r=>`<tr>
-      <td class="mono">${esc(r.id)}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
+      <td class="mono">${esc(r.id)}</td><td class="mono">${esc(r.sku)}</td><td class="mono">${esc(recvAssetCodesOf(r).join(', ')||'—')}</td><td class="mono">${esc((Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', ')||'—')}</td><td>${esc(r.description)}</td>
       <td>${r.type==='Asset'?'<span class="tag tag-asset">Asset</span>':'<span class="tag tag-consumable">Consumable</span>'}</td>
       <td>${esc(r.from)}</td><td style="font-weight:700;">${r.qty} ${esc(r.uom)}</td><td>${fmtDate(r.date)}</td>
       <td>${esc(r.receivedBy)}</td><td>${r.transmittalFile?(`<a href="javascript:void(0)" onclick="viewReceivedTransmittal('${esc(r.id)}')" style="color:var(--info);font-weight:600;text-decoration:underline;cursor:pointer;">&#128206; ${esc(r.transmittal||'View file')}</a>`):(r.transmittal?('&#128206; '+esc(r.transmittal)):'<span class="small-note">—</span>')}</td>
@@ -2890,8 +2932,12 @@ function openEditReceiving(id){
     <div class="card-sub mono">${esc(r.id)} &middot; ${esc(r.sku)} &middot; ${esc(r.description)}</div>
     <div class="form-row" style="margin-top:14px;">
       <div class="field"><label>From (Supplier)</label><select id="edit-recv-from">${DB.suppliers.map(s=>`<option ${s===r.from?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
-      <div class="field"><label>Quantity</label><input type="number" min="0" id="edit-recv-qty" value="${r.qty}"></div>
+      ${r.type==='Asset'?`<div class="field"><label>Quantity from asset codes</label><input id="edit-recv-derived-qty" class="autofill" value="${recvAssetCodesOf(r).length||Number(r.qty)||0}" disabled></div>`:`<div class="field"><label>Quantity</label><input type="number" min="0" id="edit-recv-qty" value="${r.qty}"></div>`}
     </div>
+    ${r.type==='Asset'?`<div class="form-row">
+      <div class="field"><label>Asset Code(s)</label><textarea id="edit-recv-asset-codes" oninput="document.getElementById('edit-recv-derived-qty').value=recvAssetCodes(this.value).length" placeholder="One code per line">${esc(recvAssetCodesOf(r).join('\n'))}</textarea><div class="hint">Quantity is calculated from the number of asset codes. Legacy records without codes keep their recorded quantity until codes are entered.</div></div>
+      <div class="field"><label>AMS Asset Tagging</label><input id="edit-recv-ams-tagging" value="${esc((Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', '))}" placeholder="Separate multiple tags with commas"></div>
+    </div>`:`<div class="form-row"><div class="field"><label>AMS Asset Tagging</label><input id="edit-recv-ams-tagging" value="${esc((Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', '))}" placeholder="Separate multiple tags with commas"></div></div>`}
     <div class="hint">Changing the quantity will adjust current stock for ${esc(r.sku)} by the difference.</div>
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -2903,11 +2949,18 @@ async function saveReceivingEdit(id){
   const r = DB.receiving.find(x=>x.id===id);
   if(!r) return;
   const from = document.getElementById('edit-recv-from').value;
-  const qty = Number(document.getElementById('edit-recv-qty').value);
+  const assetCodes = r.type==='Asset' ? recvAssetCodes(document.getElementById('edit-recv-asset-codes').value) : [];
+  if(r.type==='Asset' && assetCodes.length===0 && recvAssetCodesOf(r).length>0){ toast('Enter at least one Asset Code. Quantity is based on the asset codes entered.'); return; }
+  const qty = r.type==='Asset' ? (assetCodes.length||Number(r.qty)||0) : Number(document.getElementById('edit-recv-qty').value);
   if(!Number.isFinite(qty) || qty<0){ toast('Enter a valid quantity.'); return; }
   const delta = qty - r.qty;
   if(delta!==0) addStock(r.sku, delta, r.soc||'');
   r.from = from; r.qty = qty;
+  if(r.type==='Asset'){
+    r.assetCodes = assetCodes;
+    r.assetCode = assetCodes.join(', ');
+  }
+  r.amsTags = document.getElementById('edit-recv-ams-tagging').value.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean);
   await saveDB();
   closeModal();
   toast('Receiving record updated.');
@@ -2925,8 +2978,8 @@ function deleteReceiving(id){
   });
 }
 function exportReceiving(){
-  const rows = socFilter(DB.receiving).map(r=>[r.id,r.sku,r.description,r.type,r.from,r.qty,r.uom,fmtDate(r.date),r.receivedBy,r.transmittal||'']);
-  downloadCSV('receiving-log.csv', ['Ref #','SKU','Item','Type','From','Qty','UOM','Date','Received by','Transmittal'], rows);
+  const rows = socFilter(DB.receiving).map(r=>[r.id,r.sku,recvAssetCodesOf(r).join(', '),(Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', '),r.description,r.type,r.from,r.qty,r.uom,fmtDate(r.date),r.receivedBy,r.transmittal||'']);
+  downloadCSV('receiving-log.csv', ['Ref #','SKU','Asset Code(s)','AMS Asset Tagging','Item','Type','From','Qty','UOM','Date','Received by','Transmittal'], rows);
 }
 
 /* ============================= ISSUANCE MODULE ============================= */
