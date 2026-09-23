@@ -1891,6 +1891,7 @@ function dashConsumable(){
 /* ============================= REQUEST MODULE ============================= */
 let reqDraftItems = [];
 let recvDraftItems = [];
+let recvAutoAddTimer = null;
 let parcelSessionStation = '';
 let parcelSessionHandOver = '';
 function renderRequest(){
@@ -2736,40 +2737,35 @@ function receivingFormHtml(){
   return `
   <div class="card">
     <h3>Receive incoming supplies</h3>
-    <div class="card-sub">Add one or more SKUs to this delivery, then receive them all together.</div>
+    <div class="card-sub">Assets are added to the batch when their AMS tags are entered. Consumables are added to the batch after quantity is entered. Enter the supplier and attach the transmittal before receiving the batch.</div>
     <div class="section-title">Add item</div>
     <div class="form-row" id="recv-sku-row" style="grid-template-columns:1fr;">
-      <div class="field"><label>SKU code</label><input id="recv-sku" placeholder="e.g. AST-0001" oninput="recvSkuLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}"></div>
-      <div class="field" id="recv-asset-code-field" style="display:none;"><label>Asset Code(s)</label><textarea id="recv-asset-code" oninput="updateRecvAssetQty()" placeholder="Scan or enter asset codes; one code per line"></textarea><div class="hint">Quantity is calculated from the number of asset codes.</div></div>
+      <div class="field"><label>SKU code</label><input id="recv-sku" placeholder="e.g. AST-0001" oninput="recvSkuLookup();scheduleRecvAutoAdd();" onkeydown="if(event.key==='Enter'){event.preventDefault();scheduleRecvAutoAdd();}"></div>
+      <div class="field" id="recv-asset-code-field" style="display:none;"><label>Asset Code(s)</label><textarea id="recv-asset-code" oninput="scheduleRecvAutoAdd()" placeholder="Scan or enter asset codes; one code per line"></textarea></div>
     </div>
     <div class="form-row" id="recv-ams-row" style="grid-template-columns:1fr;">
-      <div class="field" id="recv-ams-tagging-field" style="display:none;"><label>AMS Asset Tagging</label><input id="recv-ams-tagging" placeholder="Scan or type AMS tag(s); separate multiple tags with commas"></div>
+      <div class="field" id="recv-ams-tagging-field" style="display:none;"><label>AMS Asset Tagging</label><input id="recv-ams-tagging" oninput="scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}" placeholder="Scan or type AMS tag(s); separate multiple tags with commas"></div>
       <div class="field"><label>Item description</label><input id="recv-desc" class="autofill" disabled></div>
     </div>
-    <div class="form-row3">
+    <div class="form-row3" id="recv-meta-row">
       <div class="field"><label>Type of supply</label><input id="recv-type" class="autofill" disabled></div>
       <div class="field"><label>UOM</label><input id="recv-uom" class="autofill" disabled></div>
-      <div class="field" id="recv-qty-field"><label>Quantity received</label><input id="recv-qty" type="number" min="1" placeholder="0" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}"></div>
-      <div class="field" id="recv-derived-qty-field" style="display:none;"><label>Quantity from asset codes</label><input id="recv-derived-qty" class="autofill" value="0" disabled></div>
+      <div class="field" id="recv-qty-field"><label>Quantity received</label><input id="recv-qty" type="number" min="1" placeholder="0" oninput="scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem(true);}"></div>
     </div>
     <div id="recv-sku-hint" class="hint"></div>
-    <div class="footer-actions" style="margin-top:6px;">
-      <button class="btn" onclick="scanReceive()">&#128247; Scan to add</button>
-      <button class="btn btn-amber" onclick="addRecvItem()">+ Add to batch</button>
-    </div>
 
     <div class="section-title">Items in this delivery</div>
     <div id="recv-items-table"></div>
 
     <div class="section-title">Delivery details</div>
     <div class="form-row">
-      <div class="field"><label>From (supplier / source)</label><select id="recv-from">${DB.suppliers.length ? DB.suppliers.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('') : '<option value="">No suppliers set up — add one in Settings &rarr; Supplier</option>'}</select></div>
-      <div class="field"><label>Transmittal / delivery receipt</label>
-        <input type="file" id="recv-file">
+      <div class="field"><label>From (supplier / source) <span class="required">*</span></label><select id="recv-from" onchange="scheduleRecvAutoAdd()">${DB.suppliers.length ? '<option value="">Select a supplier</option>'+DB.suppliers.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('') : '<option value="">No suppliers set up — add one in Settings &rarr; Supplier</option>'}</select></div>
+      <div class="field"><label>Transmittal / delivery receipt <span class="required">*</span></label>
+        <input type="file" id="recv-file" required onchange="scheduleRecvAutoAdd()">
         <div class="hint">Attach the delivery receipt or transmittal document — applied to every item in this batch.</div>
       </div>
     </div>
-    <div class="footer-actions">
+    <div class="footer-actions" id="recv-batch-actions" style="display:none;">
       <button class="btn" onclick="recvDraftItems=[];refreshRecvItemsTable();">Clear batch</button>
       <button class="btn btn-primary" onclick="submitReceiving()">Receive batch</button>
     </div>
@@ -2787,12 +2783,10 @@ function recvSkuLookup(){
   document.getElementById('recv-sku-row').style.gridTemplateColumns = isAsset ? 'repeat(2,minmax(0,1fr))' : '1fr';
   document.getElementById('recv-ams-row').style.gridTemplateColumns = isAsset ? 'repeat(2,minmax(0,1fr))' : '1fr';
   document.getElementById('recv-qty-field').style.display = isAsset ? 'none' : '';
-  document.getElementById('recv-derived-qty-field').style.display = isAsset ? '' : 'none';
+  document.getElementById('recv-meta-row').style.gridTemplateColumns = isAsset ? 'repeat(2,minmax(0,1fr))' : 'repeat(3,minmax(0,1fr))';
   if(!isAsset){
     document.getElementById('recv-asset-code').value = '';
     document.getElementById('recv-ams-tagging').value = '';
-  } else {
-    updateRecvAssetQty();
   }
   const hintEl = document.getElementById('recv-sku-hint');
   if(hintEl) hintEl.innerHTML = info ? '' : (v?'SKU not found in master list.':'');
@@ -2810,37 +2804,33 @@ function recvAssetCodes(value){
 function recvAssetCodesOf(r){
   return r && Array.isArray(r.assetCodes) ? recvAssetCodes(r.assetCodes.join('\n')) : recvAssetCodes(r && r.assetCode || '');
 }
-function updateRecvAssetQty(){
-  const codeEl = document.getElementById('recv-asset-code');
-  const qtyEl = document.getElementById('recv-derived-qty');
-  if(codeEl && qtyEl) qtyEl.value = recvAssetCodes(codeEl.value).length;
+function scheduleRecvAutoAdd(){
+  clearTimeout(recvAutoAddTimer);
+  recvAutoAddTimer = setTimeout(()=>{
+    const info = skuInfo((document.getElementById('recv-sku')?.value||'').trim());
+    if(!info) return;
+    if(info.type==='Asset'){
+      const assetCodes = recvAssetCodes(document.getElementById('recv-asset-code').value);
+      const amsTags = document.getElementById('recv-ams-tagging').value.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean);
+      if(assetCodes.length && amsTags.length) addRecvItem(true);
+    } else if(Number(document.getElementById('recv-qty').value)>0){
+      addRecvItem(true);
+    }
+  }, 650);
 }
-function scanReceive(){
-  showModal(`
-    <h3>Simulated barcode / QR scan</h3>
-    <div class="field"><label>Enter the SKU code to scan</label><input id="scan-code-input" placeholder="e.g. CON-0002" onkeydown="if(event.key==='Enter')confirmScanReceive()"></div>
-    <div class="footer-actions">
-      <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="confirmScanReceive()">Scan</button>
-    </div>
-  `);
-  setTimeout(()=>{ const el=document.getElementById('scan-code-input'); if(el) el.focus(); }, 50);
-}
-function confirmScanReceive(){
-  const code = document.getElementById('scan-code-input').value.trim();
-  closeModal();
-  if(code){ document.getElementById('recv-sku').value = code; recvSkuLookup(); toast('Scanned '+code+'. Enter quantity and add to batch.'); }
-}
-function addRecvItem(){
+function addRecvItem(automatic=false){
   const sku = document.getElementById('recv-sku').value.trim();
   const info = skuInfo(sku);
-  if(!info){ toast('Enter a valid SKU code first.'); return; }
+  if(!info){ if(!automatic) toast('Enter a valid SKU code first.'); return; }
   const assetCodes = info.type==='Asset' ? recvAssetCodes(document.getElementById('recv-asset-code').value) : [];
   const qty = info.type==='Asset' ? assetCodes.length : Number(document.getElementById('recv-qty').value);
-  if(info.type==='Asset' && assetCodes.length===0){ toast('Enter at least one Asset Code. Quantity is based on the asset codes entered.'); return; }
-  if(!qty || qty<=0){ toast('Enter a quantity greater than 0.'); return; }
+  if(info.type==='Asset' && assetCodes.length===0){ if(!automatic) toast('Enter at least one Asset Code.'); return; }
+  if(!qty || qty<=0){ if(!automatic) toast('Enter a quantity greater than 0.'); return; }
   const assetCode = info.type==='Asset' ? document.getElementById('recv-asset-code').value.trim() : '';
   const amsTags = info.type==='Asset' ? document.getElementById('recv-ams-tagging').value.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean) : [];
+  if(info.type==='Asset' && amsTags.length===0){ if(!automatic) toast('Enter an AMS Asset Tag.'); return; }
+  clearTimeout(recvAutoAddTimer);
+  recvAutoAddTimer = null;
   recvDraftItems.push({sku:info.sku, description:info.description, type:info.type, uom:info.uom, qty, assetCode, assetCodes, amsTags});
   document.getElementById('recv-sku').value=''; document.getElementById('recv-desc').value=''; document.getElementById('recv-type').value=''; document.getElementById('recv-uom').value=''; document.getElementById('recv-qty').value='';
   document.getElementById('recv-asset-code').value=''; document.getElementById('recv-ams-tagging').value='';
@@ -2848,11 +2838,14 @@ function addRecvItem(){
   const hintEl = document.getElementById('recv-sku-hint'); if(hintEl) hintEl.innerHTML='';
   refreshRecvItemsTable();
   const skuEl = document.getElementById('recv-sku'); if(skuEl) skuEl.focus();
+  if(automatic) toast(info.type==='Asset'?'Tagged asset added to delivery batch.':'Consumable added to delivery batch.');
 }
 function removeRecvItem(i){ recvDraftItems.splice(i,1); refreshRecvItemsTable(); }
 function refreshRecvItemsTable(){
   const el = document.getElementById('recv-items-table');
   if(!el) return;
+  const actions = document.getElementById('recv-batch-actions');
+  if(actions) actions.style.display = recvDraftItems.length ? '' : 'none';
   if(recvDraftItems.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#8615;</div>No items added yet.</div>'; return; }
   el.innerHTML = '<div class="line-items">' +
     '<div class="li-row li-head"><span>SKU / Asset details</span><span>Description</span><span>Type</span><span>Qty</span><span></span></div>' +
@@ -2873,6 +2866,7 @@ async function submitReceiving(){
   const fileEl = document.getElementById('recv-file');
   const file = fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
   if(!from){ toast('Select a supplier — add one in Settings → Supplier if the list is empty.'); return; }
+  if(!file){ toast('Attach the transmittal / delivery receipt before receiving this batch.'); return; }
   if(file && file.size > 4*1024*1024){ toast('Transmittal file is too large (max 4MB).'); return; }
   let transmittalFile = '';
   if(file){
@@ -2930,12 +2924,12 @@ function openEditReceiving(id){
   showModal(`
     <h3>Edit receiving record</h3>
     <div class="card-sub mono">${esc(r.id)} &middot; ${esc(r.sku)} &middot; ${esc(r.description)}</div>
-    <div class="form-row" style="margin-top:14px;">
+    <div class="form-row" style="margin-top:14px;${r.type==='Asset'?'grid-template-columns:1fr;':''}">
       <div class="field"><label>From (Supplier)</label><select id="edit-recv-from">${DB.suppliers.map(s=>`<option ${s===r.from?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
-      ${r.type==='Asset'?`<div class="field"><label>Quantity from asset codes</label><input id="edit-recv-derived-qty" class="autofill" value="${recvAssetCodesOf(r).length||Number(r.qty)||0}" disabled></div>`:`<div class="field"><label>Quantity</label><input type="number" min="0" id="edit-recv-qty" value="${r.qty}"></div>`}
+      ${r.type==='Asset'?'':`<div class="field"><label>Quantity</label><input type="number" min="0" id="edit-recv-qty" value="${r.qty}"></div>`}
     </div>
     ${r.type==='Asset'?`<div class="form-row">
-      <div class="field"><label>Asset Code(s)</label><textarea id="edit-recv-asset-codes" oninput="document.getElementById('edit-recv-derived-qty').value=recvAssetCodes(this.value).length" placeholder="One code per line">${esc(recvAssetCodesOf(r).join('\n'))}</textarea><div class="hint">Quantity is calculated from the number of asset codes. Legacy records without codes keep their recorded quantity until codes are entered.</div></div>
+      <div class="field"><label>Asset Code(s)</label><textarea id="edit-recv-asset-codes" placeholder="One code per line">${esc(recvAssetCodesOf(r).join('\n'))}</textarea><div class="hint">Quantity is calculated from the number of asset codes. Legacy records without codes keep their recorded quantity until codes are entered.</div></div>
       <div class="field"><label>AMS Asset Tagging</label><input id="edit-recv-ams-tagging" value="${esc((Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', '))}" placeholder="Separate multiple tags with commas"></div>
     </div>`:`<div class="form-row"><div class="field"><label>AMS Asset Tagging</label><input id="edit-recv-ams-tagging" value="${esc((Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', '))}" placeholder="Separate multiple tags with commas"></div></div>`}
     <div class="hint">Changing the quantity will adjust current stock for ${esc(r.sku)} by the difference.</div>
