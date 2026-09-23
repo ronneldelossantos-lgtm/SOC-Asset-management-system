@@ -2871,7 +2871,7 @@ async function submitReceiving(){
   let transmittalFile = '';
   if(file){
     try{ transmittalFile = await readFileAsDataURL(file); }
-    catch(e){ console.error('File read error', e); toast('Could not read the attached file — receiving without it.'); }
+    catch(e){ console.error('File read error', e); toast('Could not read the attached transmittal — batch was not received.'); return; }
   }
   const date = nowISO();
   const ids = [];
@@ -4399,23 +4399,20 @@ function renderSettings(){
 }
 function settingsSkuHtml(){
   return `<div class="card">
-    <div class="list-head"><h3>Add SKU code</h3>${importBtn('importSkuCsv', 'SKU, Description, Type (Asset/Consumable), UOM, Qty (optional), PM (optional: Yes/No, assets only)')}</div>
+    <div class="list-head"><h3>Add SKU code</h3>${importBtn('importSkuCsv', 'SKU, Description, Type (Asset/Consumable), UOM, PM (optional: Yes/No, assets only)')}</div>
     <div class="form-row3">
       <div class="field"><label>SKU code</label><input id="new-sku-code" placeholder="e.g. CON-0006"></div>
       <div class="field"><label>Item description</label><input id="new-sku-desc" placeholder="Item name"></div>
-      <div class="field"><label>Type</label><select id="new-sku-type" onchange="toggleNewSkuQty()"><option>Asset</option><option>Consumable</option></select></div>
+      <div class="field"><label>Type</label><select id="new-sku-type" onchange="toggleNewSkuType()"><option>Asset</option><option>Consumable</option></select></div>
     </div>
-    <div class="form-row3">
+    <div class="form-row">
       <div class="field"><label>UOM</label><input id="new-sku-uom" placeholder="e.g. pc, ream, unit"></div>
-      <div class="field"><label>Initial on-hand qty</label><input id="new-sku-qty" type="number" min="0" value="0">
-        <div class="hint" id="new-sku-qty-hint" style="display:none;">Consumables must start at 0 — bring in stock through Receiving.</div>
-      </div>
       <div class="field"><label>Preventive maintenance (PM)</label>
         <select id="new-sku-pm"><option value="No">No</option><option value="Yes">Yes — asset needs PM</option></select>
         <div class="hint">Assets only. PM assets get a weekly count and a PM checklist under Repair &amp; Maintenance.</div>
       </div>
     </div>
-    <div class="hint">Or import several at once — <b>Import CSV</b> above accepts columns: SKU, Description, Type, UOM, Qty (optional; ignored for consumables), PM (optional Yes/No; assets only).</div>
+    <div class="hint">Stock starts at 0 and is added through Receiving. Or import several at once — <b>Import CSV</b> above accepts columns: SKU, Description, Type, UOM, PM (optional Yes/No; assets only).</div>
     <div class="footer-actions"><button class="btn btn-primary" onclick="addSku()">Add SKU</button></div>
   </div>
   <div class="card">
@@ -4461,17 +4458,17 @@ function openEditSku(sku){
     <div class="card-sub mono">${esc(sku)}</div>
     <div class="field"><label>Item description</label><input id="edit-sku-desc" value="${esc(info.description)}"></div>
     <div class="field"><label>Type</label>
-      <select id="edit-sku-type">
+      <select id="edit-sku-type" onchange="toggleEditSkuPm()">
         <option value="Asset" ${info.type==='Asset'?'selected':''}>Asset</option>
         <option value="Consumable" ${info.type==='Consumable'?'selected':''}>Consumable</option>
       </select>
     </div>
     <div class="field"><label>UOM</label><input id="edit-sku-uom" value="${esc(info.uom)}"></div>
     <div class="field"><label>Preventive maintenance (PM)</label>
-      <select id="edit-sku-pm"><option value="No">No</option><option value="Yes" ${info.pm?'selected':''}>Yes — asset needs PM</option></select>
+      <select id="edit-sku-pm" ${info.type==='Consumable'?'disabled':''}><option value="No">No</option><option value="Yes" ${info.pm?'selected':''}>Yes — asset needs PM</option></select>
       <div class="hint">Assets only — ignored if the type is Consumable.</div>
     </div>
-    <div class="field"><label>On-hand quantity${session.role==='admin'?` <span class="small-note">(for ${esc(adminViewSoc||'All SOCs — shared bucket')})</span>`:''}</label><input id="edit-sku-qty" type="number" min="0" value="${stockOf(sku)}"></div>
+    <div class="hint">On-hand stock is read-only here. Use Receiving to add stock.</div>
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveSkuEdit('${esc(sku)}')">Save changes</button>
@@ -4488,36 +4485,34 @@ async function saveSkuEdit(sku){
   info.type = document.getElementById('edit-sku-type').value;
   info.uom = uom;
   info.pm = (info.type==='Asset' && document.getElementById('edit-sku-pm').value==='Yes');
-  setStock(sku, Number(document.getElementById('edit-sku-qty').value)||0, currentSoc());
   await saveDB();
   closeModal();
   toast('SKU '+sku+' updated.');
   renderSettings();
 }
-function toggleNewSkuQty(){
+function toggleNewSkuType(){
   const isConsumable = document.getElementById('new-sku-type').value === 'Consumable';
-  const qtyEl = document.getElementById('new-sku-qty');
-  const hint = document.getElementById('new-sku-qty-hint');
-  if(isConsumable){ qtyEl.value = 0; qtyEl.disabled = true; }
-  else{ qtyEl.disabled = false; }
-  if(hint) hint.style.display = isConsumable ? 'block' : 'none';
   const pmEl = document.getElementById('new-sku-pm');
   if(pmEl){ if(isConsumable){ pmEl.value = 'No'; pmEl.disabled = true; } else { pmEl.disabled = false; } }
+}
+function toggleEditSkuPm(){
+  const isAsset = document.getElementById('edit-sku-type').value === 'Asset';
+  const pmEl = document.getElementById('edit-sku-pm');
+  if(pmEl){ if(!isAsset) pmEl.value = 'No'; pmEl.disabled = !isAsset; }
 }
 async function addSku(){
   const sku = document.getElementById('new-sku-code').value.trim();
   const desc = document.getElementById('new-sku-desc').value.trim();
   const type = document.getElementById('new-sku-type').value;
   const uom = document.getElementById('new-sku-uom').value.trim();
-  const qty = type==='Consumable' ? 0 : (Number(document.getElementById('new-sku-qty').value)||0);
   if(!sku || !desc || !uom){ toast('Fill out SKU code, description, and UOM.'); return; }
   if(skuInfo(sku)){ toast('That SKU code already exists.'); return; }
   const pm = type==='Asset' && document.getElementById('new-sku-pm').value==='Yes';
   DB.sku.push({sku, description:desc, type, uom, assetCondition: type==='Asset' ? 'Repairable' : undefined, pm, safetyStockDays: 7});
-  setStock(sku, qty, currentSoc());
+  setStock(sku, 0, currentSoc());
   DB.reorderPoint[sku] = 0;
   await saveDB();
-  toast('SKU '+sku+' added'+(type==='Consumable'?' — starts at 0 on-hand; receive stock via Receiving.':(pm?' — flagged for PM; build its checklist under PM Checklist.':'.')));
+  toast('SKU '+sku+' added — starts at 0 on-hand; receive stock via Receiving.'+(pm?' Flagged for PM; build its checklist under PM Checklist.':''));
   renderSettings();
 }
 function deleteSku(sku){
@@ -4538,14 +4533,12 @@ async function importSkuCsv(inputEl){
     const desc = csvField(row, ['Description','Item Description']).trim();
     let type = csvField(row, ['Type']).trim();
     const uom = csvField(row, ['UOM']).trim();
-    const qtyRaw = csvField(row, ['Qty','Quantity','On Hand','Initial on-hand qty']).trim();
     const pmRaw = csvField(row, ['PM','Preventive Maintenance','For PM']).trim();
     type = /^asset$/i.test(type) ? 'Asset' : (/^consumable$/i.test(type) ? 'Consumable' : '');
     if(!sku || !desc || !type || !uom || skuInfo(sku)){ skipped++; return; }
-    const qty = type==='Consumable' ? 0 : (Number(qtyRaw)||0);
     const pm = type==='Asset' && /^(y|yes|true|1)$/i.test(pmRaw);
     DB.sku.push({sku, description:desc, type, uom, assetCondition: type==='Asset' ? 'Repairable' : undefined, pm, safetyStockDays: 7});
-    setStock(sku, qty, currentSoc());
+    setStock(sku, 0, currentSoc());
     DB.reorderPoint[sku] = 0;
     added++;
   });
