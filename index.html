@@ -242,7 +242,8 @@ tr:last-child td{border-bottom:none;}
 .modal h3{margin-bottom:4px;}
 .modal .close{position:absolute;}
 .pill-row{display:flex;gap:8px;flex-wrap:wrap;}
-.pill{padding:6px 12px;border-radius:20px;border:1px solid var(--border);font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;}
+.pill{padding:6px 12px;border-radius:20px;border:1px solid var(--border);background:#fff;font-family:var(--sans);font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;}
+.pill:disabled{opacity:.45;cursor:not-allowed;}
 .pill.active{background:var(--navy);color:#fff;border-color:var(--navy);}
 .stat-inline{display:flex;gap:8px;align-items:baseline;}
 .select-tag select{appearance:none;}
@@ -6040,7 +6041,7 @@ function exportCageCycleCounts(){
 function renderITAssets(){
   const c = document.getElementById('content');
   const tab = subroute || 'scan';
-  if(tab==='scan'){ pdaActiveMode = null; pdaModalTarget = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnInProgress = false; }
+  if(tab==='scan' && !pdaBorrowInProgress && !pdaReturnInProgress){ pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null; }
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='log'?'active':''}" onclick="navigate('itassets','log')">Dashboard</div>
@@ -6051,7 +6052,15 @@ function renderITAssets(){
   `;
   const map = {scan: pdaScanHtml, masterlist: pdaMasterlistHtml, log: pdaDashboardHtml};
   document.getElementById('pda-body').innerHTML = (map[tab]||pdaScanHtml)();
-  if(tab==='scan'){ setTimeout(()=>{ const el=document.getElementById('pda-scan-input'); if(el) el.focus(); }, 50); }
+  if(tab==='scan'){
+    if(pdaBorrowInProgress || pdaReturnInProgress){
+      const scanEl = document.getElementById('pda-scan-input');
+      const opsEl = document.getElementById('pda-ops-input');
+      if(scanEl) scanEl.disabled = true;
+      if(opsEl) opsEl.disabled = true;
+      setPdaScanStatus('Saving the current PDA scan. Please wait.', 'active');
+    }else setTimeout(()=>{ const el=document.getElementById('pda-scan-input'); if(el) el.focus(); }, 50);
+  }
 }
 function pdaStatusTag(s){ return s==='Borrowed' ? '<span class="tag tag-pending">Borrowed</span>' : '<span class="tag tag-ok">Available</span>'; }
 // The 3-tier condition scale used on return — captured on the PDA log entry and
@@ -6094,7 +6103,7 @@ function pdaScanHtml(){
   const borrowed = socFilter(DB.pdas).filter(p=>p.status==='Borrowed');
   return `<div class="card">
     <h3>Scan device</h3>
-    <div class="card-sub">Scan the serial number first. An available device jumps straight to Ops ID and is issued automatically — no buttons to press. A borrowed device skips Ops ID entirely — a pop-up asks for the condition it came back in, and clicking one records the return.</div>
+    <div class="card-sub">Scan the serial number. For an issue, scan the borrower's Ops ID. For a return, scan the returner's Ops ID in the prompt; the condition choices unlock after a valid match.</div>
     <div class="field scan-field">
       <label>Serial number</label>
       <input id="pda-scan-input" placeholder="Scan or type serial number" oninput="onPdaScanInput()" onkeydown="if(event.key==='Enter')processPdaScan()">
@@ -6102,9 +6111,9 @@ function pdaScanHtml(){
     </div>
     <div class="scan-divider"></div>
     <div class="field scan-field">
-      <label>Ops ID</label>
+      <label>Borrower's Ops ID</label>
       <input id="pda-ops-input" placeholder="Scan or type Ops ID" oninput="pdaOpsInputHandler()" disabled>
-      <div class="hint" id="pda-ops-status">Needed only after a serial number is scanned.</div>
+      <div class="hint" id="pda-ops-status">Needed after scanning an available PDA.</div>
     </div>
     <div id="pda-active-session"></div>
   </div>
@@ -6124,11 +6133,13 @@ function pdaBorrowedTableHtml(){
     return {p, log};
   }).sort((a,b)=> new Date(b.log?b.log.borrowedAt:0) - new Date(a.log?a.log.borrowedAt:0));
   if(rows.length===0) return '<div class="empty"><div class="ic">&#128241;</div>No PDAs currently out.</div>';
-  return '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition</th><th>Borrowed by</th><th>Agency / Dept</th><th>Since</th></tr>' +
+  return '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition at issue</th><th>Borrower Ops ID</th><th>Full name</th><th>Agency</th><th>Department</th><th>Since</th></tr>' +
     rows.map(({p,log})=>`<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td>
-      <td>${pdaConditionTag(p.condition)}</td>
-      <td>${log?esc(log.borrowerName)+' <span class="small-note">('+esc(log.opsId)+')</span>':'—'}</td>
-      <td>${log?esc(log.borrowerAgency||'—')+' / '+esc(log.borrowerDepartment||'—'):'—'}</td>
+      <td>${pdaConditionTag(log && log.conditionOnBorrow ? log.conditionOnBorrow : p.condition)}</td>
+      <td class="mono">${log?esc(log.opsId||'—'):'—'}</td>
+      <td>${log?esc(log.borrowerName||'—'):'—'}</td>
+      <td>${log?esc(log.borrowerAgency||'—'):'—'}</td>
+      <td>${log?esc(log.borrowerDepartment||'—'):'—'}</td>
       <td>${log?fmtDateTime(log.borrowedAt):'—'}</td></tr>`).join('') + '</table></div>';
 }
 // Lightweight live refresh for the PDA Issuance (scan) tab: updates just the
@@ -6185,46 +6196,59 @@ function processPdaScan(){
   if(!pda){ setPdaScanStatus('That serial number isn\'t in the PDA masterlist — add it there first.', 'error'); return; }
   el.disabled = true;
   pdaModalTarget = DB.pdas.indexOf(pda);
+  pdaModalIdentity = {pdaNo:pda.pdaNo, soc:pda.soc};
   pdaActiveMode = pda.status==='Borrowed' ? 'return' : 'borrow';
   pdaReturnTopChoice = '';
   pdaReturnCondition = '';
+  pdaReturnEmployee = null;
   const opsEl = document.getElementById('pda-ops-input');
   if(pdaActiveMode==='borrow'){
     if(opsEl){ opsEl.disabled = false; opsEl.value = ''; }
     setPdaScanStatus(pda.pdaNo+' found — available. Enter Ops ID to issue it.', 'active');
     setPdaOpsStatus('Scan or type the borrower\'s Ops ID — issues automatically on match.', 'active');
   } else {
-    // Returns no longer ask for an Ops ID — the device is identified by its
-    // serial and the borrower is already on the open borrow log, so the only
-    // thing still needed is the condition it came back in.
+    // The returner enters their Ops ID in the return prompt before the
+    // condition controls are enabled.
     if(opsEl){ opsEl.disabled = true; opsEl.value = ''; }
-    setPdaScanStatus(pda.pdaNo+' found — currently borrowed. Pick its condition in the pop-up to return it.', 'active');
-    setPdaOpsStatus('Not needed for returns — just pick the condition in the pop-up.');
+    setPdaScanStatus(pda.pdaNo+' found — currently borrowed. Enter the returner\'s Ops ID in the prompt.', 'active');
+    setPdaOpsStatus('Returner Ops ID is required before selecting a condition.');
   }
   renderPdaActiveSession();
   if(pdaActiveMode==='return') openPdaReturnModal();
   if(pdaActiveMode==='borrow' && opsEl) opsEl.focus();
 }
 let pdaModalTarget = null; // index into DB.pdas — kept as an index (not the PDA #) since PDA numbers can now repeat across different SOCs
+let pdaModalIdentity = null; // stable key for the active scan, even if a live refresh changes PDA array indexes
 let pdaActiveMode = null; // 'borrow' | 'return' | null — which inline panel is open under the serial field
+let pdaBorrowInProgress = false;
 let pdaReturnTopChoice = ''; // '' | 'Good' | 'Damaged' — nothing preselected, the operator must choose
 let pdaReturnCondition = ''; // final condition key saved: 'Good', 'DamagedWorking', or 'DamagedNotWorking'
+let pdaReturnEmployee = null; // validated Ops ID directory entry for the person processing the return
+function pdaActiveTarget(){
+  if(pdaModalIdentity) return DB.pdas.find(p=>p.pdaNo===pdaModalIdentity.pdaNo && p.soc===pdaModalIdentity.soc) || null;
+  return pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
+}
 function pdaActiveSessionHeader(){
-  const pda = pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
+  const pda = pdaActiveTarget();
   if(!pda) return '';
   return esc(pda.pdaNo) + (pda.serial ? ' <span class="small-note">('+esc(pda.serial)+')</span>' : '');
 }
-// Returns don't collect an Ops ID any more, so instead of empty auto-fill
-// boxes the panel shows who the open borrow log says has the device — read
-// only, purely so the operator can sanity-check they scanned the right unit.
+function pdaOpenBorrowLog(){
+  const pda = pdaActiveTarget();
+  return pda ? DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pda.pdaNo && l.soc===pda.soc && l.status==='Borrowed') : null;
+}
 function pdaReturnBorrowerInfoHtml(){
-  const pda = pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
+  const pda = pdaActiveTarget();
   if(!pda) return '';
-  const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pda.pdaNo && l.soc===pda.soc && l.status==='Borrowed');
-  if(!log) return '';
+  const log = pdaOpenBorrowLog();
+  const conditionBeforeIssue = log && log.conditionOnBorrow ? log.conditionOnBorrow : pda.condition;
+  if(!log) return `<div class="field"><label>Condition before this issue</label><div>${pdaConditionTag(conditionBeforeIssue)}</div><div class="hint hint-error">No open borrow log was found. Refresh before completing this return.</div></div>`;
   return `<div class="field"><label>Borrowed by</label>
-    <input class="autofill" disabled value="${esc(log.borrowerName||'—')}${log.opsId?' ('+esc(log.opsId)+')':''} · ${esc(log.borrowerAgency||'—')} / ${esc(log.borrowerDepartment||'—')}">
+    <div class="autofill" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;">${esc(log.borrowerName||'—')} · ${esc(log.opsId||'—')} · ${esc(log.borrowerAgency||'—')} / ${esc(log.borrowerDepartment||'—')}</div>
     <div class="hint">Since ${esc(fmtDateTime(log.borrowedAt))}</div>
+  </div>
+  <div class="field"><label>Condition before this issue</label><div>${pdaConditionTag(conditionBeforeIssue)}</div>
+    <div class="hint">This is the recorded condition when this borrow was issued. Choose the condition the PDA has now below.</div>
   </div>`;
 }
 function renderPdaActiveSession(){
@@ -6239,27 +6263,31 @@ function renderPdaActiveSession(){
         <div class="field"><label>Agency</label><input id="pda-borrow-agency" class="autofill" disabled></div>
       </div>
       <div class="field"><label>Department</label><input id="pda-borrow-dept" class="autofill" disabled></div>
-      <div class="footer-actions"><button class="btn" onclick="cancelPdaActiveSession()">Cancel</button></div>
+      <div class="footer-actions"><button class="btn" id="pda-borrow-cancel" onclick="cancelPdaActiveSession()">Cancel</button></div>
     `;
   } else if(pdaActiveMode==='return'){
-    // The return condition is asked for in a pop-up (see openPdaReturnModal),
-    // so nothing is drawn inline under the scan field for returns.
+    // Returner validation and condition selection are shown in the modal.
     el.innerHTML = '';
   } else {
     el.innerHTML = '';
   }
 }
-// Scanning a borrowed device pops this up immediately: the processor just
-// clicks the condition and the return records itself. Good closes it out on
-// the spot; Damaged swaps in the two kind-of-damage choices.
+// Scanning a borrowed device opens this prompt. A valid returner Ops ID must
+// be entered before the condition buttons become available.
 function openPdaReturnModal(){
+  pdaReturnEmployee = null;
   showModal(`
     <div class="list-head" style="margin-bottom:6px;">
       <h3 style="margin:0;">Returning ${pdaActiveSessionHeader()}</h3>
       <button class="btn btn-sm" onclick="cancelPdaActiveSession()">Close</button>
     </div>
-    <div class="card-sub" style="margin-bottom:12px;">No Ops ID needed — click the condition it came back in and the return is recorded.</div>
+    <div class="card-sub" style="margin-bottom:12px;">Identify the person processing the return, review the condition before issue, then select the condition now.</div>
     ${pdaReturnBorrowerInfoHtml()}
+    <div class="field"><label>Returner's Ops ID <span style="color:var(--danger);">*</span></label>
+      <input id="pda-return-ops-input" placeholder="Scan or type Ops ID" autocomplete="off" oninput="pdaReturnOpsLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();pdaReturnOpsLookup();}">
+      <div class="hint" id="pda-return-ops-status">A valid Ops ID is required to continue.</div>
+      <div id="pda-return-employee-details"></div>
+    </div>
     <div id="pda-return-condition-wrap">${pdaReturnConditionSectionHtml()}</div>
     <div class="footer-actions">
       <button class="btn" onclick="cancelPdaActiveSession()">Cancel</button>
@@ -6270,17 +6298,19 @@ function openPdaReturnModal(){
   // at the full cancel instead so clicking away resets the scan properly.
   const bg = document.querySelector('#modal-root .modal-bg');
   if(bg) bg.setAttribute('onclick', 'if(event.target===this)cancelPdaActiveSession()');
+  setTimeout(()=>{ const input=document.getElementById('pda-return-ops-input'); if(input) input.focus(); }, 30);
 }
 function cancelPdaActiveSession(){
+  if(pdaBorrowInProgress || pdaReturnInProgress) return;
   closeModal(); // shuts the return pop-up if it's the thing being cancelled
-  pdaActiveMode = null; pdaModalTarget = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnInProgress = false;
+  pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null;
   renderPdaActiveSession();
   const serialEl = document.getElementById('pda-scan-input');
   if(serialEl){ serialEl.disabled = false; serialEl.value=''; serialEl.focus(); }
   const opsEl = document.getElementById('pda-ops-input');
   if(opsEl){ opsEl.disabled = true; opsEl.value=''; }
   setPdaScanStatus('Waiting for a serial number.');
-  setPdaOpsStatus('Needed only after a serial number is scanned.');
+  setPdaOpsStatus('Needed after scanning an available PDA.');
 }
 // Fires on every keystroke in the shared Ops ID field — routes to the borrow or
 // return lookup depending on which mode the scanned serial opened.
@@ -6292,12 +6322,31 @@ function pdaBorrowOpsLookup(){
   if(!el) return;
   const opsIdRaw = el.value.trim();
   const emp = empInfo(opsIdRaw);
-  document.getElementById('pda-borrow-name').value = emp?emp.fullName:'';
-  document.getElementById('pda-borrow-agency').value = emp?(emp.agency||'—'):'';
-  document.getElementById('pda-borrow-dept').value = emp?emp.department:'';
+  const nameEl = document.getElementById('pda-borrow-name');
+  const agencyEl = document.getElementById('pda-borrow-agency');
+  const deptEl = document.getElementById('pda-borrow-dept');
+  if(nameEl) nameEl.value = emp?emp.fullName:'';
+  if(agencyEl) agencyEl.value = emp?(emp.agency||'—'):'';
+  if(deptEl) deptEl.value = emp?emp.department:'';
+  if(opsIdRaw && !emp) setPdaOpsStatus('Ops ID not found. Check the ID or update the Ops ID Directory.');
+  else if(emp) setPdaOpsStatus('Ops ID matched — issuing to '+emp.fullName+'.', 'active');
   if(emp && opsIdRaw.toUpperCase()===emp.opsId.toUpperCase()){
     confirmPdaBorrow(); // full Ops ID match — record as borrowed automatically, no extra click
   }
+}
+function newPdaLogId(){
+  const randomPart = window.crypto && typeof window.crypto.randomUUID==='function'
+    ? window.crypto.randomUUID().replace(/-/g,'').toUpperCase()
+    : Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);
+  const id = 'PL-'+Date.now().toString(36).toUpperCase()+'-'+randomPart;
+  return DB.pdaLogs.some(l=>l.id===id) ? newPdaLogId() : id;
+}
+function restorePdaSectionsAfterFailedSave(){
+  ['pdas','pdaLogs'].forEach(k=>{
+    const snapshot = lastKnownSnapshot[k];
+    DB[k] = snapshot ? JSON.parse(snapshot) : defaultDB()[k];
+  });
+  migrateDB();
 }
 // Multiple accounts on the same SOC scan against this same shared PDA list at
 // once, so a plain saveDB() here isn't safe: on a save conflict it would
@@ -6309,20 +6358,27 @@ function pdaBorrowOpsLookup(){
 // each time so it either applies exactly once or backs off cleanly if
 // someone else's scan already claimed the device first.
 async function confirmPdaBorrow(){
-  const pda = pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
+  if(pdaBorrowInProgress) return;
+  const pda = pdaActiveTarget();
   const opsIdEl = document.getElementById('pda-ops-input');
-  if(!pda || !opsIdEl) return;
+  if(!pda){ toast('This PDA record changed while you were scanning. Scan it again.'); cancelPdaActiveSession(); refreshPdaLiveSections(); return; }
+  if(!opsIdEl) return;
   const opsId = opsIdEl.value.trim();
   const emp = empInfo(opsId);
   if(!opsId || !emp) return;
+  pdaBorrowInProgress = true;
+  opsIdEl.disabled = true;
+  const cancelEl = document.getElementById('pda-borrow-cancel');
+  if(cancelEl) cancelEl.disabled = true;
   const pdaNo = pda.pdaNo, soc = pda.soc;
-  const logId = nextCode('PL','pl');
+  const logId = newPdaLogId();
   const applyBorrow = ()=>{
     const target = DB.pdas.find(p=>p.pdaNo===pdaNo && p.soc===soc);
     if(!target || target.status==='Borrowed') return false; // already taken — by us or by someone else's scan
     if(!DB.pdaLogs.some(l=>l.id===logId)){
       DB.pdaLogs.push({
         id: logId, pdaNo, opsId, borrowerName: emp.fullName, borrowerAgency: emp.agency||'', borrowerDepartment: emp.department||'',
+        conditionOnBorrow: target.condition||'Good',
         borrowedAt: nowISO(), returnedAt:'', returnedByOpsId:'', returnedByName:'', returnedByAgency:'', returnedByDepartment:'',
         conditionOnReturn:'', remarks:'', irFile:'', irFileData:'', status:'Borrowed', soc
       });
@@ -6331,33 +6387,38 @@ async function confirmPdaBorrow(){
     return true;
   };
   if(!applyBorrow()){
+    pdaBorrowInProgress = false;
     toast(pdaNo+' was just borrowed by someone else — pick another device.');
-    pdaActiveMode = null; pdaModalTarget = null;
-    renderITAssets();
+    pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null;
+    navigate(route, subroute);
     return;
   }
   let claimedByOther = false;
   const ok = await saveDBWithRetry(()=>{
     if(!applyBorrow()) claimedByOther = true; // fresh synced data shows someone else already borrowed it first
   });
-  pdaActiveMode = null; pdaModalTarget = null;
+  if(!ok) restorePdaSectionsAfterFailedSave();
+  pdaBorrowInProgress = false;
+  pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null;
   if(ok && !claimedByOther) toast(pdaNo+' issued to '+emp.fullName+'.');
   else if(claimedByOther) toast(pdaNo+' was just borrowed by someone else — your scan was not saved.');
-  renderITAssets();
+  navigate(route, subroute);
 }
 function pdaReturnConditionSectionHtml(){
+  const canConfirm = !!pdaReturnEmployee && !!pdaOpenBorrowLog();
+  const disabled = canConfirm ? '' : 'disabled';
   return `
     <div class="field"><label>Condition on return</label>
       <div class="pill-row" id="pda-return-top-pills">
-        <div class="pill ${pdaReturnTopChoice==='Good'?'active':''}" data-top="Good" onclick="pickPdaReturnTopChoice('Good')">Good condition</div>
-        <div class="pill ${pdaReturnTopChoice==='Damaged'?'active':''}" data-top="Damaged" onclick="pickPdaReturnTopChoice('Damaged')">Damaged</div>
+        <button class="pill ${pdaReturnTopChoice==='Good'?'active':''}" type="button" data-top="Good" ${disabled} onclick="pickPdaReturnTopChoice('Good')">Good condition</button>
+        <button class="pill ${pdaReturnTopChoice==='Damaged'?'active':''}" type="button" data-top="Damaged" ${disabled} onclick="pickPdaReturnTopChoice('Damaged')">Damaged</button>
       </div>
-      <div class="hint">Good condition records the return straight away. Damaged asks which kind first.</div>
+      <div class="hint">${!pdaOpenBorrowLog()?'This PDA is no longer marked as borrowed. Refresh the scan before returning it.':(canConfirm?'Selecting a condition records the return.':'Enter a valid returner Ops ID to enable the condition choices.')}</div>
     </div>
     <div id="pda-return-damaged-wrap" style="display:${pdaReturnTopChoice==='Damaged'?'block':'none'};">
       <div class="field"><label>Kind of damage</label>
         <div class="pill-row" id="pda-return-pills">
-          ${PDA_CONDITIONS.filter(cd=>cd.key!=='Good').map(cd=>`<div class="pill ${pdaReturnCondition===cd.key?'active':''}" data-cond="${cd.key}" onclick="pickPdaReturnSubCondition('${cd.key}')">${esc(cd.label)}</div>`).join('')}
+          ${PDA_CONDITIONS.filter(cd=>cd.key!=='Good').map(cd=>`<button class="pill ${pdaReturnCondition===cd.key?'active':''}" type="button" data-cond="${cd.key}" ${disabled} onclick="pickPdaReturnSubCondition('${cd.key}')">${esc(cd.label)}</button>`).join('')}
         </div>
         <div class="hint">Picking one records the return immediately. An "Upload IR" button stays on the log entry until the Incident Report is attached.</div>
       </div>
@@ -6366,7 +6427,27 @@ function pdaReturnConditionSectionHtml(){
 }
 // Good records the return on the spot. Damaged only opens the second row of
 // pills — the return is recorded once one of those is clicked.
+function pdaReturnOpsLookup(){
+  if(pdaReturnInProgress) return;
+  const input = document.getElementById('pda-return-ops-input');
+  const status = document.getElementById('pda-return-ops-status');
+  const details = document.getElementById('pda-return-employee-details');
+  const raw = input ? input.value.trim() : '';
+  const emp = raw ? empInfo(raw) : null;
+  pdaReturnEmployee = pdaOpenBorrowLog() && emp && raw.toUpperCase()===String(emp.opsId||'').toUpperCase() ? emp : null;
+  pdaReturnTopChoice = ''; pdaReturnCondition = '';
+  if(status){
+    status.textContent = !pdaOpenBorrowLog() ? 'This PDA is no longer borrowed. Close this prompt and scan again.' : (pdaReturnEmployee ? 'Ops ID matched — condition choices are enabled.' : (raw ? 'Ops ID not found. Check the ID or update the Ops ID Directory.' : 'A valid Ops ID is required to continue.'));
+    status.className = 'hint'+(pdaReturnEmployee?' hint-active':(raw?' hint-error':''));
+  }
+  if(details) details.innerHTML = pdaReturnEmployee
+    ? `<div class="hint" style="margin-top:6px;"><strong>${esc(emp.fullName)}</strong> · ${esc(emp.agency||'—')} · ${esc(emp.department||'—')}</div>`
+    : '';
+  const wrap = document.getElementById('pda-return-condition-wrap');
+  if(wrap) wrap.innerHTML = pdaReturnConditionSectionHtml();
+}
 function pickPdaReturnTopChoice(choice){
+  if(!pdaReturnEmployee || pdaReturnInProgress) return;
   pdaReturnTopChoice = choice;
   pdaReturnCondition = choice==='Good' ? 'Good' : '';
   const wrap = document.getElementById('pda-return-condition-wrap');
@@ -6374,24 +6455,30 @@ function pickPdaReturnTopChoice(choice){
   if(choice==='Good') confirmPdaReturn();
 }
 function pickPdaReturnSubCondition(c){
+  if(!pdaReturnEmployee || pdaReturnInProgress) return;
   pdaReturnCondition = c;
   document.querySelectorAll('#pda-return-pills .pill').forEach(p=>p.classList.toggle('active', p.dataset.cond===c));
   confirmPdaReturn();
 }
-// The return completes the moment a condition is picked — no Ops ID, no
-// remarks, no Confirm click. Good records straight from the first pill;
-// Damaged records from whichever kind-of-damage pill is clicked.
+// The return completes when a condition is picked after a valid returner ID.
 let pdaReturnInProgress = false;
 async function confirmPdaReturn(){
-  if(pdaActiveMode!=='return' || pdaReturnInProgress) return;
-  const pda = pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
-  if(!pda) return;
+  if(pdaActiveMode!=='return' || pdaReturnInProgress || !pdaReturnEmployee) return;
+  const pda = pdaActiveTarget();
+  if(!pda){ toast('This PDA record changed while you were scanning. Scan it again.'); cancelPdaActiveSession(); refreshPdaLiveSections(); return; }
   const finalCondition = pdaReturnTopChoice==='Good' ? 'Good' : pdaReturnCondition;
   if(!finalCondition) return; // Damaged picked, but the kind isn't chosen yet
   const pdaNo = pda.pdaNo, soc = pda.soc;
   const log0 = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pdaNo && l.soc===soc && l.status==='Borrowed');
-  if(!log0) return;
+  if(!log0){ toast('This PDA was already returned by another scanner. Scan it again to refresh.'); cancelPdaActiveSession(); refreshPdaLiveSections(); return; }
+  const borrowLogId = log0.id;
+  const returner = {opsId:pdaReturnEmployee.opsId, name:pdaReturnEmployee.fullName, agency:pdaReturnEmployee.agency||'', department:pdaReturnEmployee.department||''};
   pdaReturnInProgress = true;
+  const returnOpsInput = document.getElementById('pda-return-ops-input');
+  if(returnOpsInput) returnOpsInput.disabled = true;
+  document.querySelectorAll('#modal-root button').forEach(button=>button.disabled=true);
+  const returnOpsStatus = document.getElementById('pda-return-ops-status');
+  if(returnOpsStatus){ returnOpsStatus.textContent = 'Recording return for '+returner.name+'…'; returnOpsStatus.className='hint hint-active'; }
   // Damaged returns are recorded right away with no IR attached — the log
   // entry (and the masterlist row) keeps its "Upload IR" pending button so the
   // report can be attached afterwards without holding up the scan queue.
@@ -6405,12 +6492,10 @@ async function confirmPdaReturn(){
   // or backs off if someone else already closed this same log out.
   const applyReturn = ()=>{
     const target = DB.pdas.find(p=>p.pdaNo===pdaNo && p.soc===soc);
-    const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pdaNo && l.soc===soc && l.status==='Borrowed');
+    const log = DB.pdaLogs.find(l=>l.id===borrowLogId && l.pdaNo===pdaNo && l.soc===soc && l.status==='Borrowed');
     if(!target || !log) return false;
     log.returnedAt = nowISO();
-    // No Ops ID is collected on return any more, so the "Returned by" columns
-    // stay blank — the borrower columns on the same row already say who had it.
-    log.returnedByOpsId = ''; log.returnedByName = ''; log.returnedByAgency = ''; log.returnedByDepartment = '';
+    log.returnedByOpsId = returner.opsId; log.returnedByName = returner.name; log.returnedByAgency = returner.agency; log.returnedByDepartment = returner.department;
     log.conditionOnReturn = finalCondition; log.status = 'Returned'; log.irFile = irFile; log.irFileData = irFileData; log.remarks = remarks;
     // Any change in condition (and remarks) made here carries straight over onto
     // the PDA's own masterlist record, so the masterlist always reflects the
@@ -6422,20 +6507,21 @@ async function confirmPdaReturn(){
     pdaReturnInProgress = false;
     closeModal();
     toast('This device was already returned — refreshing.');
-    pdaActiveMode = null; pdaModalTarget = null; pdaReturnTopChoice = ''; pdaReturnCondition = '';
-    renderITAssets();
+    pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null;
+    navigate(route, subroute);
     return;
   }
   let claimedByOther = false;
   const ok = await saveDBWithRetry(()=>{
     if(!applyReturn()) claimedByOther = true;
   });
+  if(!ok) restorePdaSectionsAfterFailedSave();
   pdaReturnInProgress = false;
   closeModal();
-  pdaActiveMode = null; pdaModalTarget = null; pdaReturnTopChoice = ''; pdaReturnCondition = '';
+  pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null;
   if(ok && !claimedByOther) toast(pdaNo+' returned — logged as '+pdaConditionLabel(finalCondition)+(needsIR ? ' (IR pending upload).' : '.'));
   else if(claimedByOther) toast('This device was already returned by someone else — your return was not saved.');
-  renderITAssets();
+  navigate(route, subroute);
 }
 function pdaMasterlistHtml(){
   const isAdmin = session.role==='admin';
@@ -6756,12 +6842,20 @@ function pdaLogSerial(l){
   const p = DB.pdas.find(x=>x.pdaNo===l.pdaNo && x.soc===l.soc);
   return p && p.serial ? p.serial : '—';
 }
+function pdaLogConditionOnBorrow(l){
+  if(l && l.conditionOnBorrow) return l.conditionOnBorrow;
+  if(l && l.status==='Borrowed'){
+    const p = DB.pdas.find(x=>x.pdaNo===l.pdaNo && x.soc===l.soc);
+    return p ? p.condition : '';
+  }
+  return '';
+}
 function pdaLogHtml(){
   const logs = socFilter(DB.pdaLogs);
   const header = `<div class="list-head"><h3>Borrow / return log (${logs.length})</h3>${dlBtn('exportPdaLog')}</div>`;
   if(logs.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#128241;</div>No borrow/return activity yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th rowspan="2">PDA #</th><th rowspan="2">Serial</th><th colspan="5">Borrowed by</th><th colspan="5">Returned by</th><th rowspan="2">Condition / Status</th><th rowspan="2">IR</th></tr>' +
+    '<tr><th rowspan="2">PDA #</th><th rowspan="2">Serial</th><th colspan="5">Borrowed by</th><th colspan="5">Returned by</th><th rowspan="2">Condition at issue</th><th rowspan="2">Condition on return / status</th><th rowspan="2">IR</th></tr>' +
     '<tr><th>Ops ID</th><th>Full Name</th><th>Agency</th><th>Department</th><th>Borrowed date and time</th>' +
     '<th>Ops ID</th><th>Full Name</th><th>Agency</th><th>Department</th><th>Returned date and time</th></tr>' +
     logs.slice().reverse().map(l=>`<tr>
@@ -6772,18 +6866,19 @@ function pdaLogHtml(){
       <td>${esc(l.borrowerAgency||'—')}</td>
       <td>${esc(l.borrowerDepartment||'—')}</td>
       <td style="white-space:nowrap;">${fmtDateTime(l.borrowedAt)}</td>
-      <td class="mono">${l.returnedByName ? esc(l.returnedByOpsId) : '<span class="small-note">—</span>'}</td>
+      <td class="mono">${l.returnedByOpsId ? esc(l.returnedByOpsId) : '<span class="small-note">—</span>'}</td>
       <td>${esc(l.returnedByName||'')}</td>
       <td>${l.returnedByName ? esc(l.returnedByAgency||'—') : ''}</td>
       <td>${l.returnedByName ? esc(l.returnedByDepartment||'—') : ''}</td>
       <td style="white-space:nowrap;">${l.returnedAt?fmtDateTime(l.returnedAt):''}</td>
+      <td>${pdaConditionTag(pdaLogConditionOnBorrow(l))}</td>
       <td style="white-space:nowrap;">${pdaConditionTag(l.conditionOnReturn)} ${l.status==='Borrowed'?'<span class="tag tag-pending">Borrowed</span>':'<span class="tag tag-approved">Returned</span>'}${l.remarks?'<div class="small-note" style="white-space:normal;">'+esc(l.remarks)+'</div>':''}</td>
       <td>${pdaLogIRCell(l)}</td>
     </tr>`).join('') + '</table></div></div>';
 }
 function exportPdaLog(){
-  const rows = socFilter(DB.pdaLogs).map(l=>[l.pdaNo,pdaLogSerial(l),l.opsId,l.borrowerName,l.borrowerAgency||'',l.borrowerDepartment||'',fmtDateTime(l.borrowedAt),l.returnedByOpsId||'',l.returnedByName||'',l.returnedByAgency||'',l.returnedByDepartment||'',l.returnedAt?fmtDateTime(l.returnedAt):'',pdaConditionLabel(l.conditionOnReturn),l.status,l.remarks||'',l.irFile||'']);
-  downloadCSV('pda-borrow-return-log.csv', ['PDA #','Serial','Borrower Ops ID','Borrower Name','Borrower Agency','Borrower Department','Borrowed date and time','Returned By Ops ID','Returned By Name','Returned By Agency','Returned By Department','Returned date and time','Condition on return','Status','Remarks','IR file'], rows);
+  const rows = socFilter(DB.pdaLogs).map(l=>[l.pdaNo,pdaLogSerial(l),l.opsId,l.borrowerName,l.borrowerAgency||'',l.borrowerDepartment||'',fmtDateTime(l.borrowedAt),pdaConditionLabel(pdaLogConditionOnBorrow(l)),l.returnedByOpsId||'',l.returnedByName||'',l.returnedByAgency||'',l.returnedByDepartment||'',l.returnedAt?fmtDateTime(l.returnedAt):'',pdaConditionLabel(l.conditionOnReturn),l.status,l.remarks||'',l.irFile||'']);
+  downloadCSV('pda-borrow-return-log.csv', ['PDA #','Serial','Borrower Ops ID','Borrower Name','Borrower Agency','Borrower Department','Borrowed date and time','Condition at issue','Returned By Ops ID','Returned By Name','Returned By Agency','Returned By Department','Returned date and time','Condition on return','Status','Remarks','IR file'], rows);
 }
 
 
