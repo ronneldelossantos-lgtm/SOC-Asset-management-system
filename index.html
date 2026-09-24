@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Supplies Management System</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Roboto:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
   --navy:#003049; --navy-2:#0A4463; --navy-3:#155A80;
@@ -116,18 +116,6 @@ a{color:inherit;}
 .soc-switcher label{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);white-space:nowrap;}
 .soc-switcher select{border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:12.5px;font-weight:600;color:var(--ink);background:#fff;}
 .soc-switcher select:focus{outline:none;border-color:var(--amber);}
-.gsearch-wrap{position:relative;}
-.gsearch-ic{position:absolute;left:11px;top:50%;transform:translateY(-50%);font-size:13px;color:var(--faint);pointer-events:none;}
-.gsearch-input{width:230px;padding:9px 10px 9px 32px;border:1px solid var(--border);border-radius:9px;font-size:12.5px;background:#F5F6F8;color:var(--ink);transition:width .15s,background .15s;}
-.gsearch-input:focus{outline:none;border-color:var(--amber);background:#fff;width:290px;}
-.gsearch-panel{position:absolute;top:44px;left:0;width:340px;max-height:440px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 16px 40px rgba(16,24,38,0.18);z-index:25;display:none;}
-.gsearch-group-label{font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);font-weight:700;padding:10px 14px 4px;}
-.gsearch-item{padding:9px 14px;cursor:pointer;border-top:1px solid var(--border);}
-.gsearch-group-label + .gsearch-item{border-top:none;}
-.gsearch-item:hover{background:#F5F6F8;}
-.gsearch-item .gt{font-size:13px;font-weight:600;color:var(--ink);}
-.gsearch-item .gs{font-size:11.5px;color:var(--muted);margin-top:2px;}
-.gsearch-empty{padding:16px;text-align:center;color:var(--faint);font-size:12.5px;}
 .notif-panel-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border);}
 .notif-panel-head h4{font-size:13px;font-family:var(--sans);font-weight:700;}
 .notif-panel-head .mark-read{font-size:11.5px;color:var(--info);font-weight:600;cursor:pointer;}
@@ -245,6 +233,72 @@ tr:last-child td{border-bottom:none;}
 .pill{padding:6px 12px;border-radius:20px;border:1px solid var(--border);background:#fff;font-family:var(--sans);font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;}
 .pill:disabled{opacity:.45;cursor:not-allowed;}
 .pill.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+body.app-theme{--sans:'Roboto',sans-serif;--display:'Roboto',sans-serif;--app-font-adjust:0px;font-family:'Roboto',sans-serif;background:#fff;}
+body.app-theme .main,body.app-theme .content{background:#fff;font-family:'Roboto',sans-serif;}
+body.app-theme h1,body.app-theme h2,body.app-theme h3,body.app-theme h4{font-family:'Roboto',sans-serif;}
+body.app-theme .topbar h1{font-size:calc(18px + var(--app-font-adjust));}
+body.app-theme .topbar .crumbs{font-size:calc(11px + var(--app-font-adjust));}
+body.app-theme .nav-item{font-size:calc(12px + var(--app-font-adjust));}
+body.app-theme .content{font-size:calc(12px + var(--app-font-adjust));}
+body.app-theme .content>.tabs{border-bottom-color:var(--border);}
+body.app-theme .content>.tabs .tab{color:var(--muted);font-size:calc(12px + var(--app-font-adjust))!important;}
+body.app-theme .content>.tabs .tab.active{color:#D0011B;border-bottom-color:#D0011B;}
+body.app-theme .content>.tabs .tab:hover{color:var(--ink);}
+body.app-theme .card,body.app-theme .metric,body.app-theme .modal,
+body.app-theme .tbl-wrap,body.app-theme .line-items,body.app-theme .proc-access-wrap,
+body.app-theme .suggest-dropdown,body.app-theme .notif-panel{
+  background:#FFF3E3;border-color:#F2C58C;
+}
+body.app-theme .metric.amber{background:#FFF3E3;}
+body.app-theme .tbl-wrap table{background:#FFF3E3;}
+body.app-theme th,body.app-theme .li-head{background:#FFF9F1;}
+body.app-theme input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]):not(:disabled),
+body.app-theme select:not(:disabled),body.app-theme textarea:not(:disabled){
+  background:#fff;border-color:#D1D5DB;
+}
+body.app-theme input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]):not(:disabled):focus,
+body.app-theme select:not(:disabled):focus,body.app-theme textarea:not(:disabled):focus{
+  background:#fff;border-color:#D0011B;box-shadow:0 0 0 2px rgba(208,1,27,.12);outline:none;
+}
+body.app-theme input:disabled,body.app-theme select:disabled,body.app-theme textarea:disabled{background:#fff;border-color:#E6C9CD;color:var(--muted);}
+body.app-theme input.autofill,body.app-theme select.autofill,body.app-theme textarea.autofill,body.app-theme .autofill{background:#F1F3F6!important;border-color:#D9DEE5;color:var(--muted);}
+body.app-theme .content table,body.app-theme .content button,
+body.app-theme .content input,body.app-theme .content select,body.app-theme .content textarea,
+body.app-theme .modal table,body.app-theme .modal button,
+body.app-theme .modal input,body.app-theme .modal select,body.app-theme .modal textarea{font-size:calc(12px + var(--app-font-adjust))!important;}
+body.app-theme .content .mono,body.app-theme .content .empty,body.app-theme .content .alloc-bar-row,
+body.app-theme .content .alloc-bar-label,body.app-theme .content .alloc-bar-value,
+body.app-theme .content .metric .sub,body.app-theme .content .kv,body.app-theme .content .li-row,
+body.app-theme .content .icon-btn,body.app-theme .content .icon-btn-view,body.app-theme .content .stat-inline,
+body.app-theme .modal .mono{font-size:calc(12px + var(--app-font-adjust))!important;}
+body.app-theme .content h3,body.app-theme .modal h3{font-size:calc(13.5px + var(--app-font-adjust))!important;}
+body.app-theme .content th,body.app-theme .content .card-sub:not(.mono),body.app-theme .content .hint,
+body.app-theme .content .small-note,body.app-theme .content .field label,body.app-theme .content .section-title,
+body.app-theme .content .tag,body.app-theme .content .badge,body.app-theme .content .metric .lbl,
+body.app-theme .modal .field label,body.app-theme .modal .hint,body.app-theme .modal .small-note{
+  font-size:calc(10.5px + var(--app-font-adjust))!important;
+}
+body.app-theme .content .metric .val{font-size:calc(24px + var(--app-font-adjust))!important;}
+body.app-theme #topbar-right{display:flex;align-items:center;gap:10px;}
+body.app-theme .content .card-sub:not(.mono),body.app-theme .modal .card-sub:not(.mono),
+body.app-theme .content .issue-hint,body.app-theme .modal .issue-hint,
+body.app-theme .content .empty .small-note,
+body.app-theme .content .hint:empty,body.app-theme .modal .hint:empty,
+body.app-theme .content .hint:not(.hint-error):not(.hint-active):not([id]),
+body.app-theme .modal .hint:not(.hint-error):not(.hint-active):not([id]):not(#pda-return-employee-details .hint):not(.pda-return-modal .hint){display:none!important;}
+.app-font-control{display:flex;align-items:center;gap:3px;white-space:nowrap;}
+.app-font-control .font-size-text,.app-font-control .font-size-label{color:#111;font-size:9px;font-weight:600;}
+.app-font-control .font-size-label{min-width:40px;text-align:center;}
+.app-font-control .btn{background:#111;color:#fff;border-color:#111;border-radius:5px;padding:3px 5px;font-size:9px;line-height:1.1;box-shadow:none;}
+.app-font-control .btn:hover{background:#fff;color:#111;border-color:#111;}
+.app-font-control .btn:focus-visible{outline:2px solid #111;outline-offset:1px;}
+.pda-return-modal #pda-return-employee-details .hint{display:block;padding:10px 12px;border:1px solid #F2C58C;border-radius:8px;background:#FFF3E3;}
+.pda-return-modal .pill.active,.pda-return-modal .btn-primary,.pda-return-mismatch .btn-primary{background:#D0011B;border-color:#D0011B;color:#fff;}
+@media(max-width:900px){
+  body.app-theme .topbar{align-items:flex-start;gap:10px;flex-wrap:wrap;}
+  body.app-theme .topbar-actions{flex-wrap:wrap;}
+  .app-font-control .font-size-text{display:none;}
+}
 .stat-inline{display:flex;gap:8px;align-items:baseline;}
 .select-tag select{appearance:none;}
 .footer-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;padding-top:16px;border-top:1px solid var(--border);}
@@ -336,11 +390,6 @@ tr:last-child td{border-bottom:none;}
           <div class="crumbs" id="page-crumb">Overview</div>
         </div>
         <div class="topbar-actions">
-          <div class="gsearch-wrap">
-            <span class="gsearch-ic">&#128269;</span>
-            <input id="gsearch-input" class="gsearch-input" placeholder="Search everything…" autocomplete="off" oninput="onGlobalSearchInput()" onfocus="onGlobalSearchInput()">
-            <div id="gsearch-panel" class="gsearch-panel"></div>
-          </div>
           <div id="soc-switcher"></div>
           <div class="notif-wrap">
             <div class="notif-bell" id="notif-bell" onclick="toggleNotifPanel(event)">&#128276;<span id="notif-dot" class="notif-dot" style="display:none;"></span></div>
@@ -1519,6 +1568,7 @@ function doLogout(){
   session = null;
   portalMode = null;
   adminViewSoc = '';
+  document.body.classList.remove('app-theme');
   document.getElementById('login-username').value='';
   document.getElementById('login-password').value='';
   document.getElementById('login-error-slot').innerHTML='';
@@ -1778,6 +1828,7 @@ function navigate(r, sub){
     toast('You don\'t have access to '+processLabel(ROUTE_PROCESS[r])+'.');
     r = 'dashboard'; sub = '';
   }
+  document.body.classList.add('app-theme');
   route = r; subroute = sub || '';
   const titles = portalMode==='department' ? TITLES_DEPT : TITLES;
   renderShell();
@@ -1794,6 +1845,7 @@ function navigate(r, sub){
   };
   const fallback = portalMode==='department' ? renderDeptDashboard : renderDashboard;
   (map[r]||fallback)();
+  renderAppFontControls();
   renderNotifBell();
   if(session) saveUiSession();
 }
@@ -1858,110 +1910,7 @@ document.addEventListener('click', function(e){
     const wrap = document.querySelector('.notif-wrap');
     if(wrap && !wrap.contains(e.target)){ notifPanelOpen=false; renderNotifPanel(); }
   }
-  const gwrap = document.querySelector('.gsearch-wrap');
-  const gpanel = document.getElementById('gsearch-panel');
-  if(gwrap && gpanel && !gwrap.contains(e.target)){ gpanel.style.display='none'; }
 });
-
-/* ============================= GLOBAL SEARCH ============================= */
-// One search box, scoped to whatever the signed-in session can already see:
-// socFilter() keeps transactional records to the current SOC, sessionHasProcess()
-// keeps process-gated modules (PDA/cage/parcel) hidden from logins without
-// access to them, and the department portal only ever searches its own
-// department's records. Results link back to the matching module's list/tab —
-// there's no separate record detail page to deep-link to.
-function gsearchNav(route, sub){
-  const input = document.getElementById('gsearch-input');
-  if(input) input.value = '';
-  const panel = document.getElementById('gsearch-panel');
-  if(panel){ panel.style.display='none'; panel.innerHTML=''; }
-  navigate(route, sub);
-}
-function gsearchGroup(label, items){ return items.length ? {label, items} : null; }
-function globalSearchResults(q){
-  const query = q.trim().toLowerCase();
-  if(!query) return [];
-  const hit = (...vals) => vals.some(v=>v!==undefined && v!==null && String(v).toLowerCase().includes(query));
-  const cap = arr => arr.slice(0,6);
-  const groups = [];
-
-  if(portalMode==='department'){
-    const myReqs = DB.requests.filter(r=>r.department===session.department && hit(r.id, r.requestedBy, r.accountableName, r.notes));
-    groups.push(gsearchGroup('My requests', cap(myReqs).map(r=>({ title:r.id, sub:(r.status||'')+' · '+(r.requestedBy||''), go:()=>gsearchNav('drequest','list') }))));
-    const myIssu = DB.deptIssuance.filter(d=>d.department===session.department && hit(d.id, d.sku, d.description, d.opsId, d.receivedByName, d.assetTagging));
-    groups.push(gsearchGroup('My issuance', cap(myIssu).map(d=>({ title:d.id, sub:(d.sku||'')+' · '+(d.description||''), go:()=>gsearchNav('dissuance','list') }))));
-    const myRets = DB.returns.filter(r=>r.department===session.department && hit(r.id, r.sku, r.description));
-    groups.push(gsearchGroup('My returns', cap(myRets).map(r=>({ title:r.id, sub:(r.sku||'')+' · '+(r.description||''), go:()=>gsearchNav('dreturn','list') }))));
-    return groups.filter(Boolean);
-  }
-
-  const skuHits = DB.sku.filter(s=>hit(s.sku, s.description));
-  groups.push(gsearchGroup('SKU', cap(skuHits).map(s=>({ title:s.sku, sub:s.description, go:()=>gsearchNav('settings','sku') }))));
-
-  const deptHits = DB.departments.filter(d=>hit(d.name, d.soc));
-  groups.push(gsearchGroup('Departments', cap(deptHits).map(d=>({ title:d.name, sub:d.soc||'Not site-specific', go:()=>gsearchNav('settings','dept') }))));
-
-  const supHits = DB.suppliers.filter(s=>hit(s));
-  groups.push(gsearchGroup('Suppliers', cap(supHits).map(s=>({ title:s, sub:'Supplier', go:()=>gsearchNav('settings','supplier') }))));
-
-  const acctHits = DB.accountability.filter(a=>hit(a.name, a.email, a.department));
-  groups.push(gsearchGroup('Accountability', cap(acctHits).map(a=>({ title:a.name, sub:a.email||a.department||'', go:()=>gsearchNav('settings','acct') }))));
-
-  const empHits = DB.employees.filter(e=>hit(e.opsId, e.fullName, e.agency, e.department));
-  groups.push(gsearchGroup('Ops ID directory', cap(empHits).map(e=>({ title:e.fullName, sub:(e.opsId||'')+' · '+(e.department||''), go:()=>gsearchNav('settings','opsid') }))));
-
-  if(session.role==='admin'){
-    const userHits = DB.users.filter(u=>hit(u.fullName, u.username, u.department, u.site));
-    groups.push(gsearchGroup('Logins', cap(userHits).map(u=>({ title:u.fullName, sub:(u.username||'')+' · '+u.role, go:()=>gsearchNav('settings','access') }))));
-  }
-
-  if(sessionHasProcess('supplies')){
-    const reqHits = socFilter(DB.requests).filter(r=>hit(r.id, r.department, r.requestedBy, r.accountableName));
-    groups.push(gsearchGroup('Requests', cap(reqHits).map(r=>({ title:r.id, sub:(r.department||'')+' · '+(r.status||''), go:()=>gsearchNav('request','list') }))));
-
-    const recvHits = socFilter(DB.receiving).filter(r=>hit(r.id, r.sku, r.description, r.from));
-    groups.push(gsearchGroup('Receiving', cap(recvHits).map(r=>({ title:r.id, sub:(r.sku||'')+' · '+(r.from||''), go:()=>gsearchNav('receiving','list') }))));
-
-    const issHits = socFilter(DB.issuance).filter(r=>hit(r.id, r.sku, r.description, r.department, r.accountability, r.transmittalNo));
-    groups.push(gsearchGroup('Issuance', cap(issHits).map(r=>({ title:r.id, sub:(r.sku||'')+' · '+(r.department||''), go:()=>gsearchNav('issuance','log') }))));
-
-    const retHits = socFilter(DB.returns).filter(r=>hit(r.id, r.sku, r.description, r.department));
-    groups.push(gsearchGroup('Department Returns', cap(retHits).map(r=>({ title:r.id, sub:(r.sku||'')+' · '+(r.department||''), go:()=>gsearchNav('returns','log') }))));
-  }
-
-  if(sessionHasProcess('itassets')){
-    const pdaHits = socFilter(DB.pdas).filter(p=>hit(p.pdaNo, p.serial));
-    groups.push(gsearchGroup('PDAs', cap(pdaHits).map(p=>({ title:p.pdaNo, sub:p.serial||'', go:()=>gsearchNav('itassets','masterlist') }))));
-  }
-
-  if(sessionHasProcess('cageloading')){
-    const cageHits = socFilter(DB.cages).filter(c=>hit(c.id, c.cageId, c.lhTripNumber, c.hubName, c.plateNumber, ...(c.amsTags||[])));
-    groups.push(gsearchGroup('Cages', cap(cageHits).map(c=>({ title:c.cageId, sub:c.hubName||'', go:()=>gsearchNav('cageloading','list') }))));
-  }
-
-  if(sessionHasProcess('parcelretrieval')){
-    const parcelHits = socFilter(DB.parcels).filter(p=>hit(p.parcelId, p.station, p.retriever));
-    groups.push(gsearchGroup('Parcels', cap(parcelHits).map(p=>({ title:p.parcelId, sub:p.station||'', go:()=>gsearchNav('parcelretrieval','list') }))));
-  }
-
-  return groups.filter(Boolean);
-}
-let gsearchLastGroups = [];
-function onGlobalSearchInput(){
-  const input = document.getElementById('gsearch-input');
-  const panel = document.getElementById('gsearch-panel');
-  if(!input || !panel) return;
-  const q = input.value;
-  if(!q.trim()){ panel.style.display='none'; panel.innerHTML=''; return; }
-  const groups = globalSearchResults(q);
-  gsearchLastGroups = groups;
-  panel.style.display = 'block';
-  if(groups.length===0){ panel.innerHTML = '<div class="gsearch-empty">No matches for "'+esc(q)+'".</div>'; return; }
-  panel.innerHTML = groups.map((g,gi)=>
-    '<div class="gsearch-group-label">'+esc(g.label)+'</div>' +
-    g.items.map((it,ii)=>`<div class="gsearch-item" onclick="gsearchLastGroups[${gi}].items[${ii}].go()"><div class="gt">${esc(it.title)}</div>${it.sub?`<div class="gs">${esc(it.sub)}</div>`:''}</div>`).join('')
-  ).join('');
-}
 
 /* ============================= DASHBOARD ============================= */
 function renderDashboard(){
@@ -6038,10 +5987,47 @@ function exportCageCycleCounts(){
 
 
 /* ============================= IT ASSETS (PDA) MODULE ============================= */
+let appFontAdjust = 0;
+try{
+  const savedFontAdjust = window.localStorage.getItem('app-font-adjust') ?? window.localStorage.getItem('pda-font-adjust');
+  const savedFontAdjustValue = Number(savedFontAdjust);
+  if(savedFontAdjust!==null && Number.isFinite(savedFontAdjustValue)) appFontAdjust = Math.max(-2,Math.min(4,savedFontAdjustValue));
+}catch(e){}
+function appFontAdjustLabel(){ return appFontAdjust===0 ? 'Default' : (appFontAdjust<0 ? 'Smaller' : 'Larger'); }
+function applyAppFontAdjust(){
+  document.body.style.setProperty('--app-font-adjust', appFontAdjust+'px');
+  const label = document.getElementById('app-font-size-label');
+  if(label) label.textContent = appFontAdjustLabel();
+}
+function adjustAppFontSize(delta){
+  appFontAdjust = Math.max(-2,Math.min(4,appFontAdjust+delta));
+  try{ window.localStorage.setItem('app-font-adjust', String(appFontAdjust)); }catch(e){}
+  applyAppFontAdjust();
+}
+function resetAppFontSize(){
+  appFontAdjust = 0;
+  try{ window.localStorage.setItem('app-font-adjust', '0'); }catch(e){}
+  applyAppFontAdjust();
+}
+function renderAppFontControls(){
+  const right = document.getElementById('topbar-right');
+  if(!right) return;
+  const badge = right.querySelector('.badge');
+  const badgeHtml = badge ? badge.outerHTML : '';
+  right.innerHTML = `<div class="app-font-control" role="group" aria-label="Application font size">
+    <span class="font-size-text">Font size</span>
+    <button class="btn btn-sm" type="button" aria-label="Decrease font size" onclick="adjustAppFontSize(-1)">A−</button>
+    <span class="font-size-label" id="app-font-size-label">${appFontAdjustLabel()}</span>
+    <button class="btn btn-sm" type="button" aria-label="Increase font size" onclick="adjustAppFontSize(1)">A+</button>
+    <button class="btn btn-sm" type="button" onclick="resetAppFontSize()">Reset</button>
+  </div>${badgeHtml}`;
+  applyAppFontAdjust();
+}
 function renderITAssets(){
   const c = document.getElementById('content');
   const tab = subroute || 'scan';
-  if(tab==='scan' && !pdaBorrowInProgress && !pdaReturnInProgress){ pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null; }
+  document.body.style.setProperty('--app-font-adjust', appFontAdjust+'px');
+  if(tab==='scan' && !pdaBorrowInProgress && !pdaReturnInProgress){ pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnBorrowLogIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null; pdaReturnMismatchApprovedOpsId = ''; pdaReturnMismatchPendingOpsId = ''; pdaReturnMismatchPromptOpen = false; }
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='log'?'active':''}" onclick="navigate('itassets','log')">Dashboard</div>
@@ -6107,13 +6093,13 @@ function pdaScanHtml(){
     <div class="field scan-field">
       <label>Serial number</label>
       <input id="pda-scan-input" placeholder="Scan or type serial number" oninput="onPdaScanInput()" onkeydown="if(event.key==='Enter')processPdaScan()">
-      <div class="hint" id="pda-scan-status">Waiting for a serial number.</div>
+      <div class="hint" id="pda-scan-status"></div>
     </div>
     <div class="scan-divider"></div>
     <div class="field scan-field">
       <label>Borrower's Ops ID</label>
       <input id="pda-ops-input" placeholder="Scan or type Ops ID" oninput="pdaOpsInputHandler()" disabled>
-      <div class="hint" id="pda-ops-status">Needed after scanning an available PDA.</div>
+      <div class="hint" id="pda-ops-status"></div>
     </div>
     <div id="pda-active-session"></div>
   </div>
@@ -6201,6 +6187,14 @@ function processPdaScan(){
   pdaReturnTopChoice = '';
   pdaReturnCondition = '';
   pdaReturnEmployee = null;
+  pdaReturnBorrowLogIdentity = null;
+  if(pdaActiveMode==='return'){
+    const openLog = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pda.pdaNo && l.soc===pda.soc && l.status==='Borrowed');
+    pdaReturnBorrowLogIdentity = openLog ? {pdaNo:pda.pdaNo,soc:pda.soc,id:openLog.id,borrowedAt:openLog.borrowedAt} : {missing:true};
+  }
+  pdaReturnMismatchApprovedOpsId = '';
+  pdaReturnMismatchPendingOpsId = '';
+  pdaReturnMismatchPromptOpen = false;
   const opsEl = document.getElementById('pda-ops-input');
   if(pdaActiveMode==='borrow'){
     if(opsEl){ opsEl.disabled = false; opsEl.value = ''; }
@@ -6224,6 +6218,10 @@ let pdaBorrowInProgress = false;
 let pdaReturnTopChoice = ''; // '' | 'Good' | 'Damaged' — nothing preselected, the operator must choose
 let pdaReturnCondition = ''; // final condition key saved: 'Good', 'DamagedWorking', or 'DamagedNotWorking'
 let pdaReturnEmployee = null; // validated Ops ID directory entry for the person processing the return
+let pdaReturnBorrowLogIdentity = null;
+let pdaReturnMismatchApprovedOpsId = '';
+let pdaReturnMismatchPendingOpsId = '';
+let pdaReturnMismatchPromptOpen = false;
 function pdaActiveTarget(){
   if(pdaModalIdentity) return DB.pdas.find(p=>p.pdaNo===pdaModalIdentity.pdaNo && p.soc===pdaModalIdentity.soc) || null;
   return pdaModalTarget!=null ? DB.pdas[pdaModalTarget] : null;
@@ -6234,8 +6232,9 @@ function pdaActiveSessionHeader(){
   return esc(pda.pdaNo) + (pda.serial ? ' <span class="small-note">('+esc(pda.serial)+')</span>' : '');
 }
 function pdaOpenBorrowLog(){
-  const pda = pdaActiveTarget();
-  return pda ? DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pda.pdaNo && l.soc===pda.soc && l.status==='Borrowed') : null;
+  const identity = pdaReturnBorrowLogIdentity;
+  if(!identity || identity.missing) return null;
+  return DB.pdaLogs.find(l=>l.pdaNo===identity.pdaNo && l.soc===identity.soc && l.status==='Borrowed' && (identity.id ? l.id===identity.id : l.borrowedAt===identity.borrowedAt)) || null;
 }
 function pdaReturnBorrowerInfoHtml(){
   const pda = pdaActiveTarget();
@@ -6247,9 +6246,7 @@ function pdaReturnBorrowerInfoHtml(){
     <div class="autofill" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;">${esc(log.borrowerName||'—')} · ${esc(log.opsId||'—')} · ${esc(log.borrowerAgency||'—')} / ${esc(log.borrowerDepartment||'—')}</div>
     <div class="hint">Since ${esc(fmtDateTime(log.borrowedAt))}</div>
   </div>
-  <div class="field"><label>Condition before this issue</label><div>${pdaConditionTag(conditionBeforeIssue)}</div>
-    <div class="hint">This is the recorded condition when this borrow was issued. Choose the condition the PDA has now below.</div>
-  </div>`;
+  <div class="field"><label>Condition before this issue</label><div>${pdaConditionTag(conditionBeforeIssue)}</div></div>`;
 }
 function renderPdaActiveSession(){
   const el = document.getElementById('pda-active-session');
@@ -6276,16 +6273,16 @@ function renderPdaActiveSession(){
 // be entered before the condition buttons become available.
 function openPdaReturnModal(){
   pdaReturnEmployee = null;
+  pdaReturnMismatchPromptOpen = false;
   showModal(`
     <div class="list-head" style="margin-bottom:6px;">
       <h3 style="margin:0;">Returning ${pdaActiveSessionHeader()}</h3>
       <button class="btn btn-sm" onclick="cancelPdaActiveSession()">Close</button>
     </div>
-    <div class="card-sub" style="margin-bottom:12px;">Identify the person processing the return, review the condition before issue, then select the condition now.</div>
     ${pdaReturnBorrowerInfoHtml()}
     <div class="field"><label>Returner's Ops ID <span style="color:var(--danger);">*</span></label>
       <input id="pda-return-ops-input" placeholder="Scan or type Ops ID" autocomplete="off" oninput="pdaReturnOpsLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();pdaReturnOpsLookup();}">
-      <div class="hint" id="pda-return-ops-status">A valid Ops ID is required to continue.</div>
+      <div class="hint" id="pda-return-ops-status"></div>
       <div id="pda-return-employee-details"></div>
     </div>
     <div id="pda-return-condition-wrap">${pdaReturnConditionSectionHtml()}</div>
@@ -6296,14 +6293,43 @@ function openPdaReturnModal(){
   // The generic modal backdrop just calls closeModal(), which would leave the
   // serial field disabled with a half-open return session behind it. Point it
   // at the full cancel instead so clicking away resets the scan properly.
+  const modal = document.querySelector('#modal-root .modal');
+  if(modal) modal.classList.add('pda-return-modal');
   const bg = document.querySelector('#modal-root .modal-bg');
   if(bg) bg.setAttribute('onclick', 'if(event.target===this)cancelPdaActiveSession()');
   setTimeout(()=>{ const input=document.getElementById('pda-return-ops-input'); if(input) input.focus(); }, 30);
 }
+function openPdaReturnMismatchModal(returner, borrower){
+  if(pdaReturnMismatchPromptOpen) return;
+  pdaReturnMismatchPromptOpen = true;
+  pdaReturnMismatchPendingOpsId = returner.opsId;
+  showModal(`
+    <h3 style="margin:0 0 8px;color:var(--danger);">BORROWER NOT MATCH</h3>
+    <div class="field"><label>Borrowed by</label><div class="autofill" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;">${esc(borrower.borrowerName||'—')} · ${esc(borrower.opsId||'—')}</div></div>
+    <div class="field"><label>Returner</label><div class="autofill" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;">${esc(returner.fullName||'—')} · ${esc(returner.opsId||'—')}</div></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="cancelPdaActiveSession()">Cancel</button>
+      <button class="btn btn-primary" onclick="continuePdaReturnMismatch()">Continue</button>
+    </div>
+  `);
+  const modal = document.querySelector('#modal-root .modal');
+  if(modal) modal.classList.add('pda-return-mismatch');
+  const bg = document.querySelector('#modal-root .modal-bg');
+  if(bg) bg.setAttribute('onclick', 'if(event.target===this)cancelPdaActiveSession()');
+}
+function continuePdaReturnMismatch(){
+  const opsId = pdaReturnMismatchPendingOpsId;
+  if(!opsId){ cancelPdaActiveSession(); return; }
+  pdaReturnMismatchApprovedOpsId = opsId.toUpperCase();
+  pdaReturnMismatchPromptOpen = false;
+  openPdaReturnModal();
+  const input = document.getElementById('pda-return-ops-input');
+  if(input){ input.value = opsId; pdaReturnOpsLookup(); input.focus(); }
+}
 function cancelPdaActiveSession(){
   if(pdaBorrowInProgress || pdaReturnInProgress) return;
   closeModal(); // shuts the return pop-up if it's the thing being cancelled
-  pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null;
+  pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnBorrowLogIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null; pdaReturnMismatchApprovedOpsId = ''; pdaReturnMismatchPendingOpsId = ''; pdaReturnMismatchPromptOpen = false;
   renderPdaActiveSession();
   const serialEl = document.getElementById('pda-scan-input');
   if(serialEl){ serialEl.disabled = false; serialEl.value=''; serialEl.focus(); }
@@ -6413,14 +6439,12 @@ function pdaReturnConditionSectionHtml(){
         <button class="pill ${pdaReturnTopChoice==='Good'?'active':''}" type="button" data-top="Good" ${disabled} onclick="pickPdaReturnTopChoice('Good')">Good condition</button>
         <button class="pill ${pdaReturnTopChoice==='Damaged'?'active':''}" type="button" data-top="Damaged" ${disabled} onclick="pickPdaReturnTopChoice('Damaged')">Damaged</button>
       </div>
-      <div class="hint">${!pdaOpenBorrowLog()?'This PDA is no longer marked as borrowed. Refresh the scan before returning it.':(canConfirm?'Selecting a condition records the return.':'Enter a valid returner Ops ID to enable the condition choices.')}</div>
     </div>
     <div id="pda-return-damaged-wrap" style="display:${pdaReturnTopChoice==='Damaged'?'block':'none'};">
       <div class="field"><label>Kind of damage</label>
         <div class="pill-row" id="pda-return-pills">
           ${PDA_CONDITIONS.filter(cd=>cd.key!=='Good').map(cd=>`<button class="pill ${pdaReturnCondition===cd.key?'active':''}" type="button" data-cond="${cd.key}" ${disabled} onclick="pickPdaReturnSubCondition('${cd.key}')">${esc(cd.label)}</button>`).join('')}
         </div>
-        <div class="hint">Picking one records the return immediately. An "Upload IR" button stays on the log entry until the Incident Report is attached.</div>
       </div>
     </div>
   `;
@@ -6434,7 +6458,18 @@ function pdaReturnOpsLookup(){
   const details = document.getElementById('pda-return-employee-details');
   const raw = input ? input.value.trim() : '';
   const emp = raw ? empInfo(raw) : null;
-  pdaReturnEmployee = pdaOpenBorrowLog() && emp && raw.toUpperCase()===String(emp.opsId||'').toUpperCase() ? emp : null;
+  const borrowLog = pdaOpenBorrowLog();
+  const isDirectoryMatch = emp && raw.toUpperCase()===String(emp.opsId||'').toUpperCase();
+  const returnerOpsId = isDirectoryMatch ? String(emp.opsId).trim().toUpperCase() : '';
+  const borrowerOpsId = String(borrowLog && borrowLog.opsId || '').trim().toUpperCase();
+  const borrowerMismatch = !!(borrowLog && isDirectoryMatch && returnerOpsId!==borrowerOpsId);
+  if(borrowerMismatch && pdaReturnMismatchApprovedOpsId!==returnerOpsId){
+    pdaReturnEmployee = null; pdaReturnTopChoice = ''; pdaReturnCondition = '';
+    if(details) details.innerHTML = '';
+    openPdaReturnMismatchModal(emp, borrowLog);
+    return;
+  }
+  pdaReturnEmployee = !!borrowLog && !!isDirectoryMatch ? emp : null;
   pdaReturnTopChoice = ''; pdaReturnCondition = '';
   if(status){
     status.textContent = !pdaOpenBorrowLog() ? 'This PDA is no longer borrowed. Close this prompt and scan again.' : (pdaReturnEmployee ? 'Ops ID matched — condition choices are enabled.' : (raw ? 'Ops ID not found. Check the ID or update the Ops ID Directory.' : 'A valid Ops ID is required to continue.'));
@@ -6469,9 +6504,9 @@ async function confirmPdaReturn(){
   const finalCondition = pdaReturnTopChoice==='Good' ? 'Good' : pdaReturnCondition;
   if(!finalCondition) return; // Damaged picked, but the kind isn't chosen yet
   const pdaNo = pda.pdaNo, soc = pda.soc;
-  const log0 = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===pdaNo && l.soc===soc && l.status==='Borrowed');
+  const log0 = pdaOpenBorrowLog();
   if(!log0){ toast('This PDA was already returned by another scanner. Scan it again to refresh.'); cancelPdaActiveSession(); refreshPdaLiveSections(); return; }
-  const borrowLogId = log0.id;
+  const borrowLogIdentity = {id:log0.id, borrowedAt:log0.borrowedAt};
   const returner = {opsId:pdaReturnEmployee.opsId, name:pdaReturnEmployee.fullName, agency:pdaReturnEmployee.agency||'', department:pdaReturnEmployee.department||''};
   pdaReturnInProgress = true;
   const returnOpsInput = document.getElementById('pda-return-ops-input');
@@ -6492,7 +6527,7 @@ async function confirmPdaReturn(){
   // or backs off if someone else already closed this same log out.
   const applyReturn = ()=>{
     const target = DB.pdas.find(p=>p.pdaNo===pdaNo && p.soc===soc);
-    const log = DB.pdaLogs.find(l=>l.id===borrowLogId && l.pdaNo===pdaNo && l.soc===soc && l.status==='Borrowed');
+    const log = DB.pdaLogs.find(l=>l.pdaNo===pdaNo && l.soc===soc && l.status==='Borrowed' && (borrowLogIdentity.id ? l.id===borrowLogIdentity.id : l.borrowedAt===borrowLogIdentity.borrowedAt));
     if(!target || !log) return false;
     log.returnedAt = nowISO();
     log.returnedByOpsId = returner.opsId; log.returnedByName = returner.name; log.returnedByAgency = returner.agency; log.returnedByDepartment = returner.department;
@@ -6507,7 +6542,7 @@ async function confirmPdaReturn(){
     pdaReturnInProgress = false;
     closeModal();
     toast('This device was already returned — refreshing.');
-    pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null;
+    pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnBorrowLogIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null;
     navigate(route, subroute);
     return;
   }
@@ -6518,7 +6553,7 @@ async function confirmPdaReturn(){
   if(!ok) restorePdaSectionsAfterFailedSave();
   pdaReturnInProgress = false;
   closeModal();
-  pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null;
+  pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnBorrowLogIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null;
   if(ok && !claimedByOther) toast(pdaNo+' returned — logged as '+pdaConditionLabel(finalCondition)+(needsIR ? ' (IR pending upload).' : '.'));
   else if(claimedByOther) toast('This device was already returned by someone else — your return was not saved.');
   navigate(route, subroute);
