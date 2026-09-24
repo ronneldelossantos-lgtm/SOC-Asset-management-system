@@ -399,13 +399,97 @@ if(!window.storage){
   if(fsDB){
     const COLLECTION = 'sms_erp_storage';
     const docRef = (key, shared) => fsDB.collection(COLLECTION).doc((shared?'shared__':'local__')+key);
+    /* Firestore limits every document to 1 MiB.  Employees has already grown
+       to the edge of that limit, and request records can contain signed
+       transmittals (base64) that grow just as quickly.  Keep the storage API
+       unchanged for the rest of the application, but transparently store a
+       large value as several sub-documents.  The primary document contains
+       only this small manifest; old single-value documents remain readable
+       and are converted on their next save. */
+    const CHUNK_BYTES = 240 * 1024;
+    const utf8Bytes = value => new TextEncoder().encode(value).length;
+    const chunkKey = (key, index) => key+'__chunk__'+index;
+    function splitValue(value){
+      if(utf8Bytes(value) <= CHUNK_BYTES) return [value];
+      const chunks = [];
+      let start = 0;
+      while(start < value.length){
+        let low = start + 1, high = Math.min(value.length, start + CHUNK_BYTES), end = start;
+        /* Characters can occupy more than one UTF-8 byte, so find the
+           largest safe character boundary instead of assuming one byte per
+           character (names and notes may contain non-ASCII text). */
+        while(low <= high){
+          const middle = Math.floor((low + high) / 2);
+          if(utf8Bytes(value.slice(start, middle)) <= CHUNK_BYTES){ end = middle; low = middle + 1; }
+          else high = middle - 1;
+        }
+        if(end === start) throw new Error('Could not split Firestore value into a safe document size.');
+        chunks.push(value.slice(start, end));
+        start = end;
+      }
+      return chunks;
+    }
+    async function readValue(key, shared, snap){
+      if(!snap.exists) return null;
+      const data = snap.data();
+      if(!data.chunked) return data.value;
+      if(!Number.isInteger(data.chunks) || data.chunks < 1) throw new Error('Invalid Firestore chunk manifest for '+key+'.');
+      const chunks = await Promise.all(Array.from({length:data.chunks}, (_, i)=>docRef(chunkKey(key, i), shared).get()));
+      if(chunks.some(part=>!part.exists || typeof part.data().value !== 'string')) throw new Error('Incomplete Firestore chunks for '+key+'.');
+      return chunks.map(part=>part.data().value).join('');
+    }
     window.storage = {
       async get(key, shared){
         try{
           const snap = await docRef(key, shared).get();
           if(!snap.exists) return null;
-          return {key, value: snap.data().value, shared: !!shared};
-        }catch(e){ console.error('storage.get failed:', e); return null; }
+          return {key, value: await readValue(key, shared, snap), shared: !!shared};
+        }catch(e){
+          /* Do not turn permission/network/corruption errors into a missing
+             document.  loadDB() treats a genuinely empty database as a cue
+             to seed defaults, so swallowing an error here could overwrite
+             real shared data. */
+          console.error('storage.get failed:', e);
+          throw e;
+        }
+      },
+      subscribe(key, shared, onValue, onError){
+        let request = 0, loadingVersion = null, deliveredVersion = null;
+        return docRef(key, shared).onSnapshot({includeMetadataChanges:true}, async snap=>{
+          const data = snap.exists ? snap.data() : null;
+          const version = data ? (data.digest || String(data.updatedAt || '') + ':' + String(data.value || '')) : '(missing)';
+          if(version===loadingVersion || version===deliveredVersion) return;
+          const ticket = ++request;
+          loadingVersion = version;
+          try{
+            let value;
+            if(data && data.format==='ops-id-chunks-v1'){
+              const keys = data.chunkKeys;
+              if(!Array.isArray(keys) || !keys.length || keys.some(part=>typeof part!=='string' || !/^opsid_sheet_sync__part__[A-Za-z0-9_-]{43}$/.test(part))){
+                throw new Error('Invalid Ops ID snapshot manifest.');
+              }
+              const parts = [];
+              for(let offset=0; offset<keys.length; offset+=12){
+                if(ticket!==request) return;
+                const batch = await Promise.all(keys.slice(offset,offset+12).map(part=>docRef(part,shared).get()));
+                batch.forEach(part=>{
+                  if(!part.exists || typeof part.data().value!=='string') throw new Error('An Ops ID snapshot part is missing. The current directory has been kept.');
+                  parts.push(part.data().value);
+                });
+              }
+              value = parts.join('');
+            }else if(data){
+              value = await readValue(key, shared, snap);
+            }
+            if(ticket!==request) return;
+            onValue(data ? {key, value, shared:!!shared} : null);
+            deliveredVersion = version;
+          }catch(error){
+            if(ticket===request && onError) onError(error);
+          }finally{
+            if(ticket===request) loadingVersion = null;
+          }
+        }, onError);
       },
       async set(key, value, shared, opts){
         try{
@@ -452,13 +536,39 @@ if(!window.storage){
           await fsDB.runTransaction(async tx=>{
             const refs = entries.map(e=>docRef(e.key, shared));
             const snaps = await Promise.all(refs.map(r=>tx.get(r)));
+            /* Every read must happen before any write in a Firestore
+               transaction.  Read the old chunks now so the compare-and-swap
+               still compares complete values, not manifests. */
+            const oldChunkSnaps = await Promise.all(snaps.map((snap, i)=>{
+              const data = snap.exists ? snap.data() : null;
+              const count = data && data.chunked ? data.chunks : 0;
+              if(!Number.isInteger(count) || count < 0) throw new Error('Invalid Firestore chunk manifest for '+entries[i].key+'.');
+              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(docRef(chunkKey(entries[i].key, n), shared))));
+            }));
             const localConflicts = {};
             snaps.forEach((snap, i)=>{
-              const cur = snap.exists ? snap.data().value : null;
+              const data = snap.exists ? snap.data() : null;
+              const cur = !snap.exists ? null : (data.chunked
+                ? oldChunkSnaps[i].map(part=>{
+                    if(!part.exists || typeof part.data().value !== 'string') throw new Error('Incomplete Firestore chunks for '+entries[i].key+'.');
+                    return part.data().value;
+                  }).join('')
+                : data.value);
               if(cur !== entries[i].expectedPrevious) localConflicts[entries[i].key] = cur;
             });
             if(Object.keys(localConflicts).length){ conflicts = localConflicts; return; }
-            snaps.forEach((snap, i)=>{ tx.set(refs[i], {value: entries[i].value, updatedAt: Date.now()}); });
+            const updatedAt = Date.now();
+            entries.forEach((entry, i)=>{
+              const chunks = splitValue(entry.value);
+              if(chunks.length === 1){
+                tx.set(refs[i], {value: entry.value, updatedAt});
+                oldChunkSnaps[i].forEach((part, n)=>tx.delete(docRef(chunkKey(entry.key, n), shared)));
+              }else{
+                tx.set(refs[i], {chunked:true, chunks:chunks.length, updatedAt});
+                chunks.forEach((value, n)=>tx.set(docRef(chunkKey(entry.key, n), shared), {value, updatedAt}));
+                oldChunkSnaps[i].slice(chunks.length).forEach((part, n)=>tx.delete(docRef(chunkKey(entry.key, chunks.length+n), shared)));
+              }
+            });
           });
           if(conflicts) return {conflict:true, conflicts};
           /* Best-effort heartbeat so pollForUpdates() can tell which
@@ -561,6 +671,10 @@ if(!window.storage){
 const STORE_KEY = 'sms_erp_state_v1';
 const UI_SESSION_KEY = 'sms_erp_ui_session_v1';
 let DB = null;
+let opsIdSheetUnsubscribe = null;
+let opsIdSheetLastPayload = '';
+let opsIdSheetQueue = Promise.resolve();
+let opsIdSheetStatus = 'Google Sheet sync is connecting…';
 let session = null; // {id, username, fullName, role, portal, department, site}
 let route = 'dashboard';
 let subroute = '';
@@ -1001,6 +1115,109 @@ async function saveDBWithRetry(mutate, maxAttempts){
   } finally {
     actionInFlight = false;
   }
+}
+
+/* Google Sheets publishes a staging document when its Ops ID tab changes.
+   The app merges those rows into the shared employee directory using the same
+   compare-and-swap save as manual directory edits, so every open browser sees
+   the update through the normal section heartbeat. */
+function mergeOpsIdSheetRows(rows){
+  const merged = Array.isArray(DB.employees) ? DB.employees.slice() : [];
+  const indexById = new Map();
+  merged.forEach((employee, index)=>{
+    const key = String(employee.opsId||'').trim().toUpperCase();
+    if(key && !indexById.has(key)) indexById.set(key, index);
+  });
+  let changed = false;
+  rows.forEach(row=>{
+    const key = row.opsId.toUpperCase();
+    const index = indexById.get(key);
+    if(index===undefined){
+      indexById.set(key, merged.length);
+      merged.push(row);
+      changed = true;
+      return;
+    }
+    const next = {...merged[index], ...row};
+    if(JSON.stringify(next)!==JSON.stringify(merged[index])){
+      merged[index] = next;
+      changed = true;
+    }
+  });
+  if(changed) DB.employees = merged;
+  return changed;
+}
+function setOpsIdSheetSyncStatus(message){
+  opsIdSheetStatus = message;
+  const el = document.getElementById('opsid-sheet-sync-status');
+  if(el) el.textContent = message;
+}
+async function applyOpsIdSheetSnapshot(snapshot){
+  if(!snapshot || typeof snapshot.value!=='string'){
+    setOpsIdSheetSyncStatus('Waiting for the first sync from the Google Sheet.');
+    return;
+  }
+  if(!lastKnownSnapshot){
+    setOpsIdSheetSyncStatus('Waiting for the Supplies database connection.');
+    return;
+  }
+  if(snapshot.value===opsIdSheetLastPayload) return;
+  let sourceRows;
+  try{
+    const raw = JSON.parse(snapshot.value);
+    if(!Array.isArray(raw)) throw new Error('Expected an array of employees.');
+    const byId = new Map();
+    raw.forEach(employee=>{
+      const opsId = String(employee && employee.opsId || '').trim();
+      const fullName = String(employee && employee.fullName || '').trim();
+      if(!opsId || !fullName) return;
+      byId.set(opsId.toUpperCase(), {
+        opsId,
+        fullName,
+        agency: String(employee.agency||'').trim(),
+        department: String(employee.department||'').trim()
+      });
+    });
+    sourceRows = Array.from(byId.values());
+  }catch(e){
+    console.error('Invalid Ops ID sheet sync payload:', e);
+    setOpsIdSheetSyncStatus('The Google Sheet sync data could not be read. Check the sheet headers and try a resync.');
+    return;
+  }
+  if(!sourceRows.length){
+    opsIdSheetLastPayload = snapshot.value;
+    setOpsIdSheetSyncStatus('Connected to the Google Sheet. No complete Ops ID rows were found.');
+    return;
+  }
+  while(actionInFlight) await new Promise(resolve=>setTimeout(resolve, 100));
+  setOpsIdSheetSyncStatus('Importing '+sourceRows.length+' Ops ID records from the Google Sheet…');
+  const apply = ()=>{ mergeOpsIdSheetRows(sourceRows); };
+  apply();
+  const saved = await saveDBWithRetry(apply);
+  if(saved){
+    opsIdSheetLastPayload = snapshot.value;
+    setOpsIdSheetSyncStatus('Connected to the Google Sheet · '+sourceRows.length+' Ops ID record'+(sourceRows.length===1?'':'s')+' synced.');
+  }else{
+    setOpsIdSheetSyncStatus('The sheet was downloaded, but saving the directory failed. Reload Supplies to retry.');
+  }
+}
+function startOpsIdSheetSync(){
+  if(opsIdSheetUnsubscribe) return;
+  if(!window.storage || typeof window.storage.subscribe!=='function'){
+    setOpsIdSheetSyncStatus('Live Google Sheet sync requires the Supplies cloud connection.');
+    return;
+  }
+  opsIdSheetUnsubscribe = window.storage.subscribe('opsid_sheet_sync', true, snapshot=>{
+    opsIdSheetQueue = opsIdSheetQueue
+      .then(()=>applyOpsIdSheetSnapshot(snapshot))
+      .catch(e=>{
+        console.error('Ops ID sheet sync failed:', e);
+        setOpsIdSheetSyncStatus('Google Sheet sync failed. Check the Apps Script execution log.');
+      });
+  }, error=>{
+    console.error('Ops ID sheet listener failed:', error);
+    setOpsIdSheetSyncStatus('Could not connect to the Google Sheet sync. Check the Supplies cloud connection.');
+  });
 }
 
 /* Append-only forensic trail for account changes — kept separate from the
@@ -4985,6 +5202,7 @@ function settingsEmployeesHtml(){
   const visible = DB.employees;
   return `<div class="card">
     <div class="list-head"><h3>Add employee (for Received-by / PDA Issuance lookup)</h3>${importBtn('importEmployeeCsv', 'Ops ID, Full Name, Agency, Department')}</div>
+    <div class="small-note" id="opsid-sheet-sync-status" style="margin:-4px 0 12px;">${esc(opsIdSheetStatus)}</div>
     <div class="form-row3">
       <div class="field"><label>Ops ID</label><input id="new-emp-ops" placeholder="e.g. OPS-1005"></div>
       <div class="field"><label>Full name</label><input id="new-emp-name" placeholder="Full name"></div>
@@ -6932,6 +7150,7 @@ function exportParcelShiftReport(){
 /* ============================= INIT ============================= */
 (async function init(){
   await loadDB();
+  startOpsIdSheetSync();
   const saved = loadUiSession();
   if(saved && saved.session){
     const stillExists = DB.users.find(u=>u.id===saved.session.id);
