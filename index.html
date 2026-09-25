@@ -507,10 +507,13 @@ if(!window.storage){
         }
       },
       subscribe(key, shared, onValue, onError){
-        let request = 0, loadingVersion = null, deliveredVersion = null;
-        return docRef(key, shared).onSnapshot({includeMetadataChanges:true}, async snap=>{
+        let request = 0, loadingVersion = null, deliveredVersion = null, firstSnapshot = true;
+        return docRef(key, shared).onSnapshot(async snap=>{
+          const initial = firstSnapshot;
+          firstSnapshot = false;
           const data = snap.exists ? snap.data() : null;
-          const version = data ? (data.digest || String(data.updatedAt || '') + ':' + String(data.value || '')) : '(missing)';
+          const fromCache = !!(snap.metadata && snap.metadata.fromCache);
+          const version = data ? JSON.stringify(data) : '(missing)';
           if(version===loadingVersion || version===deliveredVersion) return;
           const ticket = ++request;
           loadingVersion = version;
@@ -535,7 +538,7 @@ if(!window.storage){
               value = await readValue(key, shared, snap);
             }
             if(ticket!==request) return;
-            onValue(data ? {key, value, shared:!!shared} : null);
+            onValue(data ? {key, value, shared:!!shared} : null, {initial, fromCache});
             deliveredVersion = version;
           }catch(error){
             if(ticket===request && onError) onError(error);
@@ -624,28 +627,7 @@ if(!window.storage){
             });
           });
           if(conflicts) return {conflict:true, conflicts};
-          /* Best-effort heartbeat so pollForUpdates() can tell which
-             sections changed with one small read instead of re-fetching
-             all ~27 section documents every 4s (at real usage volumes that
-             would blow through Firestore's free-tier daily read quota in
-             well under an hour). A failure here is non-fatal — the actual
-             data write above already succeeded — it just means an
-             already-open tab elsewhere might not notice this change until
-             its next full reload instead of its next poll tick. Returns
-             the exact timestamp used so the caller can record the same
-             value locally and not mistake its own just-completed write for
-             a change made by someone else on the very next poll. */
-          const now = Date.now();
-          try{
-            const metaRef = docRef('__meta', shared);
-            await fsDB.runTransaction(async tx=>{
-              const snap = await tx.get(metaRef);
-              const meta = snap.exists ? JSON.parse(snap.data().value) : {};
-              entries.forEach(e=>{ meta[e.key] = now; });
-              tx.set(metaRef, {value: JSON.stringify(meta), updatedAt: now});
-            });
-          }catch(e){ console.error('meta heartbeat update failed (non-fatal):', e); }
-          return {ok:true, updatedAt: now};
+          return {ok:true, updatedAt: Date.now()};
         }catch(e){ console.error('storage.setMulti failed:', e); return null; }
       },
       async delete(key, shared){
@@ -684,6 +666,7 @@ if(!window.storage){
         return {key, value: raw, shared: !!shared};
       }catch(e){ return null; }
     },
+    subscribe(){ return ()=>{}; },
     async set(key, value, shared){
       try{
         localStorage.setItem(LS_PREFIX+key, value);
@@ -908,16 +891,12 @@ function migrateDB(){
   });
 }
 
-/* Fetches every section document (plus the small __meta heartbeat doc used
-   by pollForUpdates — see setMulti()) in parallel. Returns each section's
-   parsed value and raw snapshot string, and whether ANY section document
-   exists yet at all (used by loadDB() to decide whether the one-time
-   migration from the old single-blob document is needed). */
+/* Fetches every section document in parallel. Returns each section's parsed
+   value and raw snapshot string, and whether ANY section document exists yet
+   at all (used by loadDB() to decide whether the one-time migration from the
+   old single-blob document is needed). */
 async function loadSections(){
-  const [metaRes, ...results] = await Promise.all([
-    window.storage.get('__meta', true),
-    ...SECTION_KEYS.map(k=>window.storage.get('section__'+k, true))
-  ]);
+  const results = await Promise.all(SECTION_KEYS.map(k=>window.storage.get('section__'+k, true)));
   const data = {}, snap = {};
   let anyExists = false;
   SECTION_KEYS.forEach((k,i)=>{
@@ -925,7 +904,7 @@ async function loadSections(){
     if(res){ anyExists = true; data[k] = JSON.parse(res.value); snap[k] = res.value; }
     else { data[k] = null; snap[k] = null; }
   });
-  return {anyExists, data, snap, meta: metaRes ? JSON.parse(metaRes.value) : {}};
+  return {anyExists, data, snap};
 }
 
 /* Retries once before giving up: a transient read error (a momentary
@@ -962,7 +941,6 @@ async function loadDB(){
     DB = defaultDB();
     migrateDB();
     lastKnownSnapshot = null;
-    sectionVersions = {};
     toast('Could not reach shared storage — showing local defaults. Reload once connection is back.');
     return;
   }
@@ -985,7 +963,6 @@ async function loadDB(){
     migrateDB();
     lastKnownSnapshot = {};
     SECTION_KEYS.forEach(k=>{ lastKnownSnapshot[k] = null; });
-    sectionVersions = {};
     await saveDB();
     return;
   }
@@ -1003,8 +980,6 @@ async function loadDB(){
     }
   });
   migrateDB();
-  sectionVersions = {};
-  SECTION_KEYS.forEach(k=>{ sectionVersions['section__'+k] = sections.meta['section__'+k]; });
   /* A section missing here (but others present) means a field was added to
      defaultDB() after this device last saved — same idea as the old
      if(!res) await saveDB() below, just scoped to whichever sections are
@@ -1053,17 +1028,25 @@ let saving = false;
    one Firestore document per top-level DB field (see setMulti()'s comment).
    {sectionKey: rawJsonStringOrNull}. null after a failed initial load. */
 let lastKnownSnapshot = null;
-/* {sectionKey (as stored in __meta, i.e. 'section__'+key): timestamp} — the
-   last heartbeat value this tab has already accounted for, so
-   pollForUpdates() only re-fetches sections that actually changed instead
-   of re-reading all ~27 of them every 4s. */
-let sectionVersions = {};
-let pollTimer = null;
-/* Set true around any action that reads a file (await) before saving to the
-   shared DB — e.g. finalizeRepairAction. While true, pollForUpdates will not
-   swap out the in-memory DB object, so an in-flight edit can't be silently
-   dropped by an auto-refresh landing mid-action. */
+let sectionListenerUnsubscribers = [];
+let sectionListenerGeneration = 0;
+let pendingSectionUpdates = {};
+let pendingSectionUpdateTimer = null;
+/* Keep live section updates queued while a save or multi-step action is in
+   flight. The count handles nested saves without releasing the guard early. */
 let actionInFlight = false;
+let actionInFlightCount = 0;
+function beginActionInFlight(){
+  actionInFlightCount++;
+  actionInFlight = true;
+}
+function endActionInFlight(){
+  if(actionInFlightCount>0) actionInFlightCount--;
+  actionInFlight = actionInFlightCount>0;
+  if(!actionInFlight && Object.keys(pendingSectionUpdates).length && !pendingSectionUpdateTimer){
+    pendingSectionUpdateTimer = setTimeout(flushSectionUpdates, 0);
+  }
+}
 /* Applies a conflict response's per-section current values back onto DB and
    lastKnownSnapshot. Shared between saveDB() and saveDBWithRetry() so the
    two can't drift out of sync on how a conflict gets resolved. */
@@ -1077,6 +1060,7 @@ function applySectionConflicts(conflicts){
   migrateDB();
 }
 async function saveDB(){
+  beginActionInFlight();
   try{
     /* Only the sections that actually changed get written — both to avoid
        needless Firestore writes, and because an unchanged section should
@@ -1105,13 +1089,14 @@ async function saveDB(){
     }
     changed.forEach(k=>{
       lastKnownSnapshot[k] = JSON.stringify(DB[k]);
-      sectionVersions['section__'+k] = res.updatedAt;
     });
     return true;
   }catch(e){
     console.error('Storage error', e);
     toast('Could not save — changes may be lost.');
     return false;
+  }finally{
+    endActionInFlight();
   }
 }
 /* Same shared save as saveDB(), but resilient to a *benign* self-collision:
@@ -1125,13 +1110,12 @@ async function saveDB(){
    caller's intended change on top of them via mutate(), and retry — only
    falling back to the same user-facing conflict message (and giving up) if
    that keeps failing across every attempt, which by then is far more likely
-   a genuine concurrent edit from someone else.
-   actionInFlight blocks the 4s auto-refresh poll from swapping out DB out
-   from under us for the same reason it already does around other
-   multi-step saves (see the flag's definition above). */
+   a genuine concurrent edit from someone else. Live section updates are
+   deferred while actionInFlight is true so they cannot swap DB out from
+   under an in-progress multi-step save (see the flag's definition above). */
 async function saveDBWithRetry(mutate, maxAttempts){
   maxAttempts = maxAttempts || 4;
-  actionInFlight = true;
+  beginActionInFlight();
   try{
     for(let attempt=0; attempt<maxAttempts; attempt++){
       try{
@@ -1152,7 +1136,6 @@ async function saveDBWithRetry(mutate, maxAttempts){
         }
         changed.forEach(k=>{
           lastKnownSnapshot[k] = JSON.stringify(DB[k]);
-          sectionVersions['section__'+k] = res.updatedAt;
         });
         return true;
       }catch(e){
@@ -1166,7 +1149,7 @@ async function saveDBWithRetry(mutate, maxAttempts){
     logAudit('save_conflict_rejected', {});
     return false;
   } finally {
-    actionInFlight = false;
+    endActionInFlight();
   }
 }
 
@@ -1290,11 +1273,27 @@ async function logAudit(action, detail){
 
 /* ============================= LIVE AUTO-REFRESH ============================= */
 function startAutoRefresh(){
-  if(pollTimer) return;
-  pollTimer = setInterval(pollForUpdates, 4000);
+  if(sectionListenerUnsubscribers.length || !session) return;
+  if(!window.storage || typeof window.storage.subscribe!=='function') return;
+  const generation = ++sectionListenerGeneration;
+  SECTION_KEYS.forEach(k=>{
+    try{
+      const unsubscribe = window.storage.subscribe('section__'+k, true, (res, event)=>{
+        if(generation!==sectionListenerGeneration || !session) return;
+        if(event && event.initial && event.fromCache) return;
+        queueSectionUpdate(k, res ? res.value : null);
+      }, error=>console.error('Live update listener failed for section '+k+':', error));
+      if(typeof unsubscribe==='function') sectionListenerUnsubscribers.push(unsubscribe);
+    }catch(e){ console.error('Could not subscribe to live updates for section '+k+':', e); }
+  });
 }
 function stopAutoRefresh(){
-  if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+  sectionListenerGeneration++;
+  sectionListenerUnsubscribers.splice(0).forEach(unsubscribe=>{
+    try{ unsubscribe(); }catch(e){ console.error('Could not stop a live update listener:', e); }
+  });
+  pendingSectionUpdates = {};
+  if(pendingSectionUpdateTimer){ clearTimeout(pendingSectionUpdateTimer); pendingSectionUpdateTimer = null; }
 }
 function isFormScreenActive(){
   if(route==='settings') return true;
@@ -1302,53 +1301,43 @@ function isFormScreenActive(){
   const formSubroutes = { request:'new', drequest:'new', receiving:'new', issuance:'new', dissuance:'new', dreceiving:'new', dreturn:'new', returns:'new', repair:'new' };
   return formSubroutes[route] && subroute===formSubroutes[route];
 }
-/* Reads just the small __meta heartbeat doc (one read) to see which
-   sections have changed since this tab last knew about, then only
-   re-fetches those specific sections — not all ~27 of them — every 4s.
-   Polling every section on every tick would cost ~27x the reads for no
-   benefit in the overwhelmingly common case where nothing changed, which
-   at realistic usage would exhaust Firestore's free-tier daily read quota
-   in well under an hour. */
-async function pollForUpdates(){
-  if(!session || actionInFlight) return;
-  try{
-    const metaRes = await window.storage.get('__meta', true);
-    if(!metaRes) return;
-    const meta = JSON.parse(metaRes.value);
-    const changedKeys = SECTION_KEYS.filter(k=>{
-      const fullKey = 'section__'+k;
-      return meta[fullKey] && meta[fullKey] !== sectionVersions[fullKey];
-    });
-    if(!changedKeys.length) return;
-    const results = await Promise.all(changedKeys.map(k=>window.storage.get('section__'+k, true)));
-    let anyApplied = false;
-    changedKeys.forEach((k,i)=>{
-      const res = results[i];
-      if(!res) return;
-      anyApplied = true;
-      lastKnownSnapshot[k] = res.value;
-      DB[k] = JSON.parse(res.value);
-      sectionVersions['section__'+k] = meta['section__'+k];
-    });
-    if(!anyApplied) return;
-    migrateDB();
-    // The PDA Issuance (scan) tab gets its own quiet refresh path: it has to
-    // stay live so simultaneous scans from other users show up (per-device
-    // borrow/return conflicts are already handled where the scan is saved —
-    // see confirmPdaBorrow/confirmPdaReturn), but a full navigate() here would
-    // wipe this user's own typed serial/Ops ID or drop their in-progress scan.
-    if(route==='itassets' && (subroute||'scan')==='scan'){
-      // Either it refreshed quietly, or this user is mid-scan and it
-      // deliberately did nothing — never fall through to a full navigate()
-      // here, that's exactly the disruptive re-render this path avoids.
-      refreshPdaLiveSections();
-      renderNotifBell();
-    } else if(!isFormScreenActive()){
-      navigate(route, subroute);
-    } else {
-      renderNotifBell();
-    }
-  }catch(e){ console.error('Auto-refresh error', e); }
+function queueSectionUpdate(key, value){
+  pendingSectionUpdates[key] = value;
+  if(pendingSectionUpdateTimer) return;
+  pendingSectionUpdateTimer = setTimeout(flushSectionUpdates, 100);
+}
+function flushSectionUpdates(){
+  pendingSectionUpdateTimer = null;
+  if(!session){ pendingSectionUpdates = {}; return; }
+  if(actionInFlight){
+    pendingSectionUpdateTimer = setTimeout(flushSectionUpdates, 100);
+    return;
+  }
+  const updates = pendingSectionUpdates;
+  pendingSectionUpdates = {};
+  let anyApplied = false;
+  Object.keys(updates).forEach(k=>{
+    const value = updates[k];
+    if(!lastKnownSnapshot || lastKnownSnapshot[k]===value) return;
+    lastKnownSnapshot[k] = value;
+    DB[k] = value!==null ? JSON.parse(value) : defaultDB()[k];
+    anyApplied = true;
+  });
+  if(!anyApplied) return;
+  migrateDB();
+  // The PDA Issuance (scan) tab gets its own quiet refresh path: it has to
+  // stay live so simultaneous scans from other users show up (per-device
+  // borrow/return conflicts are already handled where they are saved), but a
+  // full navigate() here would wipe this user's typed serial/Ops ID or drop
+  // their in-progress scan.
+  if(route==='itassets' && (subroute||'scan')==='scan'){
+    refreshPdaLiveSections();
+    renderNotifBell();
+  } else if(!isFormScreenActive()){
+    navigate(route, subroute);
+  } else {
+    renderNotifBell();
+  }
 }
 
 function toast(msg){
@@ -3510,29 +3499,29 @@ async function finalizeRepairAction(id, action){
   const fileEl = document.getElementById('repair-transmittal-file');
   const file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
   let transmittalFile, transmittalFileData;
-  actionInFlight = true;
+  beginActionInFlight();
   if(file){
-    if(!repairTransmittalFileValid(file)){ toast('Transmittal must be a PDF, JPEG, or PNG file.'); actionInFlight = false; return; }
-    if(file.size > 4*1024*1024){ toast('Transmittal file is too large (max 4MB).'); actionInFlight = false; return; }
+    if(!repairTransmittalFileValid(file)){ toast('Transmittal must be a PDF, JPEG, or PNG file.'); endActionInFlight(); return; }
+    if(file.size > 4*1024*1024){ toast('Transmittal file is too large (max 4MB).'); endActionInFlight(); return; }
     try{ transmittalFileData = await readFileAsDataURL(file); }
-    catch(e){ console.error('File read error', e); toast('Could not read the transmittal file — try again.'); actionInFlight = false; return; }
+    catch(e){ console.error('File read error', e); toast('Could not read the transmittal file — try again.'); endActionInFlight(); return; }
     transmittalFile = file.name;
   }
   /* The file read above can take a moment, and the shared DB may have been
-     refreshed by auto-poll while we were waiting (a new DB object replaces
+     refreshed by a live listener while we were waiting (a new DB object replaces
      the old one). Re-find the record in whatever is CURRENT now, instead of
      writing onto the stale object captured before the await — otherwise the
      status change below is applied to a detached copy and silently lost on
      save, even though the record still looks "processed" to the user. */
   r = DB.repairs.find(x=>x.id===id);
-  if(!r){ actionInFlight = false; toast('This record changed elsewhere — please reopen it and try again.'); closeModal(); navigate('repair','list'); return; }
+  if(!r){ endActionInFlight(); toast('This record changed elsewhere — please reopen it and try again.'); closeModal(); navigate('repair','list'); return; }
   if(file){ r.transmittalFile = transmittalFile; r.transmittalFileData = transmittalFileData; }
   if(action==='inventory'){
     addStock(r.sku, 1, r.soc||'');
     r.status = 'Added to Inventory';
     r.inventoryBy = session.fullName; r.inventoryDate = nowISO();
     await saveDB();
-    actionInFlight = false;
+    endActionInFlight();
     closeModal();
     toast(r.id+' added back to inventory (+1 '+r.sku+').');
   } else if(action==='dispose'){
@@ -3540,7 +3529,7 @@ async function finalizeRepairAction(id, action){
     r.disposedBy = session.fullName; r.disposedDate = nowISO();
     removeIssuedAsset(r.assetTagging);
     await saveDB();
-    actionInFlight = false;
+    endActionInFlight();
     closeModal();
     toast(r.id+' marked disposed and removed from issued assets.');
   } else {
@@ -3548,7 +3537,7 @@ async function finalizeRepairAction(id, action){
     r.backloadBy = session.fullName; r.backloadDate = nowISO();
     removeIssuedAsset(r.assetTagging);
     await saveDB();
-    actionInFlight = false;
+    endActionInFlight();
     closeModal();
     toast(r.id+' marked backloaded and removed from issued assets.');
   }
@@ -6110,7 +6099,7 @@ function pdaScanHtml(){
 }
 // Rows currently out, newest-borrowed-first so whoever's scanning always sees
 // the device that was just issued at the top of the list. Refreshed both on
-// full tab render and, on its own, by the live poll (see refreshPdaLiveSections)
+// full tab render and, on its own, by the live section listener (see refreshPdaLiveSections)
 // so other users' scans show up here without disturbing this user's session.
 function pdaBorrowedTableHtml(){
   const rows = socFilter(DB.pdas).filter(p=>p.status==='Borrowed').map(p=>{
@@ -6129,13 +6118,13 @@ function pdaBorrowedTableHtml(){
 }
 // Lightweight live refresh for the PDA Issuance (scan) tab: updates just the
 // "Currently borrowed" board and the borrow/return log so other users' scans
-// become visible within a few seconds, without the full-tab re-render that
-// pollForUpdates normally does elsewhere — that re-render would blank out
+// become visible as they arrive, without the full-tab re-render that the live
+// section listener normally triggers elsewhere — that re-render would blank out
 // whatever this user has typed into the serial/Ops ID fields, or drop an
 // in-progress borrow/return session (see renderITAssets resetting pdaActiveMode
 // on every scan-tab render). Returns false when the scan tab isn't mounted, or
 // when this user is mid-scan themselves, so callers know to leave the (already
-// updated) DB to show up on a later, quieter poll tick instead.
+// updated) DB alone until the next safe refresh.
 function refreshPdaLiveSections(){
   const wrap = document.getElementById('pda-borrowed-wrap');
   if(!wrap) return false;
