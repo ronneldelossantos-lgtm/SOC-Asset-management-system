@@ -890,6 +890,7 @@ function migrateDB(){
   }
   DB.users.forEach(u=>{ if(!u.portal) u.portal = (u.role==='department') ? 'department' : 'supplies'; });
   DB.issuance.forEach(i=>{ if(i.deptReceived===undefined) i.deptReceived = false; });
+  syncRequestReceipts();
   DB.sku.forEach(s=>{ if(s.type==='Asset' && !s.assetCondition) s.assetCondition = 'Repairable'; });
   // PM flag: only assets can be for preventive maintenance; anything unset is "No".
   DB.sku.forEach(s=>{ s.pm = (s.type==='Asset' && s.pm===true); });
@@ -1132,10 +1133,20 @@ async function saveDB(){
 async function saveDBWithRetry(mutate, maxAttempts){
   maxAttempts = maxAttempts || 4;
   actionInFlight = true;
+  let mutationApplied = false;
   try{
     for(let attempt=0; attempt<maxAttempts; attempt++){
       try{
-        const changed = SECTION_KEYS.filter(k=>JSON.stringify(DB[k]) !== lastKnownSnapshot[k]);
+        let changed = SECTION_KEYS.filter(k=>JSON.stringify(DB[k]) !== lastKnownSnapshot[k]);
+        /* Some actions pass their change only as a replay callback. Apply it
+           before the first diff check so an untouched DB is never reported
+           as a successful save. Other callers already apply their change
+           before calling this helper, so they proceed directly to saving. */
+        if(!changed.length && !mutationApplied){
+          mutate();
+          mutationApplied = true;
+          changed = SECTION_KEYS.filter(k=>JSON.stringify(DB[k]) !== lastKnownSnapshot[k]);
+        }
         if(!changed.length) return true;
         const entries = changed.map(k=>({key:'section__'+k, value:JSON.stringify(DB[k]), expectedPrevious: lastKnownSnapshot[k]}));
         const res = await window.storage.setMulti(entries, true);
@@ -1146,8 +1157,19 @@ async function saveDBWithRetry(mutate, maxAttempts){
           return false;
         }
         if(res.conflict){
-          applySectionConflicts(res.conflicts);
+          const conflictKeys = new Set(Object.keys(res.conflicts||{}).map(k=>k.replace(/^section__/, '')));
+          applySectionConflicts(res.conflicts||{});
+          /* The transaction wrote nothing. Restore every attempted section
+             that did not conflict to its last known shared value as well,
+             then replay the action once on that consistent base. */
+          changed.forEach(k=>{
+            if(conflictKeys.has(k)) return;
+            const snapshot = lastKnownSnapshot[k];
+            DB[k] = snapshot!==null ? JSON.parse(snapshot) : defaultDB()[k];
+          });
+          migrateDB();
           mutate();
+          mutationApplied = true;
           continue;
         }
         changed.forEach(k=>{
@@ -1519,8 +1541,8 @@ function availableAssetCodes(sku, soc){
     const key = codeInfo.has(rawKey) ? rawKey : (amsCodeMap.get(rawKey)||rawKey);
     if(!key || !codeInfo.has(key)) return;
     const info = codeInfo.get(key);
-    if(skuCode && info.sku.toUpperCase()!==String(skuCode).toUpperCase()) return;
-    if(eventSoc && info.soc && eventSoc!==info.soc) return;
+    if(skuCode && String(info.sku||'').trim().toUpperCase()!==String(skuCode).trim().toUpperCase()) return;
+    if(socKey(eventSoc) && socKey(info.soc) && socKey(eventSoc)!==socKey(info.soc)) return;
     const parsed = Date.parse(date||'');
     events.push({key, time:Number.isFinite(parsed)?parsed:0, kind, order});
   };
@@ -1554,7 +1576,7 @@ function availableAssetCodes(sku, soc){
   const availableAt = new Map();
   events.forEach(e=>{ if(e.kind==='add') availableAt.set(e.key,e.time); else availableAt.delete(e.key); });
   return Array.from(availableAt.keys()).map(key=>codeInfo.get(key))
-    .filter(info=>info.sku.toUpperCase()===String(sku||'').toUpperCase() && (soc ? (!info.soc||info.soc===soc) : !info.soc))
+    .filter(info=>String(info.sku||'').trim().toUpperCase()===String(sku||'').trim().toUpperCase() && (socKey(soc) ? (!socKey(info.soc)||socKey(info.soc)===socKey(soc)) : !socKey(info.soc)))
     .sort((a,b)=>(availableAt.get(a.code.toUpperCase())-availableAt.get(b.code.toUpperCase())) || a.order-b.order)
     .map(info=>info.code);
 }
@@ -1574,15 +1596,39 @@ function syncOpenRequestAssetCodes(){
       return at-bt || a.index-b.index;
     });
   const reserved = new Set();
-  active.forEach(({r})=>{
+  const approved = active.filter(({r})=>['Preparing','Ready for Pull-out','Approved'].includes(r.status));
+  // Pending requests do not reserve inventory before Supplies approval.
+  active.filter(({r})=>!['Preparing','Ready for Pull-out','Approved'].includes(r.status)).forEach(({r})=>{
+    (r.items||[]).filter(it=>it.type==='Asset').forEach(it=>{it.assetCodes=[];it.assetTagging='';});
+  });
+  // Preserve valid assignments before filling gaps, so later approvals cannot steal tags.
+  approved.forEach(({r})=>{
+    (r.items||[]).forEach(it=>{
+      if(it.type!=='Asset') return;
+      const site=requestSoc(r);
+      const available=site===null?[]:availableAssetCodes(it.sku,site||'');
+      const canonical=new Map(available.map(code=>[code.toUpperCase(),code]));
+      const qty=Math.max(0,Math.floor(approvedQtyOf(it)||0));
+      const kept=[];
+      requestAssetCodesArr(it).forEach(code=>{
+        const key=code.toUpperCase();
+        if(kept.length<qty && canonical.has(key) && !reserved.has(key)){
+          kept.push(canonical.get(key)); reserved.add(key);
+        }
+      });
+      it.assetCodes=kept;
+    });
+  });
+  approved.forEach(({r})=>{
     (r.items||[]).forEach(it=>{
       if(it.type!=='Asset') return;
       const qty = Math.max(0,Math.floor(approvedQtyOf(it)||0));
-      const candidates = availableAssetCodes(it.sku,r.soc||'').filter(code=>!reserved.has(code.toUpperCase()));
-      const codes = candidates.slice(0,qty);
-      it.assetCodes = codes;
-      it.assetTagging = assetAmsTagsForCodes(codes).join(', ');
-      codes.forEach(code=>reserved.add(code.toUpperCase()));
+      const requestSite = requestSoc(r);
+      const candidates = requestSite===null ? [] : availableAssetCodes(it.sku,requestSite||'').filter(code=>!reserved.has(code.toUpperCase()));
+      const allocatedTags = candidates.slice(0,Math.max(0,qty-it.assetCodes.length));
+      it.assetCodes = it.assetCodes.concat(allocatedTags);
+      it.assetTagging = assetAmsTagsForCodes(it.assetCodes).join(', ');
+      allocatedTags.forEach(code=>reserved.add(code.toUpperCase()));
     });
   });
 }
@@ -1727,17 +1773,52 @@ function currentSoc(){
   return (session && session.site) ? session.site : '';
 }
 function socOf(recSoc){ return recSoc ? `<span class="small-note">${esc(recSoc)}</span>` : '<span class="small-note">—</span>'; }
+function socKey(value){ return String(value||'').trim().toUpperCase(); }
+function departmentEntries(name){
+  const key = String(name||'').trim().toLowerCase();
+  return (DB.departments||[]).filter(d=>String(d.name||'').trim().toLowerCase()===key);
+}
 function socVisible(recSoc){
   if(!session) return true;
+  const recordSoc = socKey(recSoc);
   if(session.role==='admin'){
-    if(adminViewSoc) return !recSoc || recSoc===adminViewSoc; // admin narrowed to one SOC: that SOC + untagged/legacy records
+    if(adminViewSoc) return !recordSoc || recordSoc===socKey(adminViewSoc); // admin narrowed to one SOC: that SOC + untagged/legacy records
     return true; // admin, no filter picked: everything
   }
   if(session.role==='department') return true;
-  if(!recSoc) return true;
-  return recSoc === session.site;
+  if(!recordSoc) return true;
+  return recordSoc === socKey(session.site);
 }
 function socFilter(arr){ return (arr||[]).filter(x=>socVisible(x.soc)); }
+/* Request records inherit their site's SOC from the department master. This
+   repairs visibility for older submissions whose department login had a
+   stale SOC saved, while keeping duplicate department names site-specific. */
+function requestSoc(r){
+  const recordedSoc = r && r.soc ? String(r.soc) : '';
+  const matches = departmentEntries(r&&r.department);
+  if(matches.length===1) return matches[0].soc||'';
+  if(matches.length>1){
+    if(matches.some(d=>(d.soc||'')===recordedSoc)) return recordedSoc;
+    const legacySoc = (DB.departmentSoc||{})[r.department]||'';
+    return matches.some(d=>(d.soc||'')===legacySoc) ? legacySoc : null;
+  }
+  return recordedSoc;
+}
+function requestVisible(r){
+  const soc = requestSoc(r);
+  if(soc===null) return !!session && session.role==='admin' && !adminViewSoc;
+  return socVisible(soc);
+}
+function socFilterRequests(arr){ return (arr||[]).filter(requestVisible); }
+function resolvedDepartmentSoc(name, preferredSoc){
+  const preferred = preferredSoc||'';
+  const matches = departmentEntries(name);
+  if(matches.some(d=>(d.soc||'')===preferred)) return preferred;
+  if(matches.length===1) return matches[0].soc||'';
+  const legacySoc = (DB.departmentSoc||{})[name]||'';
+  if(matches.some(d=>(d.soc||'')===legacySoc)) return legacySoc;
+  return preferred;
+}
 // ---- Per-SOC stock quantities ----
 // DB.stock is nested: DB.stock[soc][sku] = on-hand qty. The soc key '' is the
 // shared/legacy bucket — stock that predates per-site tracking, or stock an
@@ -2031,7 +2112,7 @@ function renderDashboard(){
 
 function requestFrequency(){
   const freq = {};
-  socFilter(DB.requests).forEach(r=> r.items.forEach(it=>{ freq[it.sku] = (freq[it.sku]||0) + Number(it.qty||0); }));
+  socFilterRequests(DB.requests).forEach(r=> r.items.forEach(it=>{ freq[it.sku] = (freq[it.sku]||0) + Number(it.qty||0); }));
   socFilter(DB.issuance).forEach(is=>{ freq[is.sku] = (freq[is.sku]||0) + Number(is.qty||0); });
   return freq;
 }
@@ -2141,7 +2222,7 @@ function dashConsumable(){
   const cons = DB.sku.filter(s=>s.type==='Consumable');
   const onHand = cons.reduce((a,s)=>a+stockOf(s.sku),0);
   const low = cons.filter(s=>!stockStatusRow(s).sufficient);
-  const pendingReq = socFilter(DB.requests).filter(r=>r.status==='Pending' && r.items.some(it=>{const info=skuInfo(it.sku);return info&&info.type==='Consumable';})).length;
+  const pendingReq = socFilterRequests(DB.requests).filter(r=>r.status==='Pending' && r.items.some(it=>{const info=skuInfo(it.sku);return info&&info.type==='Consumable';})).length;
   const issuedThisLog = socFilter(DB.issuance).filter(is=>{const info=skuInfo(is.sku);return info&&info.type==='Consumable';}).length;
   return `
     <div class="grid g4" style="margin-bottom:18px;">
@@ -2168,7 +2249,7 @@ function renderRequest(){
   const c = document.getElementById('content');
   const tab = subroute || 'new';
   const routeKey = portalMode==='department' ? 'drequest' : 'request';
-  const visibleReqs = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilter(DB.requests);
+  const visibleReqs = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilterRequests(DB.requests);
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='new'?'active':''}" onclick="navigate('${routeKey}','new')">File a request</div>
@@ -2179,17 +2260,30 @@ function renderRequest(){
   document.getElementById('req-body').innerHTML = tab==='new' ? requestFormHtml() : requestListHtml();
   if(tab==='new'){ refreshReqItemsTable(); }
 }
+function requestDepartmentSocFieldHtml(){
+  const matches = departmentEntries(session.department);
+  if(matches.length<2){
+    const soc = matches.length ? (matches[0].soc||'') : resolvedDepartmentSoc(session.department, session.departmentSoc);
+    return '<div class="field"><label>Supply site (SOC)</label><input value="'+esc(soc||'Not site-specific')+'" disabled class="autofill"></div>';
+  }
+  const preferred = session.departmentSoc||'';
+  const hasAssigned = matches.some(d=>(d.soc||'')===preferred);
+  const placeholder = hasAssigned ? '' : '<option value="" selected disabled>Choose the department SOC</option>';
+  const options = matches.map(d=>'<option value="'+esc(deptKey(d))+'" '+(hasAssigned && (d.soc||'')===preferred?'selected':'')+'>'+esc(deptLabel(d))+'</option>').join('');
+  return '<div class="field"><label>Supply site (SOC)</label><select id="req-dept-soc">'+placeholder+options+'</select><div class="hint">This SOC determines which Supplies portal receives the request.</div></div>';
+}
 function requestFormHtml(){
+  const deptSocField = portalMode==='department' ? requestDepartmentSocFieldHtml() : '';
   const deptField = portalMode==='department'
     ? `<div class="field"><label>Department</label><input value="${esc(session.department)}" disabled class="autofill"></div>`
     : `<div class="field"><label>Department</label><select id="req-dept">${deptOptionsHtml()}</select></div>`;
   return `
   <div class="card">
     <h3>Replenishment request</h3>
-    <div class="card-sub">Add the supplies you need, then submit for approval. Available asset codes are assigned automatically in first-come, first-served order.</div>
+    <div class="card-sub">Add the supplies you need, then submit for approval. Asset tags are provided from inventory when Supplies approves the request, in first-come, first-served order.</div>
     <div class="form-row">
       <div class="field"><label>Requested by</label><input value="${esc(session.fullName)}" disabled class="autofill"></div>
-      ${deptField}
+      ${deptField}${deptSocField}
     </div>
     <div class="section-title">Add item</div>
     <div class="form-row3">
@@ -2312,7 +2406,15 @@ function refreshReqItemsTable(){
 function isValidEmail(e){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e||'').trim()); }
 async function submitRequest(){
   if(reqDraftItems.length===0){ toast('Add at least one item before submitting.'); return; }
-  const deptSel = portalMode==='department' ? {name:session.department, soc:session.departmentSoc||''} : parseDeptKey(document.getElementById('req-dept').value);
+  let deptSel;
+  if(portalMode==='department'){
+    const socSelect = document.getElementById('req-dept-soc');
+    if(socSelect && !socSelect.value){ toast('Choose the department SOC so the request reaches the correct Supplies portal.'); return; }
+    const selectedSoc = socSelect ? parseDeptKey(socSelect.value).soc : session.departmentSoc||'';
+    deptSel = {name:session.department, soc:resolvedDepartmentSoc(session.department, selectedSoc)};
+  } else {
+    deptSel = parseDeptKey(document.getElementById('req-dept').value);
+  }
   const dept = deptSel.name;
   const notes = document.getElementById('req-notes').value;
   const acctName = document.getElementById('req-acct-name').value.trim();
@@ -2338,6 +2440,7 @@ async function submitRequest(){
     syncOpenRequestAssetCodes();
     if(approverUsername){
       addNotification(session.fullName+' filed a request ('+id+') that needs your approval before it goes to Supplies.', 'department', 'dapprovals', 'list', dept);
+      addNotification('New request ('+id+') from '+dept+' is awaiting department approval by '+approverUsername+'.', 'supplies', 'request', 'list');
     } else {
       addNotification(dept+' filed a new supply request ('+id+') by '+session.fullName+'.', 'supplies', 'request', 'list');
     }
@@ -2364,7 +2467,7 @@ function renderDeptApprovals(){
           <td class="mono">${esc(r.id)}</td><td>${esc(r.requestedBy)}</td>
           <td><div class="line-items">
             <div class="li-row li-head"><span>SKU</span><span>Description</span><span>Requested</span><span>Qty for assessment</span></div>
-            ${r.items.map((it,i)=>`<div class="li-row"><span class="mono">${esc(it.sku)}</span><span>${esc(it.description)}${it.type==='Asset'?'<div class="small-note">'+requestAssetCodesArr(it).length+'/'+Math.max(0,approvedQtyOf(it))+' asset codes assigned'+(requestAssetCodesArr(it).length?': '+esc(requestAssetCodesArr(it).join(', ')):'')+'</div>':''}</span><span>${it.qty} ${esc(it.uom)}</span><span><input type="number" min="0" id="dapq-${esc(r.id)}-${i}" value="${it.approvedQty!=null?it.approvedQty:it.qty}" style="width:80px;"></span></div>`).join('')}
+            ${r.items.map((it,i)=>`<div class="li-row"><span class="mono">${esc(it.sku)}</span><span>${esc(it.description)}${it.type==='Asset'?'<div class="small-note">Asset tags are provided after Supplies approval</div>':''}</span><span>${it.qty} ${esc(it.uom)}</span><span><input type="number" min="0" id="dapq-${esc(r.id)}-${i}" value="${it.approvedQty!=null?it.approvedQty:it.qty}" style="width:80px;"></span></div>`).join('')}
           </div></td>
           <td>${fmtDateTime(r.dateFiled)}</td><td>${esc(r.notes||'—')}</td>
           <td><button class="btn btn-sm btn-success" onclick="decideDeptApproval('${r.id}','Pending')">Approve</button>
@@ -2432,7 +2535,7 @@ function requestStatusCell(r){
   return statusTag(r.status);
 }
 function requestListHtml(){
-  const rows = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilter(DB.requests);
+  const rows = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilterRequests(DB.requests);
   const header = `<div class="list-head"><h3>${portalMode==='department'?'My department requests':'All requests'} (${rows.length})</h3>${dlBtn('exportRequests')}</div>`;
   if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#9998;</div>No requests filed yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
@@ -2478,7 +2581,8 @@ function requestListHtml(){
       <td class="mono">${esc(r.id)}</td><td>${esc(r.requestedBy)}</td><td>${esc(r.department)}</td>
       <td>${r.items.length} item(s)<div class="small-note">${r.items.map(it=>{
         const codes=requestAssetCodesArr(it).filter(t=>t);
-        const assigned = it.type==='Asset' ? ' ('+codes.length+'/'+Math.max(0,approvedQtyOf(it))+' asset codes'+(codes.length?': '+esc(codes.join(', ')):' assigned')+')' : '';
+        const tagsReleased = ['Preparing','Ready for Pull-out','Approved','Issued','Received'].includes(r.status);
+        const assigned = it.type==='Asset' && r.status!=='Rejected' ? (tagsReleased ? ' ('+codes.length+'/'+Math.max(0,approvedQtyOf(it))+' asset tags'+(codes.length?': '+esc(codes.join(', ')):' assigned')+')' : ' (asset tags provided after Supplies approval)') : '';
         if(portalMode!=='supplies') return esc(it.sku)+' — '+esc(it.description)+' &times;'+it.qty+assigned;
         const onHand = stockOf(it.sku, r.soc);
         const short = onHand < it.qty;
@@ -2604,9 +2708,9 @@ function transmittalDocParts(r){
     <section aria-labelledby="trn-items-heading">
       <h2 id="trn-items-heading">Items issued</h2>
       <table>
-        <caption class="visually-hidden">List of items in this transmittal, including assigned asset codes</caption>
+        <caption class="visually-hidden">List of items in this transmittal, including assigned asset tags</caption>
         <thead>
-          <tr><th scope="col">SKU</th><th scope="col">Description</th><th scope="col">Type</th><th scope="col">Qty</th><th scope="col">Asset code</th></tr>
+          <tr><th scope="col">SKU</th><th scope="col">Description</th><th scope="col">Type</th><th scope="col">Qty</th><th scope="col">Asset tag</th></tr>
         </thead>
         <tbody>${itemRows}</tbody>
       </table>
@@ -2691,7 +2795,7 @@ function downloadTransmittal(id){
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
 }
 function exportRequests(){
-  const rows = (portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilter(DB.requests)).map(r=>[
+  const rows = (portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilterRequests(DB.requests)).map(r=>[
     r.id, r.requestedBy, r.department,
     r.items.map(it=>it.sku+' x'+it.qty).join('; '),
     r.items.filter(it=>it.type==='Asset' && requestAssetCodesArr(it).some(t=>t)).map(it=>it.sku+': '+requestAssetCodesArr(it).filter(t=>t).join(', ')).join(' | '),
@@ -2702,26 +2806,35 @@ function exportRequests(){
     r.transmittalNo||'',
     r.receivedBy||'', fmtDateOrBlank(r.receivedDate)
   ]);
-  downloadCSV('requests.csv', ['Request #','Requested by','Department','Items','Item asset codes','Accountable person','Accountable email','Date/Time filed','Status','Approved/Rejected by','Approved/Rejected date','Issued by','Date issued','Transmittal No','Received by','Date received'], rows);
+  downloadCSV('requests.csv', ['Request #','Requested by','Department','Items','Item asset tags','Accountable person','Accountable email','Date/Time filed','Status','Approved/Rejected by','Approved/Rejected date','Issued by','Date issued','Transmittal No','Received by','Date received'], rows);
 }
 async function confirmRequestReceived(id){
   const r = DB.requests.find(x=>x.id===id);
   if(!r) return;
+  if(r.status==='Received'){
+    syncRequestReceipts();
+    navigate('drequest','list');
+    return;
+  }
   r.status = 'Received';
   r.receivedBy = session.fullName;
   r.receivedDate = nowISO();
+  syncRequestReceipts();
   addNotification('Request '+id+' was confirmed received by '+session.fullName+' ('+r.department+').', 'supplies', 'request', 'list');
-  await saveDB();
+  if(!await saveDB()) return;
   toast('Request '+id+' confirmed as received.');
   navigate('drequest','list');
 }
 async function finalizeApproveRequest(r){
   r.status = 'Preparing';
+  syncOpenRequestAssetCodes();
   r.approvedBy = session.fullName; r.approvedDate = nowISO();
   addNotification('Your request '+r.id+' was approved by '+session.fullName+' — now preparing.', 'department', 'drequest', 'list', r.department);
-  await saveDB();
+  if(!await saveDB()) return false;
   toast('Request '+r.id+' approved — now preparing.');
+  closeModal();
   navigate('request','list');
+  return true;
 }
 function decideRequest(id, decision){
   const r = DB.requests.find(x=>x.id===id);
@@ -2746,7 +2859,7 @@ async function rejectRequest(id){
 function openApproveRequestModal(r){
   showModal(`
     <h3>Approve request — ${esc(r.id)}</h3>
-    <div class="card-sub">Set the approved quantity for each item — it may differ from what was requested (e.g. a partial approval due to stock). The approved quantity controls automatic asset-code assignment, issuance, stock deduction, and the transmittal.</div>
+    <div class="card-sub">Set the approved quantity for each item — it may differ from what was requested (e.g. a partial approval due to stock). The approved quantity controls automatic asset-tag assignment, issuance, stock deduction, and the transmittal.</div>
     <div class="tbl-wrap" style="margin:14px 0;"><table>
       <tr><th>SKU</th><th>Description</th><th>Requested</th><th>Approved qty</th></tr>
       ${r.items.map((it,i)=>{
@@ -2766,29 +2879,43 @@ function openApproveRequestModal(r){
   `);
 }
 async function confirmApproveRequest(id){
+  if(actionInFlight) return;
   const r = DB.requests.find(x=>x.id===id);
   if(!r) return;
-  const previousApproved = r.items.map(it=>it.approvedQty);
+  if(['Preparing','Ready for Pull-out','Approved','Issued','Received','Rejected'].includes(r.status)){
+    toast('This request has already been processed.'); return;
+  }
+  const quantities=[];
   for(let i=0;i<r.items.length;i++){
     const el = document.getElementById('apq-'+i);
     const v = el ? Number(el.value) : NaN;
     if(!Number.isFinite(v) || v<0){ toast('Enter a valid approved quantity for '+r.items[i].sku+'.'); return; }
     if(r.items[i].type==='Asset' && !Number.isInteger(v)){ toast('Enter a whole number of assets for '+r.items[i].sku+'.'); return; }
-    r.items[i].approvedQty = v;
+    quantities.push(v);
   }
+  const beforeRequests=JSON.parse(JSON.stringify(DB.requests));
+  const beforeNotifications=JSON.parse(JSON.stringify(DB.notifications));
+  const requestSnapshot=lastKnownSnapshot.requests;
+  const notificationSnapshot=lastKnownSnapshot.notifications;
+  r.items.forEach((it,i)=>{it.approvedQty=quantities[i];});
+  // Allocate received tags when Supplies approves this request.
+  r.status = 'Preparing';
   syncOpenRequestAssetCodes();
   const shortAsset = r.items.find(it=>it.type==='Asset' && requestAssetCodesArr(it).length<approvedQtyOf(it));
   if(shortAsset){
-    r.items.forEach((it,i)=>{
-      if(previousApproved[i]===undefined) delete it.approvedQty;
-      else it.approvedQty = previousApproved[i];
-    });
-    syncOpenRequestAssetCodes();
-    toast('Not enough asset codes are available for '+shortAsset.sku+'. Asset codes are assigned by request filing order; reduce the approved quantity or wait for more assets.');
+    const available=requestAssetCodesArr(shortAsset).length;
+    DB.requests=beforeRequests;
+    toast('Only '+available+' unassigned received asset tag(s) are available for '+shortAsset.sku+' at this SOC; '+approvedQtyOf(shortAsset)+' requested for approval. Tags already assigned to approved requests or issued assets cannot be reused.');
     return;
   }
-  closeModal();
-  await finalizeApproveRequest(r);
+  actionInFlight=true;
+  try{
+    if(!await finalizeApproveRequest(r)){
+      // Keep freshly loaded conflict data; otherwise undo the unsaved approval.
+      if(lastKnownSnapshot.requests===requestSnapshot) DB.requests=beforeRequests;
+      if(lastKnownSnapshot.notifications===notificationSnapshot) DB.notifications=beforeNotifications;
+    }
+  }finally{actionInFlight=false;}
 }
 async function advanceRequestStatus(id, newStatus){
   const r = DB.requests.find(x=>x.id===id);
@@ -2804,7 +2931,7 @@ async function advanceRequestStatus(id, newStatus){
 function requestIssuePreCheck(r){
   const unassigned = r.items.find(it=>it.type==='Asset' && approvedQtyOf(it)>0 && requestAssetCodesArr(it).length < approvedQtyOf(it));
   if(unassigned){
-    toast('Not enough asset codes are assigned for '+unassigned.sku+'. Codes are allocated in request filing order.');
+    toast('Not enough asset tags are assigned for '+unassigned.sku+'. Asset tags are assigned from available received inventory when Supplies approves a request.');
     return false;
   }
   for(const it of r.items){
@@ -2975,7 +3102,7 @@ function receivingFormHtml(){
     <div class="section-title">Add item</div>
     <div class="form-row" id="recv-sku-row" style="grid-template-columns:1fr;">
       <div class="field"><label>SKU code</label><input id="recv-sku" placeholder="e.g. AST-0001" oninput="recvSkuLookup();scheduleRecvAutoAdd();" onkeydown="if(event.key==='Enter'){event.preventDefault();scheduleRecvAutoAdd();}"></div>
-      <div class="field" id="recv-asset-code-field" style="display:none;"><label>Asset Code(s)</label><textarea id="recv-asset-code" oninput="scheduleRecvAutoAdd()" placeholder="Scan or enter asset codes; one code per line"></textarea></div>
+      <div class="field" id="recv-asset-code-field" style="display:none;"><label>Asset Tag(s)</label><textarea id="recv-asset-code" oninput="scheduleRecvAutoAdd()" placeholder="Scan or enter asset tags; one tag per line"></textarea></div>
     </div>
     <div class="form-row" id="recv-ams-row" style="grid-template-columns:1fr;">
       <div class="field" id="recv-ams-tagging-field" style="display:none;"><label>AMS Asset Tagging</label><input id="recv-ams-tagging" oninput="scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}" placeholder="Scan or type AMS tag(s); separate multiple tags with commas"></div>
@@ -3036,7 +3163,9 @@ function recvAssetCodes(value){
   });
 }
 function recvAssetCodesOf(r){
-  return r && Array.isArray(r.assetCodes) ? recvAssetCodes(r.assetCodes.join('\n')) : recvAssetCodes(r && r.assetCode || '');
+  if(!r) return [];
+  const arrayCodes = Array.isArray(r.assetCodes) ? r.assetCodes : [];
+  return recvAssetCodes(arrayCodes.concat([r.assetCode||'']).join('\n'));
 }
 function scheduleRecvAutoAdd(){
   clearTimeout(recvAutoAddTimer);
@@ -3058,7 +3187,7 @@ function addRecvItem(automatic=false){
   if(!info){ if(!automatic) toast('Enter a valid SKU code first.'); return; }
   const assetCodes = info.type==='Asset' ? recvAssetCodes(document.getElementById('recv-asset-code').value) : [];
   const qty = info.type==='Asset' ? assetCodes.length : Number(document.getElementById('recv-qty').value);
-  if(info.type==='Asset' && assetCodes.length===0){ if(!automatic) toast('Enter at least one Asset Code.'); return; }
+  if(info.type==='Asset' && assetCodes.length===0){ if(!automatic) toast('Enter at least one Asset Tag.'); return; }
   if(!qty || qty<=0){ if(!automatic) toast('Enter a quantity greater than 0.'); return; }
   const assetCode = info.type==='Asset' ? document.getElementById('recv-asset-code').value.trim() : '';
   const amsTags = info.type==='Asset' ? document.getElementById('recv-ams-tagging').value.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean) : [];
@@ -3083,7 +3212,7 @@ function refreshRecvItemsTable(){
   if(recvDraftItems.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#8615;</div>No items added yet.</div>'; return; }
   el.innerHTML = '<div class="line-items">' +
     '<div class="li-row li-head"><span>SKU / Asset details</span><span>Description</span><span>Type</span><span>Qty</span><span></span></div>' +
-    recvDraftItems.map((it,i)=>`<div class="li-row"><span class="mono">${esc(it.sku)}${it.assetCodes&&it.assetCodes.length?'<div class="small-note">Asset Code(s): '+esc(it.assetCodes.join(', '))+'</div>':''}${it.amsTags&&it.amsTags.length?'<div class="small-note">AMS: '+esc(it.amsTags.join(', '))+'</div>':''}</span><span>${esc(it.description)}</span><span>${esc(it.type)}</span><span>${it.qty} ${esc(it.uom)}</span><span><button class="icon-btn" onclick="removeRecvItem(${i})">&times;</button></span></div>`).join('')
+    recvDraftItems.map((it,i)=>`<div class="li-row"><span class="mono">${esc(it.sku)}${it.assetCodes&&it.assetCodes.length?'<div class="small-note">Asset Tag(s): '+esc(it.assetCodes.join(', '))+'</div>':''}${it.amsTags&&it.amsTags.length?'<div class="small-note">AMS: '+esc(it.amsTags.join(', '))+'</div>':''}</span><span>${esc(it.description)}</span><span>${esc(it.type)}</span><span>${it.qty} ${esc(it.uom)}</span><span><button class="icon-btn" onclick="removeRecvItem(${i})">&times;</button></span></div>`).join('')
   + '</div>';
 }
 function readFileAsDataURL(file){
@@ -3137,17 +3266,39 @@ function returnIRCell(r){
   if(r.irFile) return '&#128206; '+esc(r.irFile);
   return '<span class="small-note">—</span>';
 }
+function receivingAssetStatuses(r){
+  if(r.type!=='Asset') return [];
+  const codes=recvAssetCodesOf(r);
+  const available=new Set(availableAssetCodes(r.sku,r.soc||'').map(code=>code.toUpperCase()));
+  const amsTags=Array.isArray(r.amsTags)?r.amsTags:assetCodeValues(r.amsTags);
+  const issued=new Set();
+  (DB.issuance||[]).forEach(i=>{
+    if(String(i.sku||'').trim().toUpperCase()!==String(r.sku||'').trim().toUpperCase()) return;
+    if(socKey(i.soc)&&socKey(r.soc)&&socKey(i.soc)!==socKey(r.soc)) return;
+    [...assetCodeValues(i.assetCodes||[]),...assetCodeValues(i.assetTagging||'')].forEach(tag=>issued.add(tag.toUpperCase()));
+  });
+  return codes.map((code,index)=>{
+    const onhand=available.has(code.toUpperCase());
+    const wasIssued=issued.has(code.toUpperCase())||issued.has(String(amsTags[index]||'').trim().toUpperCase());
+    return {code,label:onhand?'Available onhand':wasIssued?'Issued asset':'Unavailable',style:onhand?'tag-approved':wasIssued?'tag-asset':'tag-pending'};
+  });
+}
+function receivingAssetStatusHtml(r){
+  const statuses=receivingAssetStatuses(r);
+  if(!statuses.length) return '<span class="small-note">—</span>';
+  return statuses.map(s=>'<div style="margin-bottom:4px;">'+(statuses.length>1?'<span class="mono">'+esc(s.code)+'</span> ': '')+'<span class="tag '+s.style+'">'+esc(s.label)+'</span></div>').join('');
+}
 function receivingListHtml(){
   const isAdmin = session.role==='admin';
   const rows = socFilter(DB.receiving);
   const header = `<div class="list-head"><h3>Receiving log (${rows.length})</h3>${dlBtn('exportReceiving')}</div>`;
   if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#8615;</div>No receiving transactions logged yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th>Ref #</th><th>SKU</th><th>Asset Code(s)</th><th>AMS Asset Tagging</th><th>Item</th><th>Type</th><th>From</th><th>Qty</th><th>Date</th><th>Received by</th><th>Transmittal</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
+    '<tr><th>Ref #</th><th>SKU</th><th>Asset Tag(s)</th><th>AMS Asset Tagging</th><th>Item</th><th>Type</th><th>Status</th><th>From</th><th>Qty</th><th>Date</th><th>Received by</th><th>Transmittal</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
     rows.slice().reverse().map(r=>`<tr>
       <td class="mono">${esc(r.id)}</td><td class="mono">${esc(r.sku)}</td><td class="mono">${esc(recvAssetCodesOf(r).join(', ')||'—')}</td><td class="mono">${esc((Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', ')||'—')}</td><td>${esc(r.description)}</td>
       <td>${r.type==='Asset'?'<span class="tag tag-asset">Asset</span>':'<span class="tag tag-consumable">Consumable</span>'}</td>
-      <td>${esc(r.from)}</td><td style="font-weight:700;">${r.qty} ${esc(r.uom)}</td><td>${fmtDate(r.date)}</td>
+      <td>${receivingAssetStatusHtml(r)}</td><td>${esc(r.from)}</td><td style="font-weight:700;">${r.qty} ${esc(r.uom)}</td><td>${fmtDate(r.date)}</td>
       <td>${esc(r.receivedBy)}</td><td>${r.transmittalFile?(`<a href="javascript:void(0)" onclick="viewReceivedTransmittal('${esc(r.id)}')" style="color:var(--info);font-weight:600;text-decoration:underline;cursor:pointer;">&#128206; ${esc(r.transmittal||'View file')}</a>`):(r.transmittal?('&#128206; '+esc(r.transmittal)):'<span class="small-note">—</span>')}</td>
       ${isAdmin?`<td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditReceiving('${esc(r.id)}')">Edit</button> <button class="icon-btn" onclick="deleteReceiving('${esc(r.id)}')">&times;</button></td>`:''}
     </tr>`).join('') + '</table></div></div>';
@@ -3164,7 +3315,7 @@ function openEditReceiving(id){
       ${r.type==='Asset'?'':`<div class="field"><label>Quantity</label><input type="number" min="0" id="edit-recv-qty" value="${r.qty}"></div>`}
     </div>
     ${r.type==='Asset'?`<div class="form-row">
-      <div class="field"><label>Asset Code(s)</label><textarea id="edit-recv-asset-codes" placeholder="One code per line">${esc(recvAssetCodesOf(r).join('\n'))}</textarea><div class="hint">Quantity is calculated from the number of asset codes. Legacy records without codes keep their recorded quantity until codes are entered.</div></div>
+      <div class="field"><label>Asset Tag(s)</label><textarea id="edit-recv-asset-codes" placeholder="One tag per line">${esc(recvAssetCodesOf(r).join('\n'))}</textarea><div class="hint">Quantity is calculated from the number of asset tags. Legacy records without tags keep their recorded quantity until tags are entered.</div></div>
       <div class="field"><label>AMS Asset Tagging</label><input id="edit-recv-ams-tagging" value="${esc((Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', '))}" placeholder="Separate multiple tags with commas"></div>
     </div>`:`<div class="form-row"><div class="field"><label>AMS Asset Tagging</label><input id="edit-recv-ams-tagging" value="${esc((Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', '))}" placeholder="Separate multiple tags with commas"></div></div>`}
     <div class="hint">Changing the quantity will adjust current stock for ${esc(r.sku)} by the difference.</div>
@@ -3179,7 +3330,7 @@ async function saveReceivingEdit(id){
   if(!r) return;
   const from = document.getElementById('edit-recv-from').value;
   const assetCodes = r.type==='Asset' ? recvAssetCodes(document.getElementById('edit-recv-asset-codes').value) : [];
-  if(r.type==='Asset' && assetCodes.length===0 && recvAssetCodesOf(r).length>0){ toast('Enter at least one Asset Code. Quantity is based on the asset codes entered.'); return; }
+  if(r.type==='Asset' && assetCodes.length===0 && recvAssetCodesOf(r).length>0){ toast('Enter at least one Asset Tag. Quantity is based on the asset tags entered.'); return; }
   const qty = r.type==='Asset' ? (assetCodes.length||Number(r.qty)||0) : Number(document.getElementById('edit-recv-qty').value);
   if(!Number.isFinite(qty) || qty<0){ toast('Enter a valid quantity.'); return; }
   const delta = qty - r.qty;
@@ -3209,8 +3360,8 @@ function deleteReceiving(id){
   });
 }
 function exportReceiving(){
-  const rows = socFilter(DB.receiving).map(r=>[r.id,r.sku,recvAssetCodesOf(r).join(', '),(Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', '),r.description,r.type,r.from,r.qty,r.uom,fmtDate(r.date),r.receivedBy,r.transmittal||'']);
-  downloadCSV('receiving-log.csv', ['Ref #','SKU','Asset Code(s)','AMS Asset Tagging','Item','Type','From','Qty','UOM','Date','Received by','Transmittal'], rows);
+  const rows = socFilter(DB.receiving).map(r=>[r.id,r.sku,recvAssetCodesOf(r).join(', '),(Array.isArray(r.amsTags)?r.amsTags:(r.amsTags?String(r.amsTags).split(/[,;\n]+/):[])).join(', '),r.description,r.type,receivingAssetStatuses(r).map(s=>s.code+': '+s.label).join('; '),r.from,r.qty,r.uom,fmtDate(r.date),r.receivedBy,r.transmittal||'']);
+  downloadCSV('receiving-log.csv', ['Ref #','SKU','Asset Tag(s)','AMS Asset Tagging','Item','Type','Status','From','Qty','UOM','Date','Received by','Transmittal'], rows);
 }
 
 /* ============================= ISSUANCE MODULE ============================= */
@@ -3260,14 +3411,14 @@ function exportIssuance(){
     r.issuedBy||'', fmtDateOrBlank(r.date),
     r.deptReceived?'Yes':'No', r.deptReceivedBy||'', fmtDateOrBlank(r.deptReceivedDate)
   ]);
-  downloadCSV('issuance-log.csv', ['Ref #','Transmittal','Source request','SKU','Item','Type','Qty','UOM','Department','Accountability','Accountability email','Asset code','Issued by','Date issued','Dept received','Dept received by','Dept received date'], rows);
+  downloadCSV('issuance-log.csv', ['Ref #','Transmittal','Source request','SKU','Item','Type','Qty','UOM','Department','Accountability','Accountability email','Asset tag','Issued by','Date issued','Dept received','Dept received by','Dept received date'], rows);
 }
 function issuanceListHtml(){
   const isAdmin = session.role==='admin';
   const rows = socFilter(DB.issuance);
   if(rows.length===0) return '<div class="card"><div class="empty"><div class="ic">&#8613;</div>No issuance transactions yet — these are created automatically when a request is issued.</div></div>';
   return '<div class="card"><div class="tbl-wrap"><table>' +
-    '<tr><th>Ref #</th><th>Transmittal</th><th>Source request</th><th>SKU</th><th>Item</th><th>Qty</th><th>Dept</th><th>Accountability</th><th>Asset code</th><th>Date</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
+    '<tr><th>Ref #</th><th>Transmittal</th><th>Source request</th><th>SKU</th><th>Item</th><th>Qty</th><th>Dept</th><th>Accountability</th><th>Asset tag</th><th>Date</th>'+(isAdmin?'<th></th>':'')+'</tr>' +
     rows.slice().reverse().map(r=>`<tr>
       <td class="mono">${esc(r.id)}</td><td class="mono">${r.sourceRequestId&&r.transmittalNo?`<button class="btn btn-sm" onclick="openTransmittal('${esc(r.sourceRequestId)}')">${esc(r.transmittalNo)}</button>`:esc(r.transmittalNo||'—')}</td><td class="mono">${esc(r.sourceRequestId||'—')}</td><td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td>
       <td style="font-weight:700;">${r.qty} ${esc(r.uom)}</td><td>${esc(r.department)}</td><td>${esc(r.accountability)}<div class="small-note">${esc(r.accountabilityEmail||'')}</div></td>
@@ -4232,6 +4383,7 @@ async function receiveReturn(id){
 /* ============================= DEPARTMENT PORTAL ============================= */
 /* ---- Dept Dashboard ---- */
 function renderDeptDashboard(){
+  syncRequestReceipts();
   const c = document.getElementById('content');
   const dept = session.department;
   const myIssuances = DB.issuance.filter(i=>i.department===dept);
@@ -4260,44 +4412,58 @@ function renderDeptDashboard(){
 }
 
 /* ---- Dept Receiving (from Supplies) ---- */
+function syncRequestReceipts(){
+  // A request-level receipt confirms every issuance line linked to that request.
+  // Also reconcile older records that were confirmed before this synchronization existed.
+  const receivedRequests=new Map((DB.requests||[]).filter(r=>r.status==='Received').map(r=>[r.id,r]));
+  (DB.issuance||[]).forEach(i=>{
+    const r=receivedRequests.get(i.sourceRequestId);
+    if(!r) return;
+    if(!i.deptReceived){
+      i.deptReceived=true;
+      i.deptReceivedBy=r.receivedBy||'';
+      i.deptReceivedDate=r.receivedDate||'';
+    }else{
+      if(!i.deptReceivedBy) i.deptReceivedBy=r.receivedBy||'';
+      if(!i.deptReceivedDate) i.deptReceivedDate=r.receivedDate||'';
+    }
+  });
+}
 function renderDeptReceiving(){
+  syncRequestReceipts();
   const c = document.getElementById('content');
-  const tab = subroute || 'pending';
   const dept = session.department;
   const items = DB.issuance.filter(i=>i.department===dept);
-  const pending = items.filter(i=>!i.deptReceived);
-  const received = items.filter(i=>i.deptReceived);
-  c.innerHTML = `
-    <div class="tabs">
-      <div class="tab ${tab==='pending'?'active':''}" onclick="navigate('dreceiving','pending')">Pending confirmation (${pending.length})</div>
-      <div class="tab ${tab==='received'?'active':''}" onclick="navigate('dreceiving','received')">Received (${received.length})</div>
-    </div>
-    <div id="drecv-body"></div>
-  `;
-  const list = tab==='pending' ? pending : received;
+  c.innerHTML = '<div id="drecv-body"></div>';
+  const list = items;
   const el = document.getElementById('drecv-body');
   if(list.length===0){
-    el.innerHTML = '<div class="card"><div class="empty"><div class="ic">&#8615;</div>'+(tab==='pending'?'Nothing waiting for confirmation.':'No confirmed receipts yet.')+'</div></div>';
+    el.innerHTML = '<div class="card"><div class="empty"><div class="ic">&#8615;</div>Nothing sent to your department yet.</div></div>';
     return;
   }
   el.innerHTML = '<div class="card"><div class="card-sub">Items sent to '+esc(dept)+' by the Supplies Portal.</div><div class="tbl-wrap"><table>' +
-    '<tr><th>Ref #</th><th>SKU</th><th>Item</th><th>Type</th><th>Qty</th><th>Asset code</th><th>Transmittal</th><th>Date sent</th>' + (tab==='pending'?'<th></th>':'<th>Confirmed</th>') + '</tr>' +
+    '<tr><th>Ref #</th><th>SKU</th><th>Item</th><th>Type</th><th>Qty</th><th>Asset tag</th><th>Transmittal</th><th>Date sent</th><th>Receipt</th></tr>' +
     list.slice().reverse().map(i=>`<tr>
       <td class="mono">${esc(i.id)}</td><td class="mono">${esc(i.sku)}</td><td>${esc(i.description)}</td>
       <td>${i.type==='Asset'?'<span class="tag tag-asset">Asset</span>':'<span class="tag tag-consumable">Consumable</span>'}</td>
       <td style="font-weight:700;">${i.qty} ${esc(i.uom)}</td><td class="mono">${esc(Array.isArray(i.assetCodes)&&i.assetCodes.length?i.assetCodes.join(', '):(i.assetTagging||'—'))}</td>
       <td class="mono">${i.sourceRequestId&&i.transmittalNo?`<button class="btn btn-sm" onclick="openTransmittal('${esc(i.sourceRequestId)}')">${esc(i.transmittalNo)}</button>`:esc(i.transmittalNo||'—')}</td><td>${fmtDate(i.date)}</td>
-      ${tab==='pending' ? `<td><button class="btn btn-sm btn-success" onclick="confirmDeptReceived('${i.id}')">Received</button></td>` :
-      `<td>${fmtDate(i.deptReceivedDate)}<div class="small-note">by ${esc(i.deptReceivedBy)}</div></td>`}
+      ${!i.deptReceived ? `<td><button class="btn btn-sm btn-success" onclick="confirmDeptReceived('${i.id}')">Received</button></td>` :
+      `<td><span class="tag tag-approved">Received</span><div>${fmtDate(i.deptReceivedDate)}</div><div class="small-note">by ${esc(i.deptReceivedBy||'—')}</div></td>`}
     </tr>`).join('') + '</table></div></div>';
 }
 async function confirmDeptReceived(id){
+  syncRequestReceipts();
   const i = DB.issuance.find(x=>x.id===id);
   if(!i) return;
+  if(i.deptReceived){
+    navigate('dreceiving','received');
+    return;
+  }
   i.deptReceived = true; i.deptReceivedBy = session.fullName; i.deptReceivedDate = nowISO();
   await saveDB();
   toast(id+' confirmed as received.');
-  navigate('dreceiving','pending');
+  navigate('dreceiving','received');
 }
 
 /* ---- Dept Issuance (to department staff) ---- */
