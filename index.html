@@ -624,17 +624,18 @@ if(!window.storage){
             });
           });
           if(conflicts) return {conflict:true, conflicts};
-          /* Best-effort heartbeat so pollForUpdates() can tell which
-             sections changed with one small read instead of re-fetching
-             all ~27 section documents every 4s (at real usage volumes that
-             would blow through Firestore's free-tier daily read quota in
-             well under an hour). A failure here is non-fatal — the actual
-             data write above already succeeded — it just means an
-             already-open tab elsewhere might not notice this change until
-             its next full reload instead of its next poll tick. Returns
-             the exact timestamp used so the caller can record the same
-             value locally and not mistake its own just-completed write for
-             a change made by someone else on the very next poll. */
+          /* Best-effort heartbeat so onMetaUpdate() can tell which sections
+             changed via its __meta listener, and fetch just those, instead
+             of every open tab re-fetching all ~27 section documents (at
+             real usage volumes that would blow through Firestore's
+             free-tier daily read quota in well under an hour). A failure
+             here is non-fatal — the actual data write above already
+             succeeded — it just means an already-open tab elsewhere might
+             not notice this change until its next full reload instead of
+             its next heartbeat update. Returns the exact timestamp used so
+             the caller can record the same value locally and not mistake
+             its own just-completed write for a change made by someone else
+             on the next heartbeat. */
           const now = Date.now();
           try{
             const metaRef = docRef('__meta', shared);
@@ -910,7 +911,7 @@ function migrateDB(){
 }
 
 /* Fetches every section document (plus the small __meta heartbeat doc used
-   by pollForUpdates — see setMulti()) in parallel. Returns each section's
+   by onMetaUpdate — see setMulti()) in parallel. Returns each section's
    parsed value and raw snapshot string, and whether ANY section document
    exists yet at all (used by loadDB() to decide whether the one-time
    migration from the old single-blob document is needed). */
@@ -1056,14 +1057,16 @@ let saving = false;
 let lastKnownSnapshot = null;
 /* {sectionKey (as stored in __meta, i.e. 'section__'+key): timestamp} — the
    last heartbeat value this tab has already accounted for, so
-   pollForUpdates() only re-fetches sections that actually changed instead
-   of re-reading all ~27 of them every 4s. */
+   onMetaUpdate() only re-fetches sections that actually changed instead of
+   re-reading all ~27 of them on every heartbeat change. */
 let sectionVersions = {};
-let pollTimer = null;
+let metaUnsubscribe = null;
 /* Set true around any action that reads a file (await) before saving to the
-   shared DB — e.g. finalizeRepairAction. While true, pollForUpdates will not
-   swap out the in-memory DB object, so an in-flight edit can't be silently
-   dropped by an auto-refresh landing mid-action. */
+   shared DB — e.g. finalizeRepairAction. While true, onMetaUpdate() will not
+   swap out the in-memory DB object; it waits for actionInFlight to clear
+   instead of dropping the update, since auto-refresh is now event-driven
+   (see startAutoRefresh()) rather than a 4s poll that would otherwise pick
+   the same change up on its next tick. */
 let actionInFlight = false;
 /* Applies a conflict response's per-section current values back onto DB and
    lastKnownSnapshot. Shared between saveDB() and saveDBWithRetry() so the
@@ -1311,12 +1314,24 @@ async function logAudit(action, detail){
 }
 
 /* ============================= LIVE AUTO-REFRESH ============================= */
+/* Auto-refresh used to be a setInterval() poll re-reading the small __meta
+   heartbeat doc every 4s in every open tab, forever, whether or not anyone
+   was looking at the screen or anything had changed. That idle drip — not
+   real editing — was what was burning through Firestore's free-tier daily
+   read quota (confirmed against the Firebase console: the reads graph rose
+   in a near-straight line all day with only ~8 active connections, the
+   signature of a fixed-rate background poll rather than user activity).
+   This now subscribes to the __meta doc with onSnapshot instead: Firestore
+   only bills a listener for its initial read plus actual changes to the
+   watched document, so an idle tab costs ~0 reads/hour instead of ~900. */
 function startAutoRefresh(){
-  if(pollTimer) return;
-  pollTimer = setInterval(pollForUpdates, 4000);
+  if(metaUnsubscribe) return;
+  metaUnsubscribe = window.storage.subscribe('__meta', true, onMetaUpdate, error=>{
+    console.error('Auto-refresh listener failed', error);
+  });
 }
 function stopAutoRefresh(){
-  if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+  if(metaUnsubscribe){ metaUnsubscribe(); metaUnsubscribe = null; }
 }
 function isFormScreenActive(){
   if(route==='settings') return true;
@@ -1324,19 +1339,18 @@ function isFormScreenActive(){
   const formSubroutes = { request:'new', drequest:'new', receiving:'new', issuance:'new', dissuance:'new', dreceiving:'new', dreturn:'new', returns:'new', repair:'new' };
   return formSubroutes[route] && subroute===formSubroutes[route];
 }
-/* Reads just the small __meta heartbeat doc (one read) to see which
-   sections have changed since this tab last knew about, then only
-   re-fetches those specific sections — not all ~27 of them — every 4s.
-   Polling every section on every tick would cost ~27x the reads for no
-   benefit in the overwhelmingly common case where nothing changed, which
-   at realistic usage would exhaust Firestore's free-tier daily read quota
-   in well under an hour. */
-async function pollForUpdates(){
-  if(!session || actionInFlight) return;
+/* Fires whenever the __meta heartbeat doc actually changes (own writes
+   included, deduped by window.storage.subscribe() before this is called).
+   Diffs it against sectionVersions to see which sections changed since this
+   tab last knew about, then only re-fetches those specific sections — not
+   all ~27 of them. Waits out actionInFlight rather than bailing on it: with
+   no periodic poll behind this anymore, dropping an update here could leave
+   a tab stale until the next unrelated change to the same section. */
+async function onMetaUpdate(snapshot){
+  if(!session || !snapshot) return;
   try{
-    const metaRes = await window.storage.get('__meta', true);
-    if(!metaRes) return;
-    const meta = JSON.parse(metaRes.value);
+    while(actionInFlight) await new Promise(r=>setTimeout(r, 100));
+    const meta = JSON.parse(snapshot.value);
     const changedKeys = SECTION_KEYS.filter(k=>{
       const fullKey = 'section__'+k;
       return meta[fullKey] && meta[fullKey] !== sectionVersions[fullKey];
@@ -6395,12 +6409,12 @@ function pdaBorrowedTableHtml(){
 // Lightweight live refresh for the PDA Issuance (scan) tab: updates just the
 // "Currently borrowed" board and the borrow/return log so other users' scans
 // become visible within a few seconds, without the full-tab re-render that
-// pollForUpdates normally does elsewhere — that re-render would blank out
+// onMetaUpdate normally does elsewhere — that re-render would blank out
 // whatever this user has typed into the serial/Ops ID fields, or drop an
 // in-progress borrow/return session (see renderITAssets resetting pdaActiveMode
 // on every scan-tab render). Returns false when the scan tab isn't mounted, or
 // when this user is mid-scan themselves, so callers know to leave the (already
-// updated) DB to show up on a later, quieter poll tick instead.
+// updated) DB to show up on the next heartbeat update instead.
 function refreshPdaLiveSections(){
   const wrap = document.getElementById('pda-borrowed-wrap');
   if(!wrap) return false;
