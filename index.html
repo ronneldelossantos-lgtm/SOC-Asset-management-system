@@ -452,6 +452,7 @@ if(!window.storage){
   if(fsDB){
     const COLLECTION = 'sms_erp_storage';
     const docRef = (key, shared) => fsDB.collection(COLLECTION).doc((shared?'shared__':'local__')+key);
+    const recordRef = (section, id) => fsDB.collection(section).doc(id);
     /* Firestore limits every document to 1 MiB.  Employees has already grown
        to the edge of that limit, and request records can contain signed
        transmittals (base64) that grow just as quickly.  Keep the storage API
@@ -492,6 +493,7 @@ if(!window.storage){
       return chunks.map(part=>part.data().value).join('');
     }
     window.storage = {
+      supportsRecordCollections: true,
       async get(key, shared){
         try{
           const snap = await docRef(key, shared).get();
@@ -505,6 +507,78 @@ if(!window.storage){
           console.error('storage.get failed:', e);
           throw e;
         }
+      },
+      async getRecords(section, includeArchived){
+        try{
+          const query = includeArchived
+            ? fsDB.collection(section)
+            : fsDB.collection(section).where('archived','==',false);
+          const snap = await query.get();
+          return snap.docs.map(doc=>{
+            const value = doc.data().value;
+            if(typeof value!=='string') throw new Error('Invalid '+section+' record '+doc.id+'.');
+            return JSON.parse(value);
+          });
+        }catch(e){
+          console.error('storage.getRecords failed:', e);
+          throw e;
+        }
+      },
+      async getRecordChanges(section, ids){
+        try{
+          const snaps = await Promise.all((ids||[]).map(id=>recordRef(section,id).get()));
+          return snaps.map((snap,index)=>{
+            if(!snap.exists) return {id:ids[index], value:null};
+            const value = snap.data().value;
+            if(typeof value!=='string') throw new Error('Invalid '+section+' record '+ids[index]+'.');
+            return {id:ids[index], value};
+          });
+        }catch(e){
+          console.error('storage.getRecordChanges failed:', e);
+          throw e;
+        }
+      },
+      async claimRecordMigration(owner){
+        const ref = docRef(RECORD_SCHEMA_KEY, true);
+        let claim = 'wait';
+        await fsDB.runTransaction(async tx=>{
+          const snap = await tx.get(ref);
+          const state = snap.exists && typeof snap.data().value==='string' ? JSON.parse(snap.data().value) : null;
+          if(state && state.state==='complete'){ claim = 'complete'; return; }
+          if(state && state.state==='migrating' && Date.now()-Number(state.startedAt||0)<10*60*1000) return;
+          tx.set(ref, {value:JSON.stringify({state:'migrating', owner, startedAt:Date.now()}), updatedAt:Date.now()});
+          claim = 'owner';
+        });
+        return claim;
+      },
+      async finishRecordMigration(owner, recordsBySection){
+        const writes = [];
+        RECORD_SECTION_KEYS.forEach(section=>{
+          (recordsBySection[section]||[]).forEach(record=>{
+            if(!record || !record.id) throw new Error('Cannot migrate a '+section+' record without an id.');
+            const value = JSON.stringify(record);
+            if(utf8Bytes(value)>900*1024) throw new Error(section+' '+record.id+' is too large for a Firestore record document.');
+            writes.push({ref:recordRef(section,record.id), value, status:String(record.status||''), archived:recordIsArchived(section,record)});
+          });
+        });
+        for(let offset=0; offset<writes.length; offset+=450){
+          const batch = fsDB.batch();
+          writes.slice(offset,offset+450).forEach(write=>batch.set(write.ref, {
+            value:write.value, status:write.status, archived:write.archived, updatedAt:Date.now()
+          }));
+          await batch.commit();
+        }
+        await docRef('section__issuanceMetrics', true).set({
+          value:JSON.stringify(buildIssuanceMetrics(recordsBySection.issuance||[])),
+          updatedAt:Date.now()
+        });
+        const ref = docRef(RECORD_SCHEMA_KEY, true);
+        await fsDB.runTransaction(async tx=>{
+          const snap = await tx.get(ref);
+          const state = snap.exists && typeof snap.data().value==='string' ? JSON.parse(snap.data().value) : null;
+          if(!state || state.owner!==owner || state.state!=='migrating') throw new Error('Record migration lease was lost.');
+          tx.set(ref, {value:JSON.stringify({state:'complete', completedAt:Date.now()}), updatedAt:Date.now()});
+        });
       },
       subscribe(key, shared, onValue, onError){
         let request = 0, loadingVersion = null, deliveredVersion = null;
@@ -583,12 +657,15 @@ if(!window.storage){
          expectedPrevious}]. Returns {conflict:true, conflicts:{key:
          currentValue}} listing every mismatched section, not just the
          first, so the caller can refresh all of them at once. */
-      async setMulti(entries, shared){
+      async setMulti(entries, shared, recordEntries){
         try{
-          let conflicts = null;
+          let conflicts = null, recordConflicts = null;
+          const records = recordEntries || [];
           await fsDB.runTransaction(async tx=>{
             const refs = entries.map(e=>docRef(e.key, shared));
             const snaps = await Promise.all(refs.map(r=>tx.get(r)));
+            const recordRefs = records.map(e=>recordRef(e.section,e.id));
+            const recordSnaps = await Promise.all(recordRefs.map(r=>tx.get(r)));
             /* Every read must happen before any write in a Firestore
                transaction.  Read the old chunks now so the compare-and-swap
                still compares complete values, not manifests. */
@@ -609,7 +686,16 @@ if(!window.storage){
                 : data.value);
               if(cur !== entries[i].expectedPrevious) localConflicts[entries[i].key] = cur;
             });
-            if(Object.keys(localConflicts).length){ conflicts = localConflicts; return; }
+            const localRecordConflicts = {};
+            recordSnaps.forEach((snap, i)=>{
+              const cur = snap.exists ? snap.data().value : null;
+              if(cur !== records[i].expectedPrevious) localRecordConflicts[records[i].section+'__'+records[i].id] = cur;
+            });
+            if(Object.keys(localConflicts).length || Object.keys(localRecordConflicts).length){
+              conflicts = localConflicts;
+              recordConflicts = localRecordConflicts;
+              return;
+            }
             const updatedAt = Date.now();
             entries.forEach((entry, i)=>{
               const chunks = splitValue(entry.value);
@@ -622,9 +708,19 @@ if(!window.storage){
                 oldChunkSnaps[i].slice(chunks.length).forEach((part, n)=>tx.delete(docRef(chunkKey(entry.key, chunks.length+n), shared)));
               }
             });
+            records.forEach((entry, i)=>{
+              if(entry.value===null){ tx.delete(recordRefs[i]); return; }
+              const record = JSON.parse(entry.value);
+              tx.set(recordRefs[i], {
+                value:entry.value,
+                status:String(record.status||''),
+                archived:recordIsArchived(entry.section,record),
+                updatedAt
+              });
+            });
           });
-          if(conflicts) return {conflict:true, conflicts};
-          /* Best-effort heartbeat so pollForUpdates() can tell which
+          if(conflicts || recordConflicts) return {conflict:true, conflicts:conflicts||{}, recordConflicts:recordConflicts||{}};
+          /* Best-effort heartbeat so onMetaUpdate() can tell which
              sections changed with one small read instead of re-fetching
              all ~27 section documents every 4s (at real usage volumes that
              would blow through Firestore's free-tier daily read quota in
@@ -642,6 +738,14 @@ if(!window.storage){
               const snap = await tx.get(metaRef);
               const meta = snap.exists ? JSON.parse(snap.data().value) : {};
               entries.forEach(e=>{ meta[e.key] = now; });
+              const recordIdsBySection = {};
+              records.forEach(record=>{
+                if(!recordIdsBySection[record.section]) recordIdsBySection[record.section] = [];
+                recordIdsBySection[record.section].push(record.id);
+              });
+              Object.keys(recordIdsBySection).forEach(section=>{
+                meta['records__'+section] = {version:now, ids:recordIdsBySection[section]};
+              });
               tx.set(metaRef, {value: JSON.stringify(meta), updatedAt: now});
             });
           }catch(e){ console.error('meta heartbeat update failed (non-fatal):', e); }
@@ -735,6 +839,7 @@ let subroute = '';
 let portalMode = null; // 'supplies' | 'department' — derived from the logged-in account
 let navGroupOpen = {}; // {[dropdownGroupId]: true/false} — which sidebar process dropdowns are expanded
 let adminViewSoc = ''; // admin-only: when set, scopes the whole portal (dashboards + data) to this one SOC, as if that were the admin's own site. '' = all SOCs combined.
+let navigationGeneration = 0;
 
 /* Keeps the logged-in user and the exact screen/tab open across an actual
    browser refresh (F5 / reload), so reloading the tab lands back where you
@@ -788,6 +893,7 @@ function defaultDB(){
     requests: [],
     receiving: [],
     issuance: [],
+    issuanceMetrics: {},
     cycleCountConsumable: [],
     cycleCountAsset: [],
     repairs: [],
@@ -815,6 +921,105 @@ function defaultDB(){
    here becomes its own Firestore document ('section__'+key) — see the
    setMulti() comment above for why the app moved off one giant document. */
 const SECTION_KEYS = Object.keys(defaultDB());
+const RECORD_SECTION_KEYS = ['requests','returns','issuance'];
+const RECORD_SCHEMA_KEY = '__record_schema_v1';
+const CORE_SECTION_KEYS = ['users','notifications','counters','issuanceMetrics'];
+const ROUTE_SECTIONS = {
+  dashboard: ['sku','stock','reorderPoint','repairs'],
+  request: ['sku','departments','accountability','stock','users'],
+  receiving: ['sku','stock','suppliers','receiving'],
+  issuance: ['sku','stock','repairs'],
+  returns: ['sku','stock','repairs','deptIssuance'],
+  cyclecount: ['sku','stock','cycleCountConsumable','cycleCountAsset'],
+  repair: ['sku','stock','repairs','pmChecklists','pmCounts','pmInspections'],
+  cageloading: ['cages','cageCycleCounts','warehouses','counters'],
+  itassets: ['pdas','pdaLogs','pdaAllocations','pdaAllocationsBySoc','pdaDeptBuckets','employees','departments'],
+  parcelretrieval: ['parcels','sortingStations','handOverTo','counters'],
+  settings: ['sku','departments','suppliers','warehouses','sortingStations','handOverTo','accountability','employees','pmChecklists','users','departmentSoc'],
+  ddashboard: ['sku','stock','deptIssuance'],
+  dapprovals: ['users','departments'],
+  drequest: ['sku','departments','accountability','stock','users'],
+  dreceiving: ['sku','stock','deptIssuance'],
+  dissuance: ['sku','employees','deptIssuance'],
+  dreturn: ['sku','stock','repairs','deptIssuance']
+};
+const ARCHIVE_ROUTE_KEYS = new Set(['dashboard','issuance','cyclecount','repair','returns','ddashboard','dreceiving','dissuance','dreturn']);
+let loadedSections = new Set();
+let loadedRecordSections = new Set();
+let loadedRecordArchives = new Set();
+let recordSnapshots = {};
+let recordVersions = {};
+let recordModeActive = false;
+
+function recordIsArchived(section, record){
+  if(section==='requests') return ['Rejected','Received'].includes(record.status);
+  if(section==='returns') return ['Received','Asset Received'].includes(record.status);
+  if(section==='issuance') return record.deptReceived===true;
+  return false;
+}
+function recordSnapshot(records){
+  const snapshot = {};
+  (records||[]).forEach(record=>{
+    if(record && record.id) snapshot[record.id] = JSON.stringify(record);
+  });
+  return snapshot;
+}
+function recordChanges(section){
+  const previous = recordSnapshots[section] || {};
+  const current = recordSnapshot(DB[section]);
+  const ids = new Set([...Object.keys(previous), ...Object.keys(current)]);
+  return [...ids].filter(id=>previous[id]!==current[id]).map(id=>({
+    section,
+    id,
+    value: current[id]===undefined ? null : current[id],
+    expectedPrevious: previous[id]===undefined ? null : previous[id]
+  }));
+}
+function issuanceMetricDate(record){
+  const value = String(record.date||record.dateIssued||'').slice(0,10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : 'unknown';
+}
+function changeIssuanceMetricBucket(bucket, record, direction){
+  if(!record || !record.sku) return;
+  const sku = String(record.sku);
+  const qty = Number(record.qty||0) * direction;
+  if(!qty) return;
+  const metric = bucket[sku] || {totalQty:0, dates:{}};
+  const day = issuanceMetricDate(record);
+  metric.totalQty = Number(metric.totalQty||0) + qty;
+  metric.dates[day] = Number(metric.dates[day]||0) + qty;
+  if(metric.dates[day]===0) delete metric.dates[day];
+  const dates = Object.keys(metric.dates).filter(key=>metric.dates[key]>0 && key!=='unknown').sort();
+  if(metric.totalQty<=0 || !Object.keys(metric.dates).length){ delete bucket[sku]; return; }
+  metric.earliest = dates[0] || '';
+  bucket[sku] = metric;
+}
+function changeIssuanceMetric(metrics, record, direction){
+  if(!metrics.all) metrics.all = {};
+  if(!metrics.bySoc) metrics.bySoc = {};
+  const soc = String((record&&record.soc)||'');
+  if(!metrics.bySoc[soc]) metrics.bySoc[soc] = {};
+  changeIssuanceMetricBucket(metrics.all,record,direction);
+  changeIssuanceMetricBucket(metrics.bySoc[soc],record,direction);
+  if(!Object.keys(metrics.bySoc[soc]).length) delete metrics.bySoc[soc];
+}
+function buildIssuanceMetrics(records){
+  const metrics = {all:{},bySoc:{}};
+  (records||[]).forEach(record=>changeIssuanceMetric(metrics,record,1));
+  return metrics;
+}
+function refreshIssuanceMetrics(records){
+  const issuanceRecords = records.filter(record=>record.section==='issuance');
+  if(!issuanceRecords.length) return;
+  let base = {};
+  try{ base = lastKnownSnapshot.issuanceMetrics ? JSON.parse(lastKnownSnapshot.issuanceMetrics) : {}; }
+  catch(e){ base = {}; }
+  issuanceRecords.forEach(record=>{
+    if(record.expectedPrevious!==null) changeIssuanceMetric(base,JSON.parse(record.expectedPrevious),-1);
+    if(record.value!==null) changeIssuanceMetric(base,JSON.parse(record.value),1);
+  });
+  DB.issuanceMetrics = base;
+}
 
 function migrateDB(){
   // Old shape was DB.stock[sku] = qty (a single company-wide number per SKU).
@@ -912,24 +1117,94 @@ function migrateDB(){
   });
 }
 
-/* Fetches every section document (plus the small __meta heartbeat doc used
-   by pollForUpdates — see setMulti()) in parallel. Returns each section's
+/* Fetches only the requested section documents (plus the small __meta
+   heartbeat doc used by onMetaUpdate — see setMulti()) in parallel. Returns
    parsed value and raw snapshot string, and whether ANY section document
    exists yet at all (used by loadDB() to decide whether the one-time
    migration from the old single-blob document is needed). */
-async function loadSections(){
+function isRecordSection(key){ return RECORD_SECTION_KEYS.includes(key); }
+function normalizeRecordSection(key, records){
+  DB[key] = Array.isArray(records) ? records : [];
+  recordSnapshots[key] = recordSnapshot(DB[key]);
+  loadedRecordSections.add(key);
+}
+async function ensureRecordSchema(){
+  if(!window.storage || !window.storage.supportsRecordCollections) return false;
+  const marker = await window.storage.get(RECORD_SCHEMA_KEY, true);
+  if(marker && JSON.parse(marker.value).state==='complete') return true;
+  const owner = 'tab_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+  const claim = await window.storage.claimRecordMigration(owner);
+  if(claim==='complete') return true;
+  if(claim!=='owner') return false;
+  const legacy = await Promise.all(RECORD_SECTION_KEYS.map(key=>window.storage.get('section__'+key, true)));
+  const old = legacy.some(Boolean) ? null : await window.storage.get(STORE_KEY, true);
+  const oldDB = old ? JSON.parse(old.value) : null;
+  const recordsBySection = {};
+  RECORD_SECTION_KEYS.forEach((key,index)=>{ recordsBySection[key] = legacy[index] ? JSON.parse(legacy[index].value) : ((oldDB&&oldDB[key])||[]); });
+  await window.storage.finishRecordMigration(owner, recordsBySection);
+  return true;
+}
+async function loadRecordSection(key, includeArchived){
+  normalizeRecordSection(key, await window.storage.getRecords(key, !!includeArchived));
+  if(includeArchived) loadedRecordArchives.add(key);
+}
+async function loadRecordChanges(key, ids){
+  if(!ids || !ids.length) return loadRecordSection(key, loadedRecordArchives.has(key));
+  const byId = new Map((DB[key]||[]).map(record=>[record.id,record]));
+  (await window.storage.getRecordChanges(key, ids)).forEach(change=>{
+    if(change.value===null){ byId.delete(change.id); return; }
+    const record = JSON.parse(change.value);
+    if(recordIsArchived(key,record) && !loadedRecordArchives.has(key)) byId.delete(record.id);
+    else byId.set(record.id,record);
+  });
+  normalizeRecordSection(key, Array.from(byId.values()));
+}
+async function loadSections(keys){
+  const selected = [...new Set(keys)];
   const [metaRes, ...results] = await Promise.all([
     window.storage.get('__meta', true),
-    ...SECTION_KEYS.map(k=>window.storage.get('section__'+k, true))
+    ...selected.map(key=>window.storage.get('section__'+key, true))
   ]);
   const data = {}, snap = {};
-  let anyExists = false;
-  SECTION_KEYS.forEach((k,i)=>{
-    const res = results[i];
-    if(res){ anyExists = true; data[k] = JSON.parse(res.value); snap[k] = res.value; }
-    else { data[k] = null; snap[k] = null; }
+  let anyExists = !!metaRes;
+  selected.forEach((key,index)=>{
+    const result = results[index];
+    if(result){ anyExists = true; data[key] = JSON.parse(result.value); snap[key] = result.value; }
+    else { data[key] = null; snap[key] = null; }
   });
-  return {anyExists, data, snap, meta: metaRes ? JSON.parse(metaRes.value) : {}};
+  return {anyExists, data, snap, meta:metaRes ? JSON.parse(metaRes.value) : {}};
+}
+async function hydrateSections(keys){
+  const wanted = [...new Set(keys.filter(key=>!isRecordSection(key) && !loadedSections.has(key)))];
+  if(!wanted.length) return;
+  const sections = await loadSections(wanted);
+  const defaults = defaultDB();
+  const missing = [];
+  wanted.forEach(key=>{
+    if(sections.data[key]!==null){
+      DB[key] = sections.data[key];
+      lastKnownSnapshot[key] = sections.snap[key];
+    }else{
+      DB[key] = defaults[key];
+      lastKnownSnapshot[key] = null;
+      missing.push(key);
+    }
+    sectionVersions['section__'+key] = sections.meta['section__'+key];
+    loadedSections.add(key);
+  });
+  migrateDB();
+  if(missing.length) await saveDB();
+}
+function routeNeedsArchive(routeKey, routeSub){
+  return ARCHIVE_ROUTE_KEYS.has(routeKey)
+    || ((routeKey==='request' || routeKey==='drequest') && routeSub==='list')
+    || (routeKey==='dapprovals' && routeSub==='history');
+}
+async function ensureRouteData(routeKey, routeSub){
+  await hydrateSections([...CORE_SECTION_KEYS, ...(ROUTE_SECTIONS[routeKey]||[]), ...RECORD_SECTION_KEYS]);
+  if(recordModeActive && routeNeedsArchive(routeKey,routeSub)){
+    await Promise.all(RECORD_SECTION_KEYS.filter(key=>!loadedRecordArchives.has(key)).map(key=>loadRecordSection(key,true)));
+  }
 }
 
 /* Retries once before giving up: a transient read error (a momentary
@@ -953,7 +1228,9 @@ async function loadDB(){
   let sections, lastErr;
   for(let attempt=0; attempt<2; attempt++){
     try{
-      sections = await loadSections();
+      recordModeActive = await ensureRecordSchema();
+      const initialKeys = recordModeActive ? CORE_SECTION_KEYS : [...CORE_SECTION_KEYS, ...RECORD_SECTION_KEYS];
+      sections = await loadSections(initialKeys);
       lastErr = null;
       break;
     }catch(e){
@@ -964,56 +1241,49 @@ async function loadDB(){
   if(lastErr){
     console.error('loadDB: could not reach shared storage, using local defaults without overwriting shared data', lastErr);
     DB = defaultDB();
-    migrateDB();
     lastKnownSnapshot = null;
-    sectionVersions = {};
     toast('Could not reach shared storage — showing local defaults. Reload once connection is back.');
     return;
   }
+  DB = defaultDB();
+  lastKnownSnapshot = {};
+  sectionVersions = {};
+  loadedSections = new Set();
+  loadedRecordSections = new Set();
+  loadedRecordArchives = new Set();
+  recordSnapshots = {};
+  recordVersions = {};
   if(!sections.anyExists){
-    /* One-time migration: no section documents exist yet. Split the old
-       single-blob document into sections if it exists, or seed fresh
-       defaults if this is a genuinely new deployment with no prior data.
-       Every section's lastKnownSnapshot starts at null (matching a
-       not-yet-existing document), so the follow-up saveDB() call below
-       goes through its normal compare-and-swap path rather than needing
-       migration-specific write logic — nothing can conflict with a
-       document that has never existed. */
-    let seed;
     try{
       const old = await window.storage.get(STORE_KEY, true);
-      seed = old ? JSON.parse(old.value) : defaultDB();
-    }catch(e){ seed = defaultDB(); }
-    DB = {};
-    SECTION_KEYS.forEach(k=>{ DB[k] = seed[k]!==undefined ? seed[k] : defaultDB()[k]; });
+      if(old) DB = {...defaultDB(), ...JSON.parse(old.value)};
+    }catch(e){ console.error('Could not read legacy state during bootstrap:', e); }
+    loadedSections = new Set(SECTION_KEYS.filter(key=>recordModeActive ? !isRecordSection(key) : true));
+    if(recordModeActive) RECORD_SECTION_KEYS.forEach(key=>normalizeRecordSection(key, DB[key]));
     migrateDB();
-    lastKnownSnapshot = {};
-    SECTION_KEYS.forEach(k=>{ lastKnownSnapshot[k] = null; });
-    sectionVersions = {};
+    Object.keys(DB).forEach(key=>{ if(!recordModeActive || !isRecordSection(key)) lastKnownSnapshot[key] = null; });
     await saveDB();
     return;
   }
-  DB = {};
-  lastKnownSnapshot = {};
-  const missing = [];
-  SECTION_KEYS.forEach(k=>{
-    if(sections.data[k]!==null){
-      DB[k] = sections.data[k];
-      lastKnownSnapshot[k] = sections.snap[k];
-    } else {
-      DB[k] = defaultDB()[k];
-      lastKnownSnapshot[k] = null;
-      missing.push(k);
+  const selected = Object.keys(sections.data);
+  selected.forEach(key=>{
+    if(sections.data[key]!==null){
+      DB[key] = sections.data[key];
+      lastKnownSnapshot[key] = sections.snap[key];
+    } else lastKnownSnapshot[key] = null;
+    if(isRecordSection(key) && recordModeActive) normalizeRecordSection(key, DB[key]);
+    else {
+      loadedSections.add(key);
+      sectionVersions['section__'+key] = sections.meta['section__'+key];
     }
   });
+  if(recordModeActive) await Promise.all(RECORD_SECTION_KEYS.map(key=>loadRecordSection(key,false)));
+  if(recordModeActive) RECORD_SECTION_KEYS.forEach(key=>{
+    const event = sections.meta['records__'+key];
+    recordVersions[key] = event && typeof event==='object' ? event.version : event;
+  });
   migrateDB();
-  sectionVersions = {};
-  SECTION_KEYS.forEach(k=>{ sectionVersions['section__'+k] = sections.meta['section__'+k]; });
-  /* A section missing here (but others present) means a field was added to
-     defaultDB() after this device last saved — same idea as the old
-     if(!res) await saveDB() below, just scoped to whichever sections are
-     actually new instead of the whole document. */
-  if(missing.length) await saveDB();
+  if(selected.some(key=>!isRecordSection(key) && sections.data[key]===null)) await saveDB();
 }
 
 function showModal(html){
@@ -1079,6 +1349,44 @@ function applySectionConflicts(conflicts){
   });
   migrateDB();
 }
+function applyRecordConflicts(conflicts){
+  Object.keys(conflicts||{}).forEach(key=>{
+    const split = key.indexOf('__');
+    const section = key.slice(0,split);
+    const id = key.slice(split+2);
+    const value = conflicts[key];
+    const records = new Map((DB[section]||[]).map(record=>[record.id,record]));
+    if(value===null) records.delete(id);
+    else {
+      const record = JSON.parse(value);
+      if(recordIsArchived(section,record) && !loadedRecordArchives.has(section)) records.delete(id);
+      else records.set(id,record);
+    }
+    DB[section] = Array.from(records.values());
+    if(!recordSnapshots[section]) recordSnapshots[section] = {};
+    if(value===null) delete recordSnapshots[section][id];
+    else recordSnapshots[section][id] = value;
+  });
+  migrateDB();
+}
+function changedSections(){
+  return [...loadedSections].filter(key=>JSON.stringify(DB[key]) !== lastKnownSnapshot[key]);
+}
+function changedRecords(){
+  return recordModeActive ? RECORD_SECTION_KEYS.flatMap(recordChanges) : [];
+}
+function markSaved(changed, records, updatedAt){
+  changed.forEach(key=>{
+    lastKnownSnapshot[key] = JSON.stringify(DB[key]);
+    sectionVersions['section__'+key] = updatedAt;
+  });
+  records.forEach(record=>{
+    if(!recordSnapshots[record.section]) recordSnapshots[record.section] = {};
+    if(record.value===null) delete recordSnapshots[record.section][record.id];
+    else recordSnapshots[record.section][record.id] = record.value;
+    recordVersions[record.section] = updatedAt;
+  });
+}
 function showSharedSaveError(error){
   const code=String(error&&error.code||'unknown').replace(/^firestore\//,'');
   const detail=String(error&&error.message||'No database error details were returned.');
@@ -1101,10 +1409,12 @@ async function saveDB(){
     /* Only the sections that actually changed get written — both to avoid
        needless Firestore writes, and because an unchanged section should
        never be able to conflict (nothing to lose by not touching it). */
-    const changed = SECTION_KEYS.filter(k=>JSON.stringify(DB[k]) !== lastKnownSnapshot[k]);
-    if(!changed.length) return true;
-    const entries = changed.map(k=>({key:'section__'+k, value:JSON.stringify(DB[k]), expectedPrevious: lastKnownSnapshot[k]}));
-    const res = await window.storage.setMulti(entries, true);
+    const records = changedRecords();
+    refreshIssuanceMetrics(records);
+    const changed = changedSections();
+    if(!changed.length && !records.length) return true;
+    const entries = changed.map(key=>({key:'section__'+key, value:JSON.stringify(DB[key]), expectedPrevious:lastKnownSnapshot[key]}));
+    const res = await window.storage.setMulti(entries, true, records);
     /* window.storage.setMulti swallows its own Firestore errors internally
        and returns null instead of throwing — so a null result has to be
        treated as a failed save here, not fall through to the success path
@@ -1118,15 +1428,13 @@ async function saveDB(){
     }
     if(res.conflict){
       applySectionConflicts(res.conflicts);
+      applyRecordConflicts(res.recordConflicts);
       navigate(route, subroute);
       toast('Someone else just saved changes here — your last action was NOT saved. Please redo it.');
       logAudit('save_conflict_rejected', {});
       return false;
     }
-    changed.forEach(k=>{
-      lastKnownSnapshot[k] = JSON.stringify(DB[k]);
-      sectionVersions['section__'+k] = res.updatedAt;
-    });
+    markSaved(changed,records,res.updatedAt);
     return true;
   }catch(e){
     console.error('Storage error', e);
@@ -1157,19 +1465,23 @@ async function saveDBWithRetry(mutate, maxAttempts){
   try{
     for(let attempt=0; attempt<maxAttempts; attempt++){
       try{
-        let changed = SECTION_KEYS.filter(k=>JSON.stringify(DB[k]) !== lastKnownSnapshot[k]);
+        let records = changedRecords();
+        refreshIssuanceMetrics(records);
+        let changed = changedSections();
         /* Some actions pass their change only as a replay callback. Apply it
            before the first diff check so an untouched DB is never reported
            as a successful save. Other callers already apply their change
            before calling this helper, so they proceed directly to saving. */
-        if(!changed.length && !mutationApplied){
+        if(!changed.length && !records.length && !mutationApplied){
           mutate();
           mutationApplied = true;
-          changed = SECTION_KEYS.filter(k=>JSON.stringify(DB[k]) !== lastKnownSnapshot[k]);
+          records = changedRecords();
+          refreshIssuanceMetrics(records);
+          changed = changedSections();
         }
-        if(!changed.length) return true;
-        const entries = changed.map(k=>({key:'section__'+k, value:JSON.stringify(DB[k]), expectedPrevious: lastKnownSnapshot[k]}));
-        const res = await window.storage.setMulti(entries, true);
+        if(!changed.length && !records.length) return true;
+        const entries = changed.map(key=>({key:'section__'+key, value:JSON.stringify(DB[key]), expectedPrevious:lastKnownSnapshot[key]}));
+        const res = await window.storage.setMulti(entries, true, records);
         /* Same gap as in saveDB(): a null result means the write never
            reached Firestore and must not be reported as a success. */
         if(!res){
@@ -1177,25 +1489,23 @@ async function saveDBWithRetry(mutate, maxAttempts){
           return false;
         }
         if(res.conflict){
-          const conflictKeys = new Set(Object.keys(res.conflicts||{}).map(k=>k.replace(/^section__/, '')));
+          const conflictKeys = new Set(Object.keys(res.conflicts||{}).map(key=>key.replace(/^section__/, '')));
           applySectionConflicts(res.conflicts||{});
+          applyRecordConflicts(res.recordConflicts||{});
           /* The transaction wrote nothing. Restore every attempted section
              that did not conflict to its last known shared value as well,
              then replay the action once on that consistent base. */
-          changed.forEach(k=>{
-            if(conflictKeys.has(k)) return;
-            const snapshot = lastKnownSnapshot[k];
-            DB[k] = snapshot!==null ? JSON.parse(snapshot) : defaultDB()[k];
+          changed.forEach(key=>{
+            if(conflictKeys.has(key)) return;
+            const snapshot = lastKnownSnapshot[key];
+            DB[key] = snapshot!==null ? JSON.parse(snapshot) : defaultDB()[key];
           });
           migrateDB();
           mutate();
           mutationApplied = true;
           continue;
         }
-        changed.forEach(k=>{
-          lastKnownSnapshot[k] = JSON.stringify(DB[k]);
-          sectionVersions['section__'+k] = res.updatedAt;
-        });
+        markSaved(changed,records,res.updatedAt);
         return true;
       }catch(e){
         console.error('Storage error', e);
@@ -1390,25 +1700,25 @@ function isFormScreenActive(){
   const formSubroutes = { request:'new', drequest:'new', receiving:'new', issuance:'new', dissuance:'new', dreceiving:'new', dreturn:'new', returns:'new', repair:'new' };
   return formSubroutes[route] && subroute===formSubroutes[route];
 }
-/* Reads just the small __meta heartbeat doc (one read) to see which
-   sections have changed since this tab last knew about, then only
-   re-fetches those specific sections — not all ~27 of them — every 4s.
-   Polling every section on every tick would cost ~27x the reads for no
-   benefit in the overwhelmingly common case where nothing changed, which
-   at realistic usage would exhaust Firestore's free-tier daily read quota
-   in well under an hour. */
-async function pollForUpdates(){
-  if(!session || actionInFlight) return;
+/* Fires only when the __meta heartbeat changes. It fetches the affected
+   sections instead of polling every open tab. */
+async function onMetaUpdate(snapshot){
+  if(!session || !snapshot) return;
   try{
-    const metaRes = await window.storage.get('__meta', true);
-    if(!metaRes) return;
-    const meta = JSON.parse(metaRes.value);
-    const changedKeys = SECTION_KEYS.filter(k=>{
+    while(actionInFlight) await new Promise(r=>setTimeout(r, 100));
+    const meta = JSON.parse(snapshot.value);
+    const changedKeys = [...loadedSections].filter(k=>{
       const fullKey = 'section__'+k;
       return meta[fullKey] && meta[fullKey] !== sectionVersions[fullKey];
     });
-    if(!changedKeys.length) return;
+    const recordEvents = recordModeActive ? RECORD_SECTION_KEYS.map(key=>{
+      const event = meta['records__'+key];
+      const version = event && typeof event==='object' ? event.version : event;
+      return version && version!==recordVersions[key] && loadedRecordSections.has(key) ? {key,event,version} : null;
+    }).filter(Boolean) : [];
+    if(!changedKeys.length && !recordEvents.length) return;
     const results = await Promise.all(changedKeys.map(k=>window.storage.get('section__'+k, true)));
+    await Promise.all(recordEvents.map(({key,event,version})=>loadRecordChanges(key, event && event.ids).then(()=>{ recordVersions[key] = version; })));
     let anyApplied = false;
     changedKeys.forEach((k,i)=>{
       const res = results[i];
@@ -1418,9 +1728,10 @@ async function pollForUpdates(){
       DB[k] = JSON.parse(res.value);
       sectionVersions['section__'+k] = meta['section__'+k];
     });
+    if(recordEvents.length) anyApplied = true;
     if(!anyApplied) return;
     migrateDB();
-    if(changedKeys.some(k=>['requests','receiving','issuance','returns','repairs'].includes(k))){
+    if(loadedSections.has('stock') && changedKeys.concat(recordEvents.map(event=>event.key)).some(k=>['requests','receiving','issuance','returns','repairs'].includes(k))){
       const requestsBeforeAllocation = JSON.stringify(DB.requests);
       syncOpenRequestAssetCodes();
       if(JSON.stringify(DB.requests)!==requestsBeforeAllocation) await saveDBWithRetry(syncOpenRequestAssetCodes);
@@ -1727,6 +2038,13 @@ function skuInfo(code){ return DB.sku.find(s=>s.sku.toUpperCase()===String(code|
    Issuance / Accountability log) spread across the days since its
    earliest issuance. No issuance history yet => 0 (no basis to project). */
 function dailyAvgConsumption(sku){
+  const metrics = DB.issuanceMetrics || {};
+  const scope = isAdminAllSocView() ? (metrics.all||metrics) : ((metrics.bySoc&&metrics.bySoc[currentSoc()])||{});
+  const metric = scope[sku];
+  if(metric && Number(metric.totalQty||0)>0 && metric.earliest){
+    const days = Math.max(1, Math.ceil((Date.now()-new Date(metric.earliest).getTime())/(1000*60*60*24)));
+    return Number(metric.totalQty||0)/days;
+  }
   const records = socFilter(DB.issuance).filter(i=>i.sku===sku);
   if(records.length===0) return 0;
   const totalQty = records.reduce((s,r)=>s+Number(r.qty||0),0);
@@ -2076,7 +2394,7 @@ function toggleNavGroup(id){
   renderShell();
 }
 
-function navigate(r, sub){
+async function navigate(r, sub){
   if(portalMode!=='department' && ROUTE_PROCESS[r] && !sessionHasProcess(ROUTE_PROCESS[r])){
     toast('You don\'t have access to '+processLabel(ROUTE_PROCESS[r])+'.');
     r = 'dashboard'; sub = '';
@@ -2090,6 +2408,16 @@ function navigate(r, sub){
   const badgeClass = roleBadgeClass(session.role);
   const badge = '<span class="badge '+badgeClass+'">'+session.role.toUpperCase()+'</span>';
   document.getElementById('topbar-right').innerHTML = badge;
+  const generation = ++navigationGeneration;
+  document.getElementById('content').innerHTML = '<div class="empty">Loading current data…</div>';
+  try{
+    await ensureRouteData(r,subroute);
+  }catch(e){
+    console.error('Route data load failed:', e);
+    if(generation===navigationGeneration) document.getElementById('content').innerHTML = '<div class="empty">Could not load this screen. Reload once the database connection is back.</div>';
+    return;
+  }
+  if(generation!==navigationGeneration) return;
   const map = {
     dashboard: renderDashboard, request: renderRequest, receiving: renderReceiving,
     issuance: renderIssuance, returns: renderReturns, cyclecount: renderCycleCount, repair: renderRepair,
@@ -6660,7 +6988,7 @@ function pdaScanHtml(){
 }
 // Rows currently out, newest-borrowed-first so whoever's scanning always sees
 // the device that was just issued at the top of the list. Refreshed both on
-// full tab render and, on its own, by the live poll (see refreshPdaLiveSections)
+// full tab render and, on its own, by the live listener (see refreshPdaLiveSections)
 // so other users' scans show up here without disturbing this user's session.
 function pdaBorrowedTableHtml(){
   const isAdmin=session && session.role==='admin';
@@ -8019,7 +8347,7 @@ function exportParcelShiftReport(){
 /* ============================= INIT ============================= */
 (async function init(){
   await loadDB();
-  if(lastKnownSnapshot){
+  if(lastKnownSnapshot && loadedSections.has('stock') && loadedRecordSections.has('requests') && loadedRecordSections.has('issuance')){
     const requestsBeforeAllocation = JSON.stringify(DB.requests);
     syncOpenRequestAssetCodes();
     if(JSON.stringify(DB.requests)!==requestsBeforeAllocation) await saveDBWithRetry(syncOpenRequestAssetCodes);

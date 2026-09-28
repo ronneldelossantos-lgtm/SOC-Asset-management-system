@@ -7,6 +7,7 @@
 
 const PROJECT_ID = 'spx-soc-asset-management';
 const COLLECTION = 'sms_erp_storage';
+const RECORD_SECTIONS = new Set(['requests', 'returns', 'issuance']);
 
 async function fetchDocFields(docId) {
   const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${COLLECTION}/${docId}`;
@@ -15,6 +16,59 @@ async function fetchDocFields(docId) {
   if (!res.ok) throw new Error(`Firestore read failed for ${docId}: HTTP ${res.status}`);
   const body = await res.json();
   return body.fields || null;
+}
+
+function recordFromDocument(document, section) {
+  const value = document && document.fields && document.fields.value && document.fields.value.stringValue;
+  if (typeof value !== 'string') throw new Error(`Invalid ${section} record document.`);
+  return JSON.parse(value);
+}
+
+async function fetchCollection(section) {
+  const records = [];
+  let pageToken = '';
+  do {
+    const url = new URL(`https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${section}`);
+    url.searchParams.set('pageSize', '1000');
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Firestore collection read failed for ${section}: HTTP ${res.status}`);
+    const body = await res.json();
+    (body.documents || []).forEach(document => records.push(recordFromDocument(document, section)));
+    pageToken = body.nextPageToken || '';
+  } while (pageToken);
+  return records;
+}
+
+async function fetchOpenCollection(section) {
+  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents:runQuery`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{collectionId: section}],
+        where: {
+          fieldFilter: {
+            field: {fieldPath: 'archived'},
+            op: 'EQUAL',
+            value: {booleanValue: false}
+          }
+        }
+      }
+    })
+  });
+  if (!res.ok) throw new Error(`Firestore open-record query failed for ${section}: HTTP ${res.status}`);
+  const rows = await res.json();
+  return rows.filter(row => row.document).map(row => recordFromDocument(row.document, section));
+}
+
+async function readRecord(section, id) {
+  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${section}/${encodeURIComponent(id)}`;
+  const res = await fetch(url);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Firestore record read failed for ${section}/${id}: HTTP ${res.status}`);
+  return recordFromDocument(await res.json(), section);
 }
 
 /* index.html splits any value over 240KB across several `<key>__chunk__<n>`
@@ -45,7 +99,8 @@ async function readDoc(key) {
 }
 
 async function readSection(sectionKey) {
+  if (RECORD_SECTIONS.has(sectionKey)) return fetchCollection(sectionKey);
   return readDoc(`section__${sectionKey}`);
 }
 
-module.exports = { readDoc, readSection };
+module.exports = { readDoc, readSection, fetchOpenCollection, readRecord };
