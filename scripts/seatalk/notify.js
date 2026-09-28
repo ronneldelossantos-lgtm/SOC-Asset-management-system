@@ -61,8 +61,20 @@ function computeBelowSafetyStock(sku, stock, issuance) {
 // 4 safety-stock drops and 3 status changes used to cost 7 send calls and
 // 7 separate chat notifications; it now costs 1 call and 1 notification.
 
-function statusLine(r, oldStatus) {
-  return `${r.id}: ${oldStatus ? oldStatus : '(new)'} → ${r.status}`;
+// A request carries an `items` array (each with sku/description/qty); a
+// return is a single item flattened onto the record itself (sku/description/
+// qty directly on r). Both get summarized the same way so the digest reads
+// "what was it" rather than just a ticket number.
+function itemsSummary(items) {
+  if (!Array.isArray(items) || !items.length) return '';
+  const shown = items.slice(0, 3).map(it => `${it.description || it.sku} x${it.qty}`);
+  const extra = items.length > 3 ? `, +${items.length - 3} more` : '';
+  return shown.join(', ') + extra;
+}
+
+function statusLine(r, oldStatus, itemsText) {
+  const base = `${r.id}: ${oldStatus ? oldStatus : '(new)'} → ${r.status}`;
+  return itemsText ? `${base} — ${itemsText}` : base;
 }
 
 function formatSection(title, count, lines) {
@@ -75,11 +87,14 @@ function buildDigestMessage({ belowSafetyStock, requestChanges, approvalsNeeded,
     formatSection('🔻 Below safety stock', belowSafetyStock.length,
       belowSafetyStock.map(({ sku, soh, safety }) => `${sku.sku} — ${sku.description}: ${soh}/${safety}`)),
     formatSection('📦 Request updates', requestChanges.length,
-      requestChanges.map(({ r, oldStatus }) => statusLine(r, oldStatus))),
+      requestChanges.map(({ r, oldStatus }) => statusLine(r, oldStatus, itemsSummary(r.items)))),
     formatSection('⚠️ Needs approval', approvalsNeeded.length,
-      approvalsNeeded.map(r => `${r.id} — Requested by ${r.requestedBy} (${r.department})`)),
+      approvalsNeeded.map(r => {
+        const items = itemsSummary(r.items);
+        return `${r.id} — Requested by ${r.requestedBy} (${r.department})${items ? ': ' + items : ''}`;
+      })),
     formatSection('↩️ Returns', returnChanges.length,
-      returnChanges.map(({ r, oldStatus }) => statusLine(r, oldStatus))),
+      returnChanges.map(({ r, oldStatus }) => statusLine(r, oldStatus, itemsSummary([{ description: r.description, sku: r.sku, qty: r.qty }])))),
   ].filter(Boolean);
   return sections.length ? sections.join('\n\n') : null;
 }
