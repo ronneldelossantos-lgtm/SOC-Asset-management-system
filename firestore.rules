@@ -19,5 +19,16 @@ service cloud.firestore {
     match /issuance/{recordId} {
       allow read, write: if true;
     }
+    // Isolated pilot-v2 collections. The previous collections are retained
+    // read/write for the legacy deployment but are not used by the new app.
+    match /pilot_v2_requests/{recordId} {
+      allow read, write: if true;
+    }
+    match /pilot_v2_returns/{recordId} {
+      allow read, write: if true;
+    }
+    match /pilot_v2_issuance/{recordId} {
+      allow read, write: if true;
+    }
   }
 }

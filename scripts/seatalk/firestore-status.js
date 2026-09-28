@@ -9,9 +9,10 @@
 
 const PROJECT_ID = 'spx-soc-asset-management';
 const COLLECTION = 'sms_erp_storage';
+const STORAGE_VERSION = 'pilot_v2';
 
 async function writeStatus(key, data) {
-  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${COLLECTION}/shared__${key}`;
+  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${COLLECTION}/shared__${STORAGE_VERSION}__${key}`;
   const body = {
     fields: {
       value: { stringValue: JSON.stringify(data) },

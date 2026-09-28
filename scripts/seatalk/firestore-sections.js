@@ -7,7 +7,10 @@
 
 const PROJECT_ID = 'spx-soc-asset-management';
 const COLLECTION = 'sms_erp_storage';
+const STORAGE_VERSION = 'pilot_v2';
 const RECORD_SECTIONS = new Set(['requests', 'returns', 'issuance']);
+const sectionDocId = key => `shared__${STORAGE_VERSION}__${key}`;
+const recordCollection = section => `${STORAGE_VERSION}_${section}`;
 
 async function fetchDocFields(docId) {
   const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${COLLECTION}/${docId}`;
@@ -28,7 +31,7 @@ async function fetchCollection(section) {
   const records = [];
   let pageToken = '';
   do {
-    const url = new URL(`https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${section}`);
+    const url = new URL(`https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${recordCollection(section)}`);
     url.searchParams.set('pageSize', '1000');
     if (pageToken) url.searchParams.set('pageToken', pageToken);
     const res = await fetch(url);
@@ -47,7 +50,7 @@ async function fetchOpenCollection(section) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       structuredQuery: {
-        from: [{collectionId: section}],
+        from: [{collectionId: recordCollection(section)}],
         where: {
           fieldFilter: {
             field: {fieldPath: 'archived'},
@@ -64,7 +67,7 @@ async function fetchOpenCollection(section) {
 }
 
 async function readRecord(section, id) {
-  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${section}/${encodeURIComponent(id)}`;
+  const url = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents/${recordCollection(section)}/${encodeURIComponent(id)}`;
   const res = await fetch(url);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Firestore record read failed for ${section}/${id}: HTTP ${res.status}`);
@@ -78,13 +81,13 @@ async function readRecord(section, id) {
    that size ("Cannot read properties of undefined (reading 'stringValue')"
    from indexing the nonexistent `value` field on a chunk-manifest doc). */
 async function readDoc(key) {
-  const fields = await fetchDocFields(`shared__${key}`);
+  const fields = await fetchDocFields(sectionDocId(key));
   if (!fields) return null;
   if (fields.chunked && fields.chunked.booleanValue) {
     const count = Number(fields.chunks && fields.chunks.integerValue);
     if (!Number.isInteger(count) || count < 1) throw new Error(`Invalid Firestore chunk manifest for ${key}.`);
     const parts = await Promise.all(
-      Array.from({ length: count }, (_, i) => fetchDocFields(`shared__${key}__chunk__${i}`))
+      Array.from({ length: count }, (_, i) => fetchDocFields(sectionDocId(`${key}__chunk__${i}`)))
     );
     const value = parts.map((part, i) => {
       if (!part || typeof part.value?.stringValue !== 'string') {

@@ -451,8 +451,10 @@ if(!window.storage){
 
   if(fsDB){
     const COLLECTION = 'sms_erp_storage';
-    const docRef = (key, shared) => fsDB.collection(COLLECTION).doc((shared?'shared__':'local__')+key);
-    const recordRef = (section, id) => fsDB.collection(section).doc(id);
+    const STORAGE_VERSION = 'pilot_v2';
+    const docRef = (key, shared) => fsDB.collection(COLLECTION).doc((shared?'shared__':'local__')+STORAGE_VERSION+'__'+key);
+    const legacyDocRef = (key, shared) => fsDB.collection(COLLECTION).doc((shared?'shared__':'local__')+key);
+    const recordRef = (section, id) => fsDB.collection(STORAGE_VERSION+'_'+section).doc(id);
     /* Firestore limits every document to 1 MiB.  Employees has already grown
        to the edge of that limit, and request records can contain signed
        transmittals (base64) that grow just as quickly.  Keep the storage API
@@ -490,6 +492,15 @@ if(!window.storage){
       if(!Number.isInteger(data.chunks) || data.chunks < 1) throw new Error('Invalid Firestore chunk manifest for '+key+'.');
       const chunks = await Promise.all(Array.from({length:data.chunks}, (_, i)=>docRef(chunkKey(key, i), shared).get()));
       if(chunks.some(part=>!part.exists || typeof part.data().value !== 'string')) throw new Error('Incomplete Firestore chunks for '+key+'.');
+      return chunks.map(part=>part.data().value).join('');
+    }
+    async function readLegacyValue(key, shared, snap){
+      if(!snap.exists) return null;
+      const data = snap.data();
+      if(!data.chunked) return data.value;
+      if(!Number.isInteger(data.chunks) || data.chunks < 1) throw new Error('Invalid legacy Firestore chunk manifest for '+key+'.');
+      const chunks = await Promise.all(Array.from({length:data.chunks}, (_, i)=>legacyDocRef(chunkKey(key, i), shared).get()));
+      if(chunks.some(part=>!part.exists || typeof part.data().value !== 'string')) throw new Error('Incomplete legacy Firestore chunks for '+key+'.');
       return chunks.map(part=>part.data().value).join('');
     }
     window.storage = {
@@ -538,85 +549,31 @@ if(!window.storage){
           throw e;
         }
       },
-      async claimRecordMigration(owner){
-        const ref = docRef(RECORD_SCHEMA_KEY, true);
-        let claim = 'wait';
+      async seedSections(entries, shared){
+        const marker = docRef('__schema', shared);
+        let created = false;
         await fsDB.runTransaction(async tx=>{
-          const snap = await tx.get(ref);
-          const state = snap.exists && typeof snap.data().value==='string' ? JSON.parse(snap.data().value) : null;
-          if(state && state.state==='complete'){ claim = 'complete'; return; }
-          if(state && state.state==='migrating' && Date.now()-Number(state.startedAt||0)<10*60*1000) return;
-          tx.set(ref, {value:JSON.stringify({state:'migrating', owner, startedAt:Date.now()}), updatedAt:Date.now()});
-          claim = 'owner';
+          if((await tx.get(marker)).exists) return;
+          const updatedAt = Date.now();
+          entries.forEach(entry=>tx.set(docRef(entry.key, shared), {value:entry.value, updatedAt}));
+          tx.set(docRef('__meta', shared), {value:'{}', updatedAt});
+          tx.set(marker, {value:JSON.stringify({version:STORAGE_VERSION, createdAt:updatedAt}), updatedAt});
+          created = true;
         });
-        return claim;
+        return created;
       },
-      async finishRecordMigration(owner, recordsBySection){
-        const writes = [];
-        RECORD_SECTION_KEYS.forEach(section=>{
-          (recordsBySection[section]||[]).forEach(record=>{
-            if(!record || !record.id) throw new Error('Cannot migrate a '+section+' record without an id.');
-            const value = JSON.stringify(record);
-            if(utf8Bytes(value)>900*1024) throw new Error(section+' '+record.id+' is too large for a Firestore record document.');
-            writes.push({ref:recordRef(section,record.id), value, status:String(record.status||''), archived:recordIsArchived(section,record)});
-          });
-        });
-        for(let offset=0; offset<writes.length; offset+=450){
-          const batch = fsDB.batch();
-          writes.slice(offset,offset+450).forEach(write=>batch.set(write.ref, {
-            value:write.value, status:write.status, archived:write.archived, updatedAt:Date.now()
-          }));
-          await batch.commit();
+      async getOpsIdSheetSnapshot(){
+        const snap = await legacyDocRef('opsid_sheet_sync', true).get();
+        if(!snap.exists) return null;
+        const data = snap.data();
+        if(data.format!=='ops-id-chunks-v1') return {key:'opsid_sheet_sync', value:await readLegacyValue('opsid_sheet_sync', true, snap), shared:true};
+        const keys = data.chunkKeys;
+        if(!Array.isArray(keys) || !keys.length || keys.some(part=>typeof part!=='string' || !/^opsid_sheet_sync__part__[A-Za-z0-9_-]{43}$/.test(part))){
+          throw new Error('Invalid Ops ID snapshot manifest.');
         }
-        await docRef('section__issuanceMetrics', true).set({
-          value:JSON.stringify(buildIssuanceMetrics(recordsBySection.issuance||[])),
-          updatedAt:Date.now()
-        });
-        const ref = docRef(RECORD_SCHEMA_KEY, true);
-        await fsDB.runTransaction(async tx=>{
-          const snap = await tx.get(ref);
-          const state = snap.exists && typeof snap.data().value==='string' ? JSON.parse(snap.data().value) : null;
-          if(!state || state.owner!==owner || state.state!=='migrating') throw new Error('Record migration lease was lost.');
-          tx.set(ref, {value:JSON.stringify({state:'complete', completedAt:Date.now()}), updatedAt:Date.now()});
-        });
-      },
-      subscribe(key, shared, onValue, onError){
-        let request = 0, loadingVersion = null, deliveredVersion = null;
-        return docRef(key, shared).onSnapshot({includeMetadataChanges:true}, async snap=>{
-          const data = snap.exists ? snap.data() : null;
-          const version = data ? (data.digest || String(data.updatedAt || '') + ':' + String(data.value || '')) : '(missing)';
-          if(version===loadingVersion || version===deliveredVersion) return;
-          const ticket = ++request;
-          loadingVersion = version;
-          try{
-            let value;
-            if(data && data.format==='ops-id-chunks-v1'){
-              const keys = data.chunkKeys;
-              if(!Array.isArray(keys) || !keys.length || keys.some(part=>typeof part!=='string' || !/^opsid_sheet_sync__part__[A-Za-z0-9_-]{43}$/.test(part))){
-                throw new Error('Invalid Ops ID snapshot manifest.');
-              }
-              const parts = [];
-              for(let offset=0; offset<keys.length; offset+=12){
-                if(ticket!==request) return;
-                const batch = await Promise.all(keys.slice(offset,offset+12).map(part=>docRef(part,shared).get()));
-                batch.forEach(part=>{
-                  if(!part.exists || typeof part.data().value!=='string') throw new Error('An Ops ID snapshot part is missing. The current directory has been kept.');
-                  parts.push(part.data().value);
-                });
-              }
-              value = parts.join('');
-            }else if(data){
-              value = await readValue(key, shared, snap);
-            }
-            if(ticket!==request) return;
-            onValue(data ? {key, value, shared:!!shared} : null);
-            deliveredVersion = version;
-          }catch(error){
-            if(ticket===request && onError) onError(error);
-          }finally{
-            if(ticket===request) loadingVersion = null;
-          }
-        }, onError);
+        const parts = await Promise.all(keys.map(key=>legacyDocRef(key, true).get()));
+        if(parts.some(part=>!part.exists || typeof part.data().value!=='string')) throw new Error('An Ops ID snapshot part is missing.');
+        return {key:'opsid_sheet_sync', value:parts.map(part=>part.data().value).join(''), shared:true};
       },
       async set(key, value, shared, opts){
         try{
@@ -720,35 +677,7 @@ if(!window.storage){
             });
           });
           if(conflicts || recordConflicts) return {conflict:true, conflicts:conflicts||{}, recordConflicts:recordConflicts||{}};
-          /* Best-effort heartbeat so onMetaUpdate() can tell which
-             sections changed with one small read instead of re-fetching
-             all ~27 section documents every 4s (at real usage volumes that
-             would blow through Firestore's free-tier daily read quota in
-             well under an hour). A failure here is non-fatal — the actual
-             data write above already succeeded — it just means an
-             already-open tab elsewhere might not notice this change until
-             its next full reload instead of its next poll tick. Returns
-             the exact timestamp used so the caller can record the same
-             value locally and not mistake its own just-completed write for
-             a change made by someone else on the very next poll. */
           const now = Date.now();
-          try{
-            const metaRef = docRef('__meta', shared);
-            await fsDB.runTransaction(async tx=>{
-              const snap = await tx.get(metaRef);
-              const meta = snap.exists ? JSON.parse(snap.data().value) : {};
-              entries.forEach(e=>{ meta[e.key] = now; });
-              const recordIdsBySection = {};
-              records.forEach(record=>{
-                if(!recordIdsBySection[record.section]) recordIdsBySection[record.section] = [];
-                recordIdsBySection[record.section].push(record.id);
-              });
-              Object.keys(recordIdsBySection).forEach(section=>{
-                meta['records__'+section] = {version:now, ids:recordIdsBySection[section]};
-              });
-              tx.set(metaRef, {value: JSON.stringify(meta), updatedAt: now});
-            });
-          }catch(e){ console.error('meta heartbeat update failed (non-fatal):', e); }
           return {ok:true, updatedAt: now};
         }catch(e){ console.error('storage.setMulti failed:', e); throw e; }
       },
@@ -761,7 +690,7 @@ if(!window.storage){
       async list(prefix, shared){
         try{
           const snap = await fsDB.collection(COLLECTION).get();
-          const marker = (shared?'shared__':'local__');
+          const marker = (shared?'shared__':'local__')+STORAGE_VERSION+'__';
           const keys = [];
           snap.forEach(doc=>{
             if(doc.id.startsWith(marker)){
@@ -828,10 +757,8 @@ if(!window.storage){
 const STORE_KEY = 'sms_erp_state_v1';
 const UI_SESSION_KEY = 'sms_erp_ui_session_v1';
 let DB = null;
-let opsIdSheetUnsubscribe = null;
-let opsIdSheetListenerGeneration = 0;
 let opsIdSheetLastPayload = '';
-let opsIdSheetQueue = Promise.resolve();
+let opsIdSheetSyncInFlight = false;
 let opsIdSheetStatus = 'Google Sheet sync is connecting…';
 let session = null; // {id, username, fullName, role, portal, department, site}
 let route = 'dashboard';
@@ -922,7 +849,6 @@ function defaultDB(){
    setMulti() comment above for why the app moved off one giant document. */
 const SECTION_KEYS = Object.keys(defaultDB());
 const RECORD_SECTION_KEYS = ['requests','returns','issuance'];
-const RECORD_SCHEMA_KEY = '__record_schema_v1';
 const CORE_SECTION_KEYS = ['users','notifications','counters','issuanceMetrics'];
 const ROUTE_SECTIONS = {
   dashboard: ['sku','stock','reorderPoint','repairs'],
@@ -943,7 +869,31 @@ const ROUTE_SECTIONS = {
   dissuance: ['sku','employees','deptIssuance'],
   dreturn: ['sku','stock','repairs','deptIssuance']
 };
-const ARCHIVE_ROUTE_KEYS = new Set(['dashboard','issuance','cyclecount','repair','returns','ddashboard','dreceiving','dissuance','dreturn']);
+const ROUTE_RECORD_SECTIONS = {
+  dashboard: ['requests','returns','issuance'],
+  request: ['requests','issuance'],
+  receiving: ['requests','issuance'],
+  issuance: ['requests','issuance'],
+  returns: ['returns','issuance'],
+  cyclecount: ['issuance'],
+  repair: ['returns','issuance'],
+  ddashboard: ['requests','returns','issuance'],
+  dapprovals: ['requests'],
+  drequest: ['requests','issuance'],
+  dreceiving: ['requests','issuance'],
+  dissuance: ['issuance'],
+  dreturn: ['returns','issuance']
+};
+const ARCHIVE_RECORD_SECTIONS = {
+  issuance: ['issuance'],
+  returns: ['returns'],
+  cyclecount: ['issuance'],
+  repair: ['returns','issuance'],
+  request: ['requests'],
+  drequest: ['requests'],
+  dapprovals: ['requests'],
+  dreturn: ['returns','issuance']
+};
 let loadedSections = new Set();
 let loadedRecordSections = new Set();
 let loadedRecordArchives = new Set();
@@ -1117,11 +1067,9 @@ function migrateDB(){
   });
 }
 
-/* Fetches only the requested section documents (plus the small __meta
-   heartbeat doc used by onMetaUpdate — see setMulti()) in parallel. Returns
-   parsed value and raw snapshot string, and whether ANY section document
-   exists yet at all (used by loadDB() to decide whether the one-time
-   migration from the old single-blob document is needed). */
+/* The pilot schema starts empty and does not migrate legacy history during a
+   user session. That keeps boot cost bounded and leaves the prior pilot data
+   untouched for reference. */
 function isRecordSection(key){ return RECORD_SECTION_KEYS.includes(key); }
 function normalizeRecordSection(key, records){
   DB[key] = Array.isArray(records) ? records : [];
@@ -1129,20 +1077,7 @@ function normalizeRecordSection(key, records){
   loadedRecordSections.add(key);
 }
 async function ensureRecordSchema(){
-  if(!window.storage || !window.storage.supportsRecordCollections) return false;
-  const marker = await window.storage.get(RECORD_SCHEMA_KEY, true);
-  if(marker && JSON.parse(marker.value).state==='complete') return true;
-  const owner = 'tab_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
-  const claim = await window.storage.claimRecordMigration(owner);
-  if(claim==='complete') return true;
-  if(claim!=='owner') return false;
-  const legacy = await Promise.all(RECORD_SECTION_KEYS.map(key=>window.storage.get('section__'+key, true)));
-  const old = legacy.some(Boolean) ? null : await window.storage.get(STORE_KEY, true);
-  const oldDB = old ? JSON.parse(old.value) : null;
-  const recordsBySection = {};
-  RECORD_SECTION_KEYS.forEach((key,index)=>{ recordsBySection[key] = legacy[index] ? JSON.parse(legacy[index].value) : ((oldDB&&oldDB[key])||[]); });
-  await window.storage.finishRecordMigration(owner, recordsBySection);
-  return true;
+  return !!(window.storage && window.storage.supportsRecordCollections);
 }
 async function loadRecordSection(key, includeArchived){
   normalizeRecordSection(key, await window.storage.getRecords(key, !!includeArchived));
@@ -1161,18 +1096,15 @@ async function loadRecordChanges(key, ids){
 }
 async function loadSections(keys){
   const selected = [...new Set(keys)];
-  const [metaRes, ...results] = await Promise.all([
-    window.storage.get('__meta', true),
-    ...selected.map(key=>window.storage.get('section__'+key, true))
-  ]);
+  const results = await Promise.all(selected.map(key=>window.storage.get('section__'+key, true)));
   const data = {}, snap = {};
-  let anyExists = !!metaRes;
+  let anyExists = false;
   selected.forEach((key,index)=>{
     const result = results[index];
     if(result){ anyExists = true; data[key] = JSON.parse(result.value); snap[key] = result.value; }
     else { data[key] = null; snap[key] = null; }
   });
-  return {anyExists, data, snap, meta:metaRes ? JSON.parse(metaRes.value) : {}};
+  return {anyExists, data, snap};
 }
 async function hydrateSections(keys){
   const wanted = [...new Set(keys.filter(key=>!isRecordSection(key) && !loadedSections.has(key)))];
@@ -1189,22 +1121,24 @@ async function hydrateSections(keys){
       lastKnownSnapshot[key] = null;
       missing.push(key);
     }
-    sectionVersions['section__'+key] = sections.meta['section__'+key];
     loadedSections.add(key);
   });
   migrateDB();
   if(missing.length) await saveDB();
 }
-function routeNeedsArchive(routeKey, routeSub){
-  return ARCHIVE_ROUTE_KEYS.has(routeKey)
-    || ((routeKey==='request' || routeKey==='drequest') && routeSub==='list')
-    || (routeKey==='dapprovals' && routeSub==='history');
+function routeArchiveSections(routeKey, routeSub){
+  if((routeKey==='request' || routeKey==='drequest') && routeSub!=='list') return [];
+  if(routeKey==='dapprovals' && routeSub!=='history') return [];
+  return ARCHIVE_RECORD_SECTIONS[routeKey] || [];
 }
 async function ensureRouteData(routeKey, routeSub){
-  await hydrateSections([...CORE_SECTION_KEYS, ...(ROUTE_SECTIONS[routeKey]||[]), ...RECORD_SECTION_KEYS]);
-  if(recordModeActive && routeNeedsArchive(routeKey,routeSub)){
-    await Promise.all(RECORD_SECTION_KEYS.filter(key=>!loadedRecordArchives.has(key)).map(key=>loadRecordSection(key,true)));
+  await hydrateSections([...CORE_SECTION_KEYS, ...(ROUTE_SECTIONS[routeKey]||[])]);
+  if(recordModeActive){
+    const records = ROUTE_RECORD_SECTIONS[routeKey] || [];
+    await Promise.all(records.filter(key=>!loadedRecordSections.has(key)).map(key=>loadRecordSection(key,false)));
+    await Promise.all(routeArchiveSections(routeKey,routeSub).filter(key=>!loadedRecordArchives.has(key)).map(key=>loadRecordSection(key,true)));
   }
+  await syncOpsIdSheetOnce();
 }
 
 /* Retries once before giving up: a transient read error (a momentary
@@ -1254,15 +1188,20 @@ async function loadDB(){
   recordSnapshots = {};
   recordVersions = {};
   if(!sections.anyExists){
-    try{
-      const old = await window.storage.get(STORE_KEY, true);
-      if(old) DB = {...defaultDB(), ...JSON.parse(old.value)};
-    }catch(e){ console.error('Could not read legacy state during bootstrap:', e); }
-    loadedSections = new Set(SECTION_KEYS.filter(key=>recordModeActive ? !isRecordSection(key) : true));
-    if(recordModeActive) RECORD_SECTION_KEYS.forEach(key=>normalizeRecordSection(key, DB[key]));
     migrateDB();
-    Object.keys(DB).forEach(key=>{ if(!recordModeActive || !isRecordSection(key)) lastKnownSnapshot[key] = null; });
-    await saveDB();
+    if(!recordModeActive || typeof window.storage.seedSections!=='function'){
+      loadedSections = new Set(SECTION_KEYS);
+      Object.keys(DB).forEach(key=>{ lastKnownSnapshot[key] = null; });
+      await saveDB();
+      return;
+    }
+    const seedEntries = SECTION_KEYS.filter(key=>!isRecordSection(key)).map(key=>({
+      key:'section__'+key, value:JSON.stringify(DB[key])
+    }));
+    if(!await window.storage.seedSections(seedEntries, true)) return loadDB();
+    loadedSections = new Set(SECTION_KEYS.filter(key=>!isRecordSection(key)));
+    RECORD_SECTION_KEYS.forEach(key=>normalizeRecordSection(key, DB[key]));
+    Object.keys(DB).forEach(key=>{ if(!isRecordSection(key)) lastKnownSnapshot[key] = JSON.stringify(DB[key]); });
     return;
   }
   const selected = Object.keys(sections.data);
@@ -1271,19 +1210,10 @@ async function loadDB(){
       DB[key] = sections.data[key];
       lastKnownSnapshot[key] = sections.snap[key];
     } else lastKnownSnapshot[key] = null;
-    if(isRecordSection(key) && recordModeActive) normalizeRecordSection(key, DB[key]);
-    else {
-      loadedSections.add(key);
-      sectionVersions['section__'+key] = sections.meta['section__'+key];
-    }
-  });
-  if(recordModeActive) await Promise.all(RECORD_SECTION_KEYS.map(key=>loadRecordSection(key,false)));
-  if(recordModeActive) RECORD_SECTION_KEYS.forEach(key=>{
-    const event = sections.meta['records__'+key];
-    recordVersions[key] = event && typeof event==='object' ? event.version : event;
+    loadedSections.add(key);
   });
   migrateDB();
-  if(selected.some(key=>!isRecordSection(key) && sections.data[key]===null)) await saveDB();
+  if(selected.some(key=>sections.data[key]===null)) await saveDB();
 }
 
 function showModal(html){
@@ -1327,15 +1257,9 @@ let saving = false;
    one Firestore document per top-level DB field (see setMulti()'s comment).
    {sectionKey: rawJsonStringOrNull}. null after a failed initial load. */
 let lastKnownSnapshot = null;
-/* {sectionKey (as stored in __meta, i.e. 'section__'+key): timestamp} — the
-   last heartbeat value this tab has already accounted for, so
-   onMetaUpdate() only re-fetches sections that actually changed. */
 let sectionVersions = {};
-let metaUnsubscribe = null;
-let metaListenerGeneration = 0;
-/* Set true around any action that reads a file (await) before saving to the
-   shared DB — e.g. finalizeRepairAction. While true, onMetaUpdate() waits
-   before swapping out the in-memory DB object. */
+/* Set true around any action that reads a file (await) before saving to keep
+   a visibility refresh from replacing an in-progress edit. */
 let actionInFlight = false;
 /* Applies a conflict response's per-section current values back onto DB and
    lastKnownSnapshot. Shared between saveDB() and saveDBWithRetry() so the
@@ -1607,39 +1531,22 @@ async function applyOpsIdSheetSnapshot(snapshot){
   }
 }
 function startOpsIdSheetSync(){
-  if(document.hidden) return;
-  if(opsIdSheetUnsubscribe){
-    console.debug('[live-sync] Ops ID listener already attached.');
-    return;
-  }
-  if(!window.storage || typeof window.storage.subscribe!=='function'){
-    setOpsIdSheetSyncStatus('Live Google Sheet sync requires the Supplies cloud connection.');
-    return;
-  }
-  const generation = ++opsIdSheetListenerGeneration;
-  opsIdSheetUnsubscribe = window.storage.subscribe('opsid_sheet_sync', true, snapshot=>{
-    if(generation!==opsIdSheetListenerGeneration || document.hidden || !session) return;
-    opsIdSheetQueue = opsIdSheetQueue
-      .then(()=>applyOpsIdSheetSnapshot(snapshot))
-      .catch(e=>{
-        console.error('Ops ID sheet sync failed:', e);
-        setOpsIdSheetSyncStatus('Google Sheet sync failed. Check the Apps Script execution log.');
-      });
-  }, error=>{
-    if(generation!==opsIdSheetListenerGeneration || document.hidden || !session) return;
-    console.error('Ops ID sheet listener failed:', error);
-    setOpsIdSheetSyncStatus('Could not connect to the Google Sheet sync. Check the Supplies cloud connection.');
-  });
-  console.debug('[live-sync] Ops ID listener attached.');
+  syncOpsIdSheetOnce();
 }
 function stopOpsIdSheetSync(){
-  opsIdSheetListenerGeneration++;
-  if(!opsIdSheetUnsubscribe) return;
-  const unsubscribe = opsIdSheetUnsubscribe;
-  opsIdSheetUnsubscribe = null;
-  try{ unsubscribe(); }
-  catch(e){ console.error('Could not stop Ops ID sheet listener:', e); }
-  console.debug('[live-sync] Ops ID listener detached.');
+}
+async function syncOpsIdSheetOnce(){
+  if(opsIdSheetSyncInFlight || document.hidden || !session || !loadedSections.has('employees')) return;
+  if(!window.storage || typeof window.storage.getOpsIdSheetSnapshot!=='function') return;
+  opsIdSheetSyncInFlight = true;
+  try{
+    await applyOpsIdSheetSnapshot(await window.storage.getOpsIdSheetSnapshot());
+  }catch(e){
+    console.error('Ops ID sheet refresh failed:', e);
+    setOpsIdSheetSyncStatus('Could not refresh the Google Sheet directory.');
+  }finally{
+    opsIdSheetSyncInFlight = false;
+  }
 }
 
 /* Append-only forensic trail for account changes — kept separate from the
@@ -1657,103 +1564,38 @@ async function logAudit(action, detail){
   }catch(e){ console.error('logAudit failed (non-fatal):', e); }
 }
 
-/* ============================= LIVE AUTO-REFRESH ============================= */
-function startAutoRefresh(){
-  if(!session || document.hidden) return;
-  if(metaUnsubscribe){
-    console.debug('[live-sync] Meta listener already attached.');
-    return;
-  }
-  if(!window.storage || typeof window.storage.subscribe!=='function') return;
-  const generation = ++metaListenerGeneration;
-  metaUnsubscribe = window.storage.subscribe('__meta', true, snapshot=>{
-    if(generation!==metaListenerGeneration || document.hidden || !session) return;
-    onMetaUpdate(snapshot);
-  }, error=>{
-    if(generation!==metaListenerGeneration || document.hidden || !session) return;
-    console.error('Auto-refresh listener failed', error);
-  });
-  console.debug('[live-sync] Meta listener attached.');
-}
-function stopAutoRefresh(){
-  metaListenerGeneration++;
-  if(!metaUnsubscribe) return;
-  const unsubscribe = metaUnsubscribe;
-  metaUnsubscribe = null;
-  try{ unsubscribe(); }
-  catch(e){ console.error('Could not stop auto-refresh listener:', e); }
-  console.debug('[live-sync] Meta listener detached.');
-}
-function syncLiveListenersForVisibility(){
-  if(document.hidden){
-    stopAutoRefresh();
-    stopOpsIdSheetSync();
-    return;
-  }
-  startOpsIdSheetSync();
-  startAutoRefresh();
-}
-document.addEventListener('visibilitychange', syncLiveListenersForVisibility);
+/* ============================= FOCUSED REFRESH ============================= */
+function startAutoRefresh(){}
+function stopAutoRefresh(){}
+function syncLiveListenersForVisibility(){}
 function isFormScreenActive(){
   if(route==='settings') return true;
   if(route==='cyclecount') return true;
   const formSubroutes = { request:'new', drequest:'new', receiving:'new', issuance:'new', dissuance:'new', dreceiving:'new', dreturn:'new', returns:'new', repair:'new' };
   return formSubroutes[route] && subroute===formSubroutes[route];
 }
-/* Fires only when the __meta heartbeat changes. It fetches the affected
-   sections instead of polling every open tab. */
-async function onMetaUpdate(snapshot){
-  if(!session || !snapshot) return;
+async function refreshFocusedData(){
+  if(!session || document.hidden || actionInFlight || isFormScreenActive()) return;
   try{
-    while(actionInFlight) await new Promise(r=>setTimeout(r, 100));
-    const meta = JSON.parse(snapshot.value);
-    const changedKeys = [...loadedSections].filter(k=>{
-      const fullKey = 'section__'+k;
-      return meta[fullKey] && meta[fullKey] !== sectionVersions[fullKey];
+    const keys = [...loadedSections];
+    const sections = await loadSections(keys);
+    keys.forEach(key=>{
+      if(sections.data[key]===null) return;
+      DB[key] = sections.data[key];
+      lastKnownSnapshot[key] = sections.snap[key];
     });
-    const recordEvents = recordModeActive ? RECORD_SECTION_KEYS.map(key=>{
-      const event = meta['records__'+key];
-      const version = event && typeof event==='object' ? event.version : event;
-      return version && version!==recordVersions[key] && loadedRecordSections.has(key) ? {key,event,version} : null;
-    }).filter(Boolean) : [];
-    if(!changedKeys.length && !recordEvents.length) return;
-    const results = await Promise.all(changedKeys.map(k=>window.storage.get('section__'+k, true)));
-    await Promise.all(recordEvents.map(({key,event,version})=>loadRecordChanges(key, event && event.ids).then(()=>{ recordVersions[key] = version; })));
-    let anyApplied = false;
-    changedKeys.forEach((k,i)=>{
-      const res = results[i];
-      if(!res) return;
-      anyApplied = true;
-      lastKnownSnapshot[k] = res.value;
-      DB[k] = JSON.parse(res.value);
-      sectionVersions['section__'+k] = meta['section__'+k];
-    });
-    if(recordEvents.length) anyApplied = true;
-    if(!anyApplied) return;
+    if(recordModeActive) await Promise.all([...loadedRecordSections].map(key=>loadRecordSection(key, loadedRecordArchives.has(key))));
     migrateDB();
-    if(loadedSections.has('stock') && changedKeys.concat(recordEvents.map(event=>event.key)).some(k=>['requests','receiving','issuance','returns','repairs'].includes(k))){
-      const requestsBeforeAllocation = JSON.stringify(DB.requests);
-      syncOpenRequestAssetCodes();
-      if(JSON.stringify(DB.requests)!==requestsBeforeAllocation) await saveDBWithRetry(syncOpenRequestAssetCodes);
-    }
-    // The PDA Issuance (scan) tab gets its own quiet refresh path: it has to
-    // stay live so simultaneous scans from other users show up (per-device
-    // borrow/return conflicts are already handled where the scan is saved —
-    // see confirmPdaBorrow/confirmPdaReturn), but a full navigate() here would
-    // wipe this user's own typed serial/Ops ID or drop their in-progress scan.
+    await syncOpsIdSheetOnce();
     if(route==='itassets' && (subroute||'scan')==='scan'){
-      // Either it refreshed quietly, or this user is mid-scan and it
-      // deliberately did nothing — never fall through to a full navigate()
-      // here, that's exactly the disruptive re-render this path avoids.
       refreshPdaLiveSections();
       renderNotifBell();
-    } else if(!isFormScreenActive()){
+    }else{
       navigate(route, subroute);
-    } else {
-      renderNotifBell();
     }
-  }catch(e){ console.error('Auto-refresh error', e); }
+  }catch(e){ console.error('Focused refresh failed:', e); }
 }
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) refreshFocusedData(); });
 
 function toast(msg){
   const t = document.createElement('div');
