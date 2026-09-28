@@ -18,7 +18,7 @@
    already existed would look "new" and flood the group on day one. */
 
 const { getAccessToken, getJoinedGroupIds, sendGroupTextMessage } = require('./seatalk-client');
-const { readSection, readDoc } = require('./firestore-sections');
+const { readSection, readDoc, fetchOpenCollection, readRecord } = require('./firestore-sections');
 const { writeStatus } = require('./firestore-status');
 
 const STATE_KEY = 'notifbot__state';
@@ -26,17 +26,17 @@ const STATE_KEY = 'notifbot__state';
 // ---- Replicates index.html's safety-stock math exactly (see
 // dailyAvgConsumption / safetyStockOf / stockOf in index.html) ----
 
-function dailyAvgConsumption(sku, issuance) {
-  const records = issuance.filter(i => i.sku === sku);
-  if (records.length === 0) return 0;
-  const totalQty = records.reduce((s, r) => s + Number(r.qty || 0), 0);
-  const earliest = Math.min(...records.map(r => new Date(r.date).getTime()));
+function dailyAvgConsumption(sku, issuanceMetrics) {
+  const metric = issuanceMetrics && (issuanceMetrics.all || issuanceMetrics)[sku];
+  if (!metric || !Number(metric.totalQty || 0) || !metric.earliest) return 0;
+  const totalQty = Number(metric.totalQty || 0);
+  const earliest = new Date(metric.earliest).getTime();
   const days = Math.max(1, Math.ceil((Date.now() - earliest) / (1000 * 60 * 60 * 24)));
   return totalQty / days;
 }
 
-function safetyStockOf(s, issuance) {
-  const dac = dailyAvgConsumption(s.sku, issuance);
+function safetyStockOf(s, issuanceMetrics) {
+  const dac = dailyAvgConsumption(s.sku, issuanceMetrics);
   const days = [7, 15, 30].includes(s.safetyStockDays) ? s.safetyStockDays : 7;
   return Math.ceil(dac * days);
 }
@@ -49,10 +49,19 @@ function stockOfAllSocs(sku, stock) {
   return total;
 }
 
-function computeBelowSafetyStock(sku, stock, issuance) {
+function computeBelowSafetyStock(sku, stock, issuanceMetrics) {
   const soh = stockOfAllSocs(sku.sku, stock);
-  const safety = safetyStockOf(sku, issuance);
+  const safety = safetyStockOf(sku, issuanceMetrics);
   return { soh, safety, below: soh <= safety };
+}
+
+async function readCurrentRecords(section, previousStatuses) {
+  const open = await fetchOpenCollection(section);
+  const openIds = new Set(open.map(record => record.id));
+  const closed = await Promise.all(Object.keys(previousStatuses || {})
+    .filter(id => !openIds.has(id))
+    .map(id => readRecord(section, id)));
+  return open.concat(closed.filter(Boolean));
 }
 
 // ---- Message formatting ----
@@ -104,18 +113,19 @@ async function main() {
   const appSecret = process.env.SEATALK_APP_SECRET;
   if (!appId || !appSecret) throw new Error('SEATALK_APP_ID / SEATALK_APP_SECRET not set');
 
-  const [requests, returns, skuList, stock, issuance, state] = await Promise.all([
-    readSection('requests'),
-    readSection('returns'),
+  const state = await readDoc(STATE_KEY);
+  const collectionState = !!(state && state.recordCollectionsV1);
+  const firstRun = !state || !collectionState;
+  const prevRequestStatuses = firstRun ? {} : (state.requestStatuses || {});
+  const prevReturnStatuses = firstRun ? {} : (state.returnStatuses || {});
+  const [requests, returns, skuList, stock, issuanceMetrics] = await Promise.all([
+    readCurrentRecords('requests', prevRequestStatuses),
+    readCurrentRecords('returns', prevReturnStatuses),
     readSection('sku'),
     readSection('stock'),
-    readSection('issuance'),
-    readDoc(STATE_KEY),
+    readSection('issuanceMetrics'),
   ]);
 
-  const firstRun = !state;
-  const prevRequestStatuses = (state && state.requestStatuses) || {};
-  const prevReturnStatuses = (state && state.returnStatuses) || {};
   const prevNotifiedApprovals = new Set((state && state.notifiedApprovals) || []);
   const prevBelowSafetyStock = new Set((state && state.belowSafetyStock) || []);
 
@@ -149,7 +159,7 @@ async function main() {
   const belowSafetyStock = [];
   const nextBelowSafetyStock = new Set();
   (skuList || []).forEach(s => {
-    const { soh, safety, below } = computeBelowSafetyStock(s, stock || {}, issuance || []);
+    const { soh, safety, below } = computeBelowSafetyStock(s, stock || {}, issuanceMetrics || {});
     if (below) {
       nextBelowSafetyStock.add(s.sku);
       if (!firstRun && !prevBelowSafetyStock.has(s.sku)) {
@@ -175,6 +185,7 @@ async function main() {
   }
 
   await writeStatus(STATE_KEY, {
+    recordCollectionsV1: true,
     requestStatuses: nextRequestStatuses,
     returnStatuses: nextReturnStatuses,
     notifiedApprovals: [...nextNotifiedApprovals],

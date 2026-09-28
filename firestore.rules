@@ -7,5 +7,17 @@ service cloud.firestore {
     match /sms_erp_storage/{docId} {
       allow read, write: if true;
     }
+    // Requests, returns, and issuance are one document per record. The app
+    // still has its legacy client-side access model, so these match the
+    // existing collection's temporary unauthenticated policy.
+    match /requests/{recordId} {
+      allow read, write: if true;
+    }
+    match /returns/{recordId} {
+      allow read, write: if true;
+    }
+    match /issuance/{recordId} {
+      allow read, write: if true;
+    }
   }
 }
