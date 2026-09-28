@@ -725,6 +725,7 @@ const STORE_KEY = 'sms_erp_state_v1';
 const UI_SESSION_KEY = 'sms_erp_ui_session_v1';
 let DB = null;
 let opsIdSheetUnsubscribe = null;
+let opsIdSheetListenerGeneration = 0;
 let opsIdSheetLastPayload = '';
 let opsIdSheetQueue = Promise.resolve();
 let opsIdSheetStatus = 'Google Sheet sync is connecting…';
@@ -1058,14 +1059,13 @@ let saving = false;
 let lastKnownSnapshot = null;
 /* {sectionKey (as stored in __meta, i.e. 'section__'+key): timestamp} — the
    last heartbeat value this tab has already accounted for, so
-   pollForUpdates() only re-fetches sections that actually changed instead
-   of re-reading all ~27 of them every 4s. */
+   onMetaUpdate() only re-fetches sections that actually changed. */
 let sectionVersions = {};
-let pollTimer = null;
+let metaUnsubscribe = null;
+let metaListenerGeneration = 0;
 /* Set true around any action that reads a file (await) before saving to the
-   shared DB — e.g. finalizeRepairAction. While true, pollForUpdates will not
-   swap out the in-memory DB object, so an in-flight edit can't be silently
-   dropped by an auto-refresh landing mid-action. */
+   shared DB — e.g. finalizeRepairAction. While true, onMetaUpdate() waits
+   before swapping out the in-memory DB object. */
 let actionInFlight = false;
 /* Applies a conflict response's per-section current values back onto DB and
    lastKnownSnapshot. Shared between saveDB() and saveDBWithRetry() so the
@@ -1297,12 +1297,18 @@ async function applyOpsIdSheetSnapshot(snapshot){
   }
 }
 function startOpsIdSheetSync(){
-  if(opsIdSheetUnsubscribe) return;
+  if(document.hidden) return;
+  if(opsIdSheetUnsubscribe){
+    console.debug('[live-sync] Ops ID listener already attached.');
+    return;
+  }
   if(!window.storage || typeof window.storage.subscribe!=='function'){
     setOpsIdSheetSyncStatus('Live Google Sheet sync requires the Supplies cloud connection.');
     return;
   }
+  const generation = ++opsIdSheetListenerGeneration;
   opsIdSheetUnsubscribe = window.storage.subscribe('opsid_sheet_sync', true, snapshot=>{
+    if(generation!==opsIdSheetListenerGeneration || document.hidden || !session) return;
     opsIdSheetQueue = opsIdSheetQueue
       .then(()=>applyOpsIdSheetSnapshot(snapshot))
       .catch(e=>{
@@ -1310,9 +1316,20 @@ function startOpsIdSheetSync(){
         setOpsIdSheetSyncStatus('Google Sheet sync failed. Check the Apps Script execution log.');
       });
   }, error=>{
+    if(generation!==opsIdSheetListenerGeneration || document.hidden || !session) return;
     console.error('Ops ID sheet listener failed:', error);
     setOpsIdSheetSyncStatus('Could not connect to the Google Sheet sync. Check the Supplies cloud connection.');
   });
+  console.debug('[live-sync] Ops ID listener attached.');
+}
+function stopOpsIdSheetSync(){
+  opsIdSheetListenerGeneration++;
+  if(!opsIdSheetUnsubscribe) return;
+  const unsubscribe = opsIdSheetUnsubscribe;
+  opsIdSheetUnsubscribe = null;
+  try{ unsubscribe(); }
+  catch(e){ console.error('Could not stop Ops ID sheet listener:', e); }
+  console.debug('[live-sync] Ops ID listener detached.');
 }
 
 /* Append-only forensic trail for account changes — kept separate from the
@@ -1332,12 +1349,41 @@ async function logAudit(action, detail){
 
 /* ============================= LIVE AUTO-REFRESH ============================= */
 function startAutoRefresh(){
-  if(pollTimer) return;
-  pollTimer = setInterval(pollForUpdates, 4000);
+  if(!session || document.hidden) return;
+  if(metaUnsubscribe){
+    console.debug('[live-sync] Meta listener already attached.');
+    return;
+  }
+  if(!window.storage || typeof window.storage.subscribe!=='function') return;
+  const generation = ++metaListenerGeneration;
+  metaUnsubscribe = window.storage.subscribe('__meta', true, snapshot=>{
+    if(generation!==metaListenerGeneration || document.hidden || !session) return;
+    onMetaUpdate(snapshot);
+  }, error=>{
+    if(generation!==metaListenerGeneration || document.hidden || !session) return;
+    console.error('Auto-refresh listener failed', error);
+  });
+  console.debug('[live-sync] Meta listener attached.');
 }
 function stopAutoRefresh(){
-  if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+  metaListenerGeneration++;
+  if(!metaUnsubscribe) return;
+  const unsubscribe = metaUnsubscribe;
+  metaUnsubscribe = null;
+  try{ unsubscribe(); }
+  catch(e){ console.error('Could not stop auto-refresh listener:', e); }
+  console.debug('[live-sync] Meta listener detached.');
 }
+function syncLiveListenersForVisibility(){
+  if(document.hidden){
+    stopAutoRefresh();
+    stopOpsIdSheetSync();
+    return;
+  }
+  startOpsIdSheetSync();
+  startAutoRefresh();
+}
+document.addEventListener('visibilitychange', syncLiveListenersForVisibility);
 function isFormScreenActive(){
   if(route==='settings') return true;
   if(route==='cyclecount') return true;
@@ -1729,10 +1775,11 @@ async function doLogin(){
     renderShell();
     navigate(land.route, land.sub);
   }
-  startAutoRefresh();
+  syncLiveListenersForVisibility();
 }
 function doLogout(){
   stopAutoRefresh();
+  stopOpsIdSheetSync();
   clearUiSession();
   session = null;
   portalMode = null;
@@ -7977,7 +8024,6 @@ function exportParcelShiftReport(){
     syncOpenRequestAssetCodes();
     if(JSON.stringify(DB.requests)!==requestsBeforeAllocation) await saveDBWithRetry(syncOpenRequestAssetCodes);
   }
-  startOpsIdSheetSync();
   const saved = loadUiSession();
   if(saved && saved.session){
     const stillExists = DB.users.find(u=>u.id===saved.session.id);
@@ -7991,7 +8037,7 @@ function exportParcelShiftReport(){
       document.getElementById('app').style.display='block';
       renderShell();
       navigate(route, subroute);
-      startAutoRefresh();
+      syncLiveListenersForVisibility();
       return;
     }
     clearUiSession();
