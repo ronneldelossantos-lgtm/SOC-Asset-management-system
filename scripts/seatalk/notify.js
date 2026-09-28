@@ -56,23 +56,32 @@ function computeBelowSafetyStock(sku, stock, issuance) {
 }
 
 // ---- Message formatting ----
+// One combined message per run (grouped by section, one line per event)
+// instead of one SeaTalk API call per individual event — a run with, say,
+// 4 safety-stock drops and 3 status changes used to cost 7 send calls and
+// 7 separate chat notifications; it now costs 1 call and 1 notification.
 
-function requestStatusMessage(r, oldStatus) {
-  const transition = oldStatus ? `${oldStatus} → ${r.status}` : `(new) → ${r.status}`;
-  return `📦 ${r.id} status updated: ${transition}\nRequested by: ${r.requestedBy} (${r.department})`;
+function statusLine(r, oldStatus) {
+  return `${r.id}: ${oldStatus ? oldStatus : '(new)'} → ${r.status}`;
 }
 
-function returnStatusMessage(r, oldStatus) {
-  const transition = oldStatus ? `${oldStatus} → ${r.status}` : `(new) → ${r.status}`;
-  return `↩️ ${r.id} status updated: ${transition}\n${r.sku} — ${r.description} (${r.department})`;
+function formatSection(title, count, lines) {
+  if (!count) return null;
+  return `${title} (${count})\n${lines.join('\n')}`;
 }
 
-function approvalNeededMessage(r) {
-  return `⚠️ New request ${r.id} needs approval\nRequested by: ${r.requestedBy} (${r.department})\nApprover: ${r.requiresApprovalFrom}`;
-}
-
-function belowSafetyStockMessage(sku, soh, safety) {
-  return `🔻 ${sku.sku} — ${sku.description} is below safety stock\nOn hand: ${soh} | Safety stock: ${safety}`;
+function buildDigestMessage({ belowSafetyStock, requestChanges, approvalsNeeded, returnChanges }) {
+  const sections = [
+    formatSection('🔻 Below safety stock', belowSafetyStock.length,
+      belowSafetyStock.map(({ sku, soh, safety }) => `${sku.sku} — ${sku.description}: ${soh}/${safety}`)),
+    formatSection('📦 Request updates', requestChanges.length,
+      requestChanges.map(({ r, oldStatus }) => statusLine(r, oldStatus))),
+    formatSection('⚠️ Needs approval', approvalsNeeded.length,
+      approvalsNeeded.map(r => `${r.id} — Requested by ${r.requestedBy} (${r.department})`)),
+    formatSection('↩️ Returns', returnChanges.length,
+      returnChanges.map(({ r, oldStatus }) => statusLine(r, oldStatus))),
+  ].filter(Boolean);
+  return sections.length ? sections.join('\n\n') : null;
 }
 
 async function main() {
@@ -95,7 +104,8 @@ async function main() {
   const prevNotifiedApprovals = new Set((state && state.notifiedApprovals) || []);
   const prevBelowSafetyStock = new Set((state && state.belowSafetyStock) || []);
 
-  const messages = [];
+  const requestChanges = [];
+  const approvalsNeeded = [];
   const nextRequestStatuses = {};
   const nextNotifiedApprovals = new Set(prevNotifiedApprovals);
 
@@ -103,48 +113,50 @@ async function main() {
     nextRequestStatuses[r.id] = r.status;
     if (!firstRun) {
       const old = prevRequestStatuses[r.id];
-      if (old !== r.status) messages.push(requestStatusMessage(r, old));
+      if (old !== r.status) requestChanges.push({ r, oldStatus: old });
       if (r.status === 'Dept Approval' && !prevNotifiedApprovals.has(r.id)) {
-        messages.push(approvalNeededMessage(r));
+        approvalsNeeded.push(r);
       }
     }
     if (r.status === 'Dept Approval') nextNotifiedApprovals.add(r.id);
   });
 
+  const returnChanges = [];
   const nextReturnStatuses = {};
   (returns || []).forEach(r => {
     nextReturnStatuses[r.id] = r.status;
     if (!firstRun) {
       const old = prevReturnStatuses[r.id];
-      if (old !== r.status) messages.push(returnStatusMessage(r, old));
+      if (old !== r.status) returnChanges.push({ r, oldStatus: old });
     }
   });
 
+  const belowSafetyStock = [];
   const nextBelowSafetyStock = new Set();
   (skuList || []).forEach(s => {
     const { soh, safety, below } = computeBelowSafetyStock(s, stock || {}, issuance || []);
     if (below) {
       nextBelowSafetyStock.add(s.sku);
       if (!firstRun && !prevBelowSafetyStock.has(s.sku)) {
-        messages.push(belowSafetyStockMessage(s, soh, safety));
+        belowSafetyStock.push({ sku: s, soh, safety });
       }
     }
   });
 
-  console.log(firstRun ? 'First run — seeding state without sending notifications.' : `${messages.length} notification(s) to send.`);
-  messages.forEach(m => console.log('---\n' + m));
+  const digest = firstRun ? null : buildDigestMessage({ belowSafetyStock, requestChanges, approvalsNeeded, returnChanges });
+  const eventCount = belowSafetyStock.length + requestChanges.length + approvalsNeeded.length + returnChanges.length;
+  console.log(firstRun ? 'First run — seeding state without sending notifications.' : `${eventCount} event(s) found.`);
+  if (digest) console.log('---\n' + digest);
 
   let sent = 0;
-  if (!firstRun && messages.length) {
+  if (digest) {
     const token = await getAccessToken(appId, appSecret);
     const groupIds = await getJoinedGroupIds(token);
     if (groupIds.length !== 1) {
       throw new Error(`Expected the bot to be in exactly 1 group, found ${groupIds.length}: ${JSON.stringify(groupIds)}`);
     }
-    for (const message of messages) {
-      await sendGroupTextMessage(token, groupIds[0], message);
-      sent++;
-    }
+    await sendGroupTextMessage(token, groupIds[0], digest);
+    sent = 1;
   }
 
   await writeStatus(STATE_KEY, {
@@ -157,7 +169,7 @@ async function main() {
   await writeStatus('notifbot__last_run', {
     ok: true,
     firstRun,
-    messagesFound: messages.length,
+    eventsFound: eventCount,
     messagesSent: sent,
     checkedAt: Date.now(),
   });
