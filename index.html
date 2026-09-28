@@ -624,18 +624,17 @@ if(!window.storage){
             });
           });
           if(conflicts) return {conflict:true, conflicts};
-          /* Best-effort heartbeat so onMetaUpdate() can tell which sections
-             changed via its __meta listener, and fetch just those, instead
-             of every open tab re-fetching all ~27 section documents (at
-             real usage volumes that would blow through Firestore's
-             free-tier daily read quota in well under an hour). A failure
-             here is non-fatal — the actual data write above already
-             succeeded — it just means an already-open tab elsewhere might
-             not notice this change until its next full reload instead of
-             its next heartbeat update. Returns the exact timestamp used so
-             the caller can record the same value locally and not mistake
-             its own just-completed write for a change made by someone else
-             on the next heartbeat. */
+          /* Best-effort heartbeat so pollForUpdates() can tell which
+             sections changed with one small read instead of re-fetching
+             all ~27 section documents every 4s (at real usage volumes that
+             would blow through Firestore's free-tier daily read quota in
+             well under an hour). A failure here is non-fatal — the actual
+             data write above already succeeded — it just means an
+             already-open tab elsewhere might not notice this change until
+             its next full reload instead of its next poll tick. Returns
+             the exact timestamp used so the caller can record the same
+             value locally and not mistake its own just-completed write for
+             a change made by someone else on the very next poll. */
           const now = Date.now();
           try{
             const metaRef = docRef('__meta', shared);
@@ -647,7 +646,7 @@ if(!window.storage){
             });
           }catch(e){ console.error('meta heartbeat update failed (non-fatal):', e); }
           return {ok:true, updatedAt: now};
-        }catch(e){ console.error('storage.setMulti failed:', e); return null; }
+        }catch(e){ console.error('storage.setMulti failed:', e); throw e; }
       },
       async delete(key, shared){
         try{
@@ -802,6 +801,7 @@ function defaultDB(){
     pdas: [],
     pdaLogs: [],
     pdaAllocations: {},
+    pdaAllocationsBySoc: {},
     pdaDeptBuckets: ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'],
     departmentSoc: {},
     parcels: [],
@@ -852,6 +852,7 @@ function migrateDB(){
   DB.pdas.forEach(p=>{ if(p.soc===undefined) p.soc=''; if(p.exceptionStatus===undefined) p.exceptionStatus=''; if(p.remarks===undefined) p.remarks=''; if(p.irFile===undefined) p.irFile=''; if(p.irFileData===undefined) p.irFileData=''; });
   if(!DB.pdaLogs) DB.pdaLogs = [];
   if(!DB.pdaAllocations) DB.pdaAllocations = {};
+  if(!DB.pdaAllocationsBySoc || typeof DB.pdaAllocationsBySoc!=='object' || Array.isArray(DB.pdaAllocationsBySoc)) DB.pdaAllocationsBySoc = {};
   if(!DB.pdaDeptBuckets || !DB.pdaDeptBuckets.length) DB.pdaDeptBuckets = ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'];
   if(!DB.parcels) DB.parcels = [];
   if(!DB.counters.cg) DB.counters.cg = 100;
@@ -911,7 +912,7 @@ function migrateDB(){
 }
 
 /* Fetches every section document (plus the small __meta heartbeat doc used
-   by onMetaUpdate — see setMulti()) in parallel. Returns each section's
+   by pollForUpdates — see setMulti()) in parallel. Returns each section's
    parsed value and raw snapshot string, and whether ANY section document
    exists yet at all (used by loadDB() to decide whether the one-time
    migration from the old single-blob document is needed). */
@@ -1057,16 +1058,14 @@ let saving = false;
 let lastKnownSnapshot = null;
 /* {sectionKey (as stored in __meta, i.e. 'section__'+key): timestamp} — the
    last heartbeat value this tab has already accounted for, so
-   onMetaUpdate() only re-fetches sections that actually changed instead of
-   re-reading all ~27 of them on every heartbeat change. */
+   pollForUpdates() only re-fetches sections that actually changed instead
+   of re-reading all ~27 of them every 4s. */
 let sectionVersions = {};
-let metaUnsubscribe = null;
+let pollTimer = null;
 /* Set true around any action that reads a file (await) before saving to the
-   shared DB — e.g. finalizeRepairAction. While true, onMetaUpdate() will not
-   swap out the in-memory DB object; it waits for actionInFlight to clear
-   instead of dropping the update, since auto-refresh is now event-driven
-   (see startAutoRefresh()) rather than a 4s poll that would otherwise pick
-   the same change up on its next tick. */
+   shared DB — e.g. finalizeRepairAction. While true, pollForUpdates will not
+   swap out the in-memory DB object, so an in-flight edit can't be silently
+   dropped by an auto-refresh landing mid-action. */
 let actionInFlight = false;
 /* Applies a conflict response's per-section current values back onto DB and
    lastKnownSnapshot. Shared between saveDB() and saveDBWithRetry() so the
@@ -1080,7 +1079,24 @@ function applySectionConflicts(conflicts){
   });
   migrateDB();
 }
+function showSharedSaveError(error){
+  const code=String(error&&error.code||'unknown').replace(/^firestore\//,'');
+  const detail=String(error&&error.message||'No database error details were returned.');
+  const guidance={
+    'resource-exhausted':'The database quota or capacity has been exceeded. Check Firebase usage and billing.',
+    'permission-denied':'The database rejected this write. Check the deployed Firestore permissions.',
+    'unauthenticated':'The database requires authentication. Check the Firebase sign-in configuration.',
+    'unavailable':'The database is temporarily unreachable. Check the connection and retry.',
+    'deadline-exceeded':'The database request timed out. Retry once the connection is stable.',
+    'aborted':'Another save interrupted this transaction. Reload the latest data before retrying.',
+    'failed-precondition':'The database rejected the transaction requirements.',
+    'invalid-argument':'The database rejected the submitted data.'
+  }[code]||'The database could not complete this save.';
+  showModal('<h3>Save failed</h3><p>'+esc(guidance)+'</p><p class="small-note">The save was not confirmed. Do not assume this change has been stored.</p><div class="field"><label>Error code</label><div class="mono">'+esc(code)+'</div></div><div class="field"><label>Database details</label><div style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;">'+esc(detail)+'</div></div><div class="footer-actions"><button class="btn" onclick="closeModal()">Close</button></div>');
+  toast('Save failed ('+code+'). See the database error details.');
+}
 async function saveDB(){
+  if(!lastKnownSnapshot){showSharedSaveError({code:'unavailable',message:'Shared data has not loaded. Reload the app before saving.'});return false;}
   try{
     /* Only the sections that actually changed get written — both to avoid
        needless Firestore writes, and because an unchanged section should
@@ -1097,7 +1113,7 @@ async function saveDB(){
        landed: whatever was just added kept showing on screen for the rest
        of the session, then quietly vanished on the next fresh load. */
     if(!res){
-      toast('Could not save — changes were not stored. Please check your connection and try again.');
+      showSharedSaveError({code:'unknown',message:'Storage returned no confirmation for this save.'});
       return false;
     }
     if(res.conflict){
@@ -1114,7 +1130,7 @@ async function saveDB(){
     return true;
   }catch(e){
     console.error('Storage error', e);
-    toast('Could not save — changes may be lost.');
+    showSharedSaveError(e);
     return false;
   }
 }
@@ -1134,6 +1150,7 @@ async function saveDB(){
    from under us for the same reason it already does around other
    multi-step saves (see the flag's definition above). */
 async function saveDBWithRetry(mutate, maxAttempts){
+  if(!lastKnownSnapshot){showSharedSaveError({code:'unavailable',message:'Shared data has not loaded. Reload the app before saving.'});return false;}
   maxAttempts = maxAttempts || 4;
   actionInFlight = true;
   let mutationApplied = false;
@@ -1156,7 +1173,7 @@ async function saveDBWithRetry(mutate, maxAttempts){
         /* Same gap as in saveDB(): a null result means the write never
            reached Firestore and must not be reported as a success. */
         if(!res){
-          toast('Could not save — changes were not stored. Please check your connection and try again.');
+          showSharedSaveError({code:'unknown',message:'Storage returned no confirmation for this save.'});
           return false;
         }
         if(res.conflict){
@@ -1182,7 +1199,7 @@ async function saveDBWithRetry(mutate, maxAttempts){
         return true;
       }catch(e){
         console.error('Storage error', e);
-        toast('Could not save — changes may be lost.');
+        showSharedSaveError(e);
         return false;
       }
     }
@@ -1314,24 +1331,12 @@ async function logAudit(action, detail){
 }
 
 /* ============================= LIVE AUTO-REFRESH ============================= */
-/* Auto-refresh used to be a setInterval() poll re-reading the small __meta
-   heartbeat doc every 4s in every open tab, forever, whether or not anyone
-   was looking at the screen or anything had changed. That idle drip — not
-   real editing — was what was burning through Firestore's free-tier daily
-   read quota (confirmed against the Firebase console: the reads graph rose
-   in a near-straight line all day with only ~8 active connections, the
-   signature of a fixed-rate background poll rather than user activity).
-   This now subscribes to the __meta doc with onSnapshot instead: Firestore
-   only bills a listener for its initial read plus actual changes to the
-   watched document, so an idle tab costs ~0 reads/hour instead of ~900. */
 function startAutoRefresh(){
-  if(metaUnsubscribe) return;
-  metaUnsubscribe = window.storage.subscribe('__meta', true, onMetaUpdate, error=>{
-    console.error('Auto-refresh listener failed', error);
-  });
+  if(pollTimer) return;
+  pollTimer = setInterval(pollForUpdates, 4000);
 }
 function stopAutoRefresh(){
-  if(metaUnsubscribe){ metaUnsubscribe(); metaUnsubscribe = null; }
+  if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
 }
 function isFormScreenActive(){
   if(route==='settings') return true;
@@ -1339,18 +1344,19 @@ function isFormScreenActive(){
   const formSubroutes = { request:'new', drequest:'new', receiving:'new', issuance:'new', dissuance:'new', dreceiving:'new', dreturn:'new', returns:'new', repair:'new' };
   return formSubroutes[route] && subroute===formSubroutes[route];
 }
-/* Fires whenever the __meta heartbeat doc actually changes (own writes
-   included, deduped by window.storage.subscribe() before this is called).
-   Diffs it against sectionVersions to see which sections changed since this
-   tab last knew about, then only re-fetches those specific sections — not
-   all ~27 of them. Waits out actionInFlight rather than bailing on it: with
-   no periodic poll behind this anymore, dropping an update here could leave
-   a tab stale until the next unrelated change to the same section. */
-async function onMetaUpdate(snapshot){
-  if(!session || !snapshot) return;
+/* Reads just the small __meta heartbeat doc (one read) to see which
+   sections have changed since this tab last knew about, then only
+   re-fetches those specific sections — not all ~27 of them — every 4s.
+   Polling every section on every tick would cost ~27x the reads for no
+   benefit in the overwhelmingly common case where nothing changed, which
+   at realistic usage would exhaust Firestore's free-tier daily read quota
+   in well under an hour. */
+async function pollForUpdates(){
+  if(!session || actionInFlight) return;
   try{
-    while(actionInFlight) await new Promise(r=>setTimeout(r, 100));
-    const meta = JSON.parse(snapshot.value);
+    const metaRes = await window.storage.get('__meta', true);
+    if(!metaRes) return;
+    const meta = JSON.parse(metaRes.value);
     const changedKeys = SECTION_KEYS.filter(k=>{
       const fullKey = 'section__'+k;
       return meta[fullKey] && meta[fullKey] !== sectionVersions[fullKey];
@@ -1809,6 +1815,8 @@ function socFilter(arr){ return (arr||[]).filter(x=>socVisible(x.soc)); }
    stale SOC saved, while keeping duplicate department names site-specific. */
 function requestSoc(r){
   const recordedSoc = r && r.soc ? String(r.soc) : '';
+  // The transaction's supply site must survive changes to department settings.
+  if(recordedSoc.trim()) return recordedSoc.trim();
   const matches = departmentEntries(r&&r.department);
   if(matches.length===1) return matches[0].soc||'';
   if(matches.length>1){
@@ -2159,6 +2167,98 @@ function stockStatusTableHtml(items, tableId){
   `;
 }
 
+function isAdminAllSocView(){ return !!session && session.role==='admin' && !adminViewSoc; }
+function dashboardSocEntries(sourceNames){
+  const entries = [];
+  const seen = new Set();
+  let hasShared = false;
+  const add = value => {
+    const label = String(value||'').trim();
+    if(!label) return;
+    const key = socKey(label);
+    if(seen.has(key)) return;
+    seen.add(key);
+    entries.push({key:label, label});
+  };
+  (DB.warehouses||[]).forEach(add);
+  Object.keys(DB.stock||{}).forEach(add);
+  (sourceNames||[]).forEach(name=>{
+    if(name==='requests') return;
+    (DB[name]||[]).forEach(row=>{ if(row.soc) add(row.soc); else hasShared = true; });
+  });
+  if((sourceNames||[]).includes('requests')) (DB.requests||[]).forEach(row=>{
+    const value = requestSoc(row);
+    if(value===null) return;
+    if(value) add(value); else hasShared = true;
+  });
+  const sharedStock = DB.stock&&DB.stock['']||{};
+  if(!(sourceNames||[]).length && Object.values(sharedStock).some(q=>Number(q)>0)) hasShared = true;
+  if(hasShared) entries.push({key:'', label:'Shared / unassigned'});
+  return entries;
+}
+function dashboardSocKey(value){ return String(value||'').trim() ? socKey(value) : ''; }
+function dashboardStockOf(sku, soc){
+  const key = dashboardSocKey(soc);
+  const stockKey = Object.keys(DB.stock||{}).find(k=>dashboardSocKey(k)===key);
+  return Number(((DB.stock||{})[stockKey===undefined?'':stockKey]||{})[sku]||0);
+}
+function inventoryBySocHtml(items, label){
+  const socs = dashboardSocEntries([]);
+  const totals = socs.map(site=>({site, qty:items.reduce((sum,s)=>sum+dashboardStockOf(s.sku,site.key),0), active:items.filter(s=>dashboardStockOf(s.sku,site.key)>0).length}));
+  const detail = [];
+  totals.forEach(({site})=>items.forEach(s=>detail.push({site,sku:s.sku,description:s.description,uom:s.uom,qty:dashboardStockOf(s.sku,site.key)})));
+  return `<div class="card">
+    <h3>${label} on-hand inventory by SOC</h3>
+    <div class="card-sub">Site-specific stock is shown by SOC. Shared and legacy stock appears in its own row so it is not counted twice across sites.</div>
+    <div class="tbl-wrap"><table><tr><th>SOC</th><th style="text-align:right;">On hand</th><th style="text-align:right;">SKUs with stock</th></tr>
+      ${totals.map(x=>`<tr><td>${esc(x.site.label)}</td><td style="text-align:right;font-weight:700;">${x.qty}</td><td style="text-align:right;">${x.active}</td></tr>`).join('')}
+      ${totals.length===0?'<tr><td colspan="3"><div class="empty">No SOCs configured.</div></td></tr>':''}
+    </table></div>
+    <div class="section-title">Item detail</div>
+    <div class="tbl-wrap"><table><tr><th>SOC</th><th>SKU</th><th>Item description</th><th>UOM</th><th style="text-align:right;">On hand</th></tr>
+      ${detail.length?detail.map(x=>`<tr><td>${esc(x.site.label)}</td><td class="mono">${esc(x.sku)}</td><td>${esc(x.description)}</td><td>${esc(x.uom||'—')}</td><td style="text-align:right;font-weight:700;">${x.qty}</td></tr>`).join(''):'<tr><td colspan="5"><div class="empty">No items to show.</div></td></tr>'}
+    </table></div>
+  </div>`;
+}
+function requestFrequencyForSoc(soc){
+  const freq = {};
+  const target = dashboardSocKey(soc);
+  (DB.requests||[]).forEach(r=>{
+    const resolved = requestSoc(r);
+    if(resolved===null || dashboardSocKey(resolved)!==target) return;
+    (r.items||[]).forEach(it=>{ freq[it.sku]=(freq[it.sku]||0)+Number(it.qty||0); });
+  });
+  (DB.issuance||[]).filter(row=>dashboardSocKey(row.soc)===target).forEach(row=>{ freq[row.sku]=(freq[row.sku]||0)+Number(row.qty||0); });
+  return freq;
+}
+function top10ItemsBySocHtml(items,label){
+  const sections = dashboardSocEntries(['requests','issuance']).map(site=>{
+    const freq = requestFrequencyForSoc(site.key);
+    const top = items.map(s=>({...s,count:freq[s.sku]||0})).sort((a,b)=>b.count-a.count).slice(0,10).filter(s=>s.count>0);
+    return `<div class="card"><h3>${esc(site.label)} — top 10 most requested ${esc(label)}</h3>
+      ${top.length?'<div class="tbl-wrap"><table><tr><th>#</th><th>SKU</th><th>Item</th><th style="text-align:right;">Requested + issued</th></tr>'+top.map((s,i)=>`<tr><td>${i+1}</td><td class="mono">${esc(s.sku)}</td><td>${esc(s.description)}</td><td style="text-align:right;font-weight:700;">${s.count}</td></tr>`).join('')+'</table></div>':'<div class="empty"><div class="ic">&#9673;</div>No request activity for this SOC yet.</div>'}
+    </div>`;
+  });
+  return sections.join('');
+}
+function damagedAssetsBySocHtml(){
+  const statuses = ['For Repair','Repaired','For Backload','For Disposal'];
+  const repairs = DB.repairs||[];
+  const sites = dashboardSocEntries(['repairs']);
+  return `<div class="card"><h3>Damaged assets inventory by SOC</h3>
+    <div class="card-sub">Repair register records grouped by the SOC where the asset was logged.</div>
+    <div class="tbl-wrap"><table><tr><th>SOC</th>${statuses.map(s=>`<th style="text-align:right;">${esc(s)}</th>`).join('')}<th style="text-align:right;">Open damaged</th></tr>
+      ${sites.map(site=>{
+        const rows=repairs.filter(r=>dashboardSocKey(r.soc)===dashboardSocKey(site.key));
+        const counts=statuses.map(status=>rows.filter(r=>r.status===status).length);
+        return `<tr><td>${esc(site.label)}</td>${counts.map(n=>`<td style="text-align:right;">${n}</td>`).join('')}<td style="text-align:right;font-weight:700;">${counts[0]+counts[2]+counts[3]}</td></tr>`;
+      }).join('')||'<tr><td colspan="6"><div class="empty">No SOCs configured.</div></td></tr>'}
+    </table></div>
+    <div class="section-title">Asset detail</div>
+    ${repairs.length?'<div class="tbl-wrap"><table><tr><th>SOC</th><th>Asset tag</th><th>SKU</th><th>Item</th><th>Date received</th><th>Status</th><th>Remarks</th></tr>'+repairs.slice().reverse().map(r=>`<tr><td>${esc(r.soc||'Shared / unassigned')}</td><td class="mono">${esc(r.assetTagging||'—')}</td><td class="mono">${esc(r.sku||'—')}</td><td>${esc(r.description||'—')}</td><td>${fmtDate(r.dateReceived)}</td><td>${statusTag(r.status)}</td><td>${esc(r.remarks||'—')}</td></tr>`).join('')+'</table></div>':'<div class="empty"><div class="ic">&#9874;</div>No damaged assets logged yet.</div>'}
+  </div>`;
+}
+
 function dashAsset(){
   const assets = DB.sku.filter(s=>s.type==='Asset');
   const onHand = assets.reduce((a,s)=>a+stockOf(s.sku),0);
@@ -2178,12 +2278,15 @@ function dashAsset(){
       <div class="metric success"><div class="lbl">Repaired</div><div class="val">${counts['Repaired']}</div><div class="sub">returned to service</div></div>
       <div class="metric danger"><div class="lbl">For disposal</div><div class="val">${counts['For Disposal']}</div><div class="sub">${counts['For Backload']} for backload</div></div>
     </div>
+    ${isAdminAllSocView()?inventoryBySocHtml(assets,'Asset'):''}
     <div class="card">
       <h3>Stock status — assets</h3>
       <div class="card-sub">Per-item inventory health. Safety stock = daily average consumption &times; the SKU's configured coverage window (7 / 15 / 30 days, set in Settings &rarr; SKU code).</div>
       ${stockStatusTableHtml(assets, 'asset-stock-tbl')}
     </div>
-    <div class="card">
+    ${isAdminAllSocView()?top10ItemsBySocHtml(assets,'assets'):''}
+    ${isAdminAllSocView()?damagedAssetsBySocHtml():''}
+    <div class="card" style="display:${isAdminAllSocView()?'none':''};">
         <h3>Top 10 most requested assets</h3>
         <div class="card-sub">By cumulative request + issuance quantity</div>
         ${top10.filter(t=>t.count>0).length===0? '<div class="empty"><div class="ic">&#9673;</div>No request activity yet.</div>' :
@@ -2198,7 +2301,7 @@ function dashAsset(){
           </div>`;
         }).join('')}
       </div>
-    <div class="card">
+    <div class="card" style="display:${isAdminAllSocView()?'none':''};">
       <h3>Damaged assets — repair pipeline</h3>
       <div class="card-sub">All assets logged in Repair &amp; Maintenance, grouped by current status</div>
       ${renderRepairPipelineTable()}
@@ -2245,6 +2348,8 @@ function dashConsumable(){
       <div class="metric amber"><div class="lbl">Pending requests</div><div class="val">${pendingReq}</div><div class="sub">awaiting admin approval</div></div>
       <div class="metric success"><div class="lbl">Issuance transactions</div><div class="val">${issuedThisLog}</div><div class="sub">total logged</div></div>
     </div>
+    ${isAdminAllSocView()?inventoryBySocHtml(cons,'Consumable'):''}
+    ${isAdminAllSocView()?top10ItemsBySocHtml(cons,'consumables'):''}
     <div class="card">
       <h3>Stock status — consumables</h3>
       <div class="card-sub">Per-item inventory health. Safety stock = daily average consumption &times; the SKU's configured coverage window (7 / 15 / 30 days, set in Settings &rarr; SKU code).</div>
@@ -2871,13 +2976,23 @@ async function rejectRequest(id){
   navigate('request','list');
 }
 function openApproveRequestModal(r){
+  const recordedSite=requestSoc(r);
+  const supplySite=recordedSite || currentSoc() || '';
+  const siteOptions=Array.from(new Set([...(DB.warehouses||[]),supplySite].filter(Boolean)));
   showModal(`
     <h3>Approve request — ${esc(r.id)}</h3>
+    <div class="field"><label for="approve-supply-soc">Supply site (SOC)</label>
+      <select id="approve-supply-soc" ${recordedSite?'disabled':''}>
+        <option value="" ${!supplySite?'selected':''}>Choose the supplying SOC</option>
+        ${siteOptions.map(site=>'<option value="'+esc(site)+'" '+(site===supplySite?'selected':'')+'>'+esc(site)+'</option>').join('')}
+      </select>
+      <div class="hint">Asset tags and stock will come from this SOC. This site is saved with the approved request.</div>
+    </div>
     <div class="card-sub">Set the approved quantity for each item — it may differ from what was requested (e.g. a partial approval due to stock). The approved quantity controls automatic asset-tag assignment, issuance, stock deduction, and the transmittal.</div>
     <div class="tbl-wrap" style="margin:14px 0;"><table>
       <tr><th>SKU</th><th>Description</th><th>Requested</th><th>Approved qty</th></tr>
       ${r.items.map((it,i)=>{
-        const onHand = stockOf(it.sku, r.soc);
+        const onHand = stockOf(it.sku, supplySite);
         const short = onHand < it.qty;
         return `<tr>
           <td class="mono">${esc(it.sku)}</td><td>${esc(it.description)}</td>
@@ -2896,6 +3011,11 @@ async function confirmApproveRequest(id){
   if(actionInFlight) return;
   const r = DB.requests.find(x=>x.id===id);
   if(!r) return;
+  const supplySite=requestSoc(r)||document.getElementById('approve-supply-soc')?.value||'';
+  if(!supplySite){toast('Choose the supplying SOC before approving this request.');return;}
+  if(session.role!=='admin' && socKey(supplySite)!==socKey(currentSoc())){
+    toast('Approve this request from its supplying SOC.');return;
+  }
   if(['Preparing','Ready for Pull-out','Approved','Issued','Received','Rejected'].includes(r.status)){
     toast('This request has already been processed.'); return;
   }
@@ -2911,6 +3031,7 @@ async function confirmApproveRequest(id){
   const beforeNotifications=JSON.parse(JSON.stringify(DB.notifications));
   const requestSnapshot=lastKnownSnapshot.requests;
   const notificationSnapshot=lastKnownSnapshot.notifications;
+  r.soc=supplySite;
   r.items.forEach((it,i)=>{it.approvedQty=quantities[i];});
   // Allocate received tags when Supplies approves this request.
   r.status = 'Preparing';
@@ -4401,28 +4522,38 @@ function renderDeptDashboard(){
   const c = document.getElementById('content');
   const dept = session.department;
   const myIssuances = DB.issuance.filter(i=>i.department===dept);
-  const pendingRecv = myIssuances.filter(i=>!i.deptReceived).length;
-  const confirmedRecv = myIssuances.filter(i=>i.deptReceived).length;
   const myReturns = DB.returns.filter(r=>r.department===dept);
-  const pendingReturns = myReturns.filter(r=>r.status==='Pending').length;
   const myDeptIssuance = DB.deptIssuance.filter(d=>d.department===dept);
-  c.innerHTML = `
+  const supplyType = record => {
+    const type=String(record.type||record.category||(skuInfo(record.sku)||{}).type||'').trim().toLowerCase();
+    return type==='asset'?'Asset':(type==='consumable'||type==='consumables')?'Consumable':'';
+  };
+  c.innerHTML = ['Asset','Consumable'].map(type=>{
+    const label=type==='Asset'?'Assets':'Consumables';
+    const issuances=myIssuances.filter(i=>supplyType(i)===type);
+    const pendingRecv=issuances.filter(i=>!i.deptReceived).length;
+    const confirmedRecv=issuances.filter(i=>i.deptReceived).length;
+    const pendingReturns=myReturns.filter(r=>supplyType(r)===type&&r.status==='Pending').length;
+    const issuedWithin=myDeptIssuance.filter(d=>supplyType(d)===type).length;
+    return `<section aria-label="${label}" style="margin-bottom:28px;">
+    <h2 style="margin:0 0 14px;">${label}</h2>
     <div class="grid g4" style="margin-bottom:18px;">
-      <div class="metric amber"><div class="lbl">Awaiting your confirmation</div><div class="val">${pendingRecv}</div><div class="sub">sent by Supplies, not yet confirmed</div></div>
-      <div class="metric success"><div class="lbl">Confirmed received</div><div class="val">${confirmedRecv}</div><div class="sub">total from Supplies</div></div>
-      <div class="metric"><div class="lbl">Issued within department</div><div class="val">${myDeptIssuance.length}</div><div class="sub">to your staff</div></div>
-      <div class="metric danger"><div class="lbl">Returns pending pickup</div><div class="val">${pendingReturns}</div><div class="sub">awaiting Supplies confirmation</div></div>
+      <div class="metric amber"><div class="lbl">Awaiting your confirmation</div><div class="val">${pendingRecv}</div><div class="sub">${label.toLowerCase()} receipt records</div></div>
+      <div class="metric success"><div class="lbl">Confirmed received</div><div class="val">${confirmedRecv}</div><div class="sub">${label.toLowerCase()} receipt records</div></div>
+      <div class="metric"><div class="lbl">Issued within department</div><div class="val">${issuedWithin}</div><div class="sub">${label.toLowerCase()} issuance records</div></div>
+      <div class="metric danger"><div class="lbl">Returns pending pickup</div><div class="val">${pendingReturns}</div><div class="sub">${label.toLowerCase()} return records</div></div>
     </div>
     <div class="card">
-      <h3>Recent activity — ${esc(dept)}</h3>
-      <div class="card-sub">Latest items received from Supplies for your department</div>
-      ${myIssuances.length===0?'<div class="empty"><div class="ic">&#8615;</div>Nothing sent to your department yet.</div>':
+      <h3>Recent ${label.toLowerCase()} activity — ${esc(dept)}</h3>
+      <div class="card-sub">Latest ${label.toLowerCase()} sent by Supplies to your department</div>
+      ${issuances.length===0?'<div class="empty"><div class="ic">&#8615;</div>No '+label.toLowerCase()+' sent to your department yet.</div>':
       '<div class="tbl-wrap"><table><tr><th>SKU</th><th>Item</th><th>Qty</th><th>Date</th><th>Status</th></tr>' +
-      myIssuances.slice().reverse().slice(0,8).map(i=>`<tr><td class="mono">${esc(i.sku)}</td><td>${esc(i.description)}</td>
+      issuances.slice().sort((a,b)=>(Date.parse(b.date)||0)-(Date.parse(a.date)||0)).slice(0,8).map(i=>`<tr><td class="mono">${esc(i.sku)}</td><td>${esc(i.description)}</td>
         <td>${i.qty} ${esc(i.uom)}</td><td>${fmtDate(i.date)}</td>
         <td>${i.deptReceived?'<span class="tag tag-approved">Confirmed</span>':'<span class="tag tag-pending">Pending</span>'}</td></tr>`).join('') + '</table></div>'}
     </div>
-  `;
+    </section>`;
+  }).join('');
 }
 
 /* ---- Dept Receiving (from Supplies) ---- */
@@ -5019,7 +5150,25 @@ function deptNames(){ return Array.from(new Set(DB.departments.map(d=>d.name)));
 function deptSocOptionsHtml(selectedSoc){
   return '<option value="">— Not site-specific —</option>' + DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===(selectedSoc||'')?'selected':''}>${esc(w)}</option>`).join('');
 }
+let departmentListSearch = '';
+function departmentListMatches(department){
+  const query=departmentListSearch.trim().toLowerCase();
+  return !query || [department.name,department.soc||'Not site-specific'].some(value=>String(value||'').toLowerCase().includes(query));
+}
+function filterDepartmentList(value){
+  departmentListSearch=value;
+  let matches=0;
+  document.querySelectorAll('#department-list-table tr[data-dept-index]').forEach(row=>{
+    const department=DB.departments[Number(row.dataset.deptIndex)];
+    const visible=!!department && departmentListMatches(department);
+    row.hidden=!visible;
+    if(visible) matches++;
+  });
+  document.getElementById('department-list-count').textContent=matches+' of '+DB.departments.length+' departments';
+  document.getElementById('department-list-empty').hidden=matches>0;
+}
 function settingsDepartmentsHtml(){
+  const matchCount=DB.departments.filter(departmentListMatches).length;
   return `<div class="card">
     <div class="list-head"><h3>Add department</h3>${importBtn('importListCsv_departments','Department, SOC (optional)')}</div>
     <div class="card-sub">A department can be added more than once, each time under a different SOC — its requests are tagged with that SOC right away and only that SOC's Supplies staff see them. Leave SOC unset if it isn't tied to one site.</div>
@@ -5031,10 +5180,13 @@ function settingsDepartmentsHtml(){
   </div>
   <div class="card">
     <h3>Department list (${DB.departments.length})</h3>
-    <div class="tbl-wrap"><table><tr><th>Department</th><th>SOC</th><th></th></tr>
-      ${DB.departments.map((d,i)=>`<tr><td>${esc(d.name)}</td><td>${esc(d.soc)||'<span class="small-note">Not site-specific</span>'}</td>
+    <div class="field" style="margin-bottom:12px;"><label for="department-list-search">Search departments</label><input id="department-list-search" type="search" placeholder="Search by department name or SOC…" value="${esc(departmentListSearch)}" oninput="filterDepartmentList(this.value)"></div>
+    <div id="department-list-count" class="small-note" role="status" style="margin-bottom:12px;">${matchCount} of ${DB.departments.length} departments</div>
+    <div class="tbl-wrap"><table id="department-list-table"><tr><th>Department</th><th>SOC</th><th></th></tr>
+      ${DB.departments.map((d,i)=>`<tr data-dept-index="${i}" ${departmentListMatches(d)?'':'hidden'}><td>${esc(d.name)}</td><td>${esc(d.soc)||'<span class="small-note">Not site-specific</span>'}</td>
         <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditDepartment(${i})">Edit</button> <button class="icon-btn" onclick="removeDepartment(${i})">&times;</button></td></tr>`).join('')}
     </table></div>
+    <div id="department-list-empty" class="empty" ${matchCount?'hidden':''}>No departments found.</div>
   </div>`;
 }
 async function addDepartment(){
@@ -5225,6 +5377,12 @@ function cascadeDepartmentRename(oldName, newName){
     DB.pdaAllocations[newName] = DB.pdaAllocations[oldName];
     delete DB.pdaAllocations[oldName];
   }
+  Object.values(DB.pdaAllocationsBySoc||{}).forEach(allocations=>{
+    if(Object.prototype.hasOwnProperty.call(allocations,oldName)){
+      allocations[newName]=allocations[oldName];
+      delete allocations[oldName];
+    }
+  });
 }
 async function addListVal(key){
   const v = document.getElementById('new-list-val-'+key).value.trim();
@@ -5291,7 +5449,25 @@ async function removeListVal(key, i){
 function acctDeptOptions(selected){
   return '<option value="">—</option>' + deptNames().map(d=>`<option ${d===selected?'selected':''}>${esc(d)}</option>`).join('');
 }
+let accountablePersonsSearch = '';
+function accountablePersonMatches(a){
+  const query=accountablePersonsSearch.trim().toLowerCase();
+  return !query || [a.name,a.email,a.department].some(value=>String(value||'').toLowerCase().includes(query));
+}
+function filterAccountablePersons(value){
+  accountablePersonsSearch=value;
+  let matches=0;
+  document.querySelectorAll('#accountable-persons-table tr[data-acct-index]').forEach(row=>{
+    const person=DB.accountability[Number(row.dataset.acctIndex)];
+    const visible=!!person && accountablePersonMatches(person);
+    row.hidden=!visible;
+    if(visible) matches++;
+  });
+  document.getElementById('accountable-persons-count').textContent=matches+' of '+DB.accountability.length+' persons';
+  document.getElementById('accountable-persons-empty').hidden=matches>0;
+}
 function settingsAccountabilityHtml(){
+  const matchCount=DB.accountability.filter(accountablePersonMatches).length;
   return `<div class="card">
     <div class="list-head"><h3>Add accountable person</h3>${importBtn('importAcctCsv', 'Full Name, Email (optional), Department (optional)')}</div>
     <div class="card-sub">Accountability is tied to a named person, not just a role — this person is selectable at Issuance.</div>
@@ -5304,11 +5480,14 @@ function settingsAccountabilityHtml(){
   </div>
   <div class="card">
     <h3>Accountable persons (${DB.accountability.length})</h3>
-    <div class="tbl-wrap"><table><tr><th>Full name</th><th>Email</th><th>Department</th><th></th></tr>
-      ${DB.accountability.map((a,i)=>`<tr><td>${esc(a.name)}</td><td>${esc(a.email)||'<span class="small-note">—</span>'}</td><td>${esc(a.department)||'<span class="small-note">—</span>'}</td>
+    <div class="field" style="margin-bottom:12px;"><label for="accountable-persons-search">Search accountable persons</label><input id="accountable-persons-search" type="search" placeholder="Search by name, email, or department…" value="${esc(accountablePersonsSearch)}" oninput="filterAccountablePersons(this.value)"></div>
+    <div id="accountable-persons-count" class="small-note" role="status" style="margin-bottom:12px;">${matchCount} of ${DB.accountability.length} persons</div>
+    <div class="tbl-wrap"><table id="accountable-persons-table"><tr><th>Full name</th><th>Email</th><th>Department</th><th></th></tr>
+      ${DB.accountability.map((a,i)=>`<tr data-acct-index="${i}" ${accountablePersonMatches(a)?'':'hidden'}><td>${esc(a.name)}</td><td>${esc(a.email)||'<span class="small-note">—</span>'}</td><td>${esc(a.department)||'<span class="small-note">—</span>'}</td>
       <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditAcct(${i})">Edit</button>
       <button class="icon-btn" onclick="removeAccountability(${i})">&times;</button></td></tr>`).join('')}
     </table></div>
+    <div id="accountable-persons-empty" class="empty" ${matchCount?'hidden':''}>No accountable persons found.</div>
   </div>`;
 }
 async function addAccountability(){
@@ -5379,7 +5558,26 @@ function processAccessCheckboxes(idPrefix, selected){
 function readProcessAccessCheckboxes(idPrefix){
   return PROCESS_LIST.map(p=>p.key).filter(k=>{ const el = document.getElementById(idPrefix+'-'+k); return el && el.checked; });
 }
+let systemUsersSearch = '';
+function systemUserMatches(user){
+  const query=systemUsersSearch.trim().toLowerCase();
+  return !query || [user.fullName,user.username,user.role,user.department,user.site,user.departmentSoc,user.portal==='department'?'Department':'Supplies'].some(value=>String(value||'').toLowerCase().includes(query));
+}
+function filterSystemUsers(value){
+  systemUsersSearch=value;
+  let matches=0;
+  const usersById=new Map(DB.users.map(user=>[String(user.id),user]));
+  document.querySelectorAll('#system-users-table tr[data-user-id]').forEach(row=>{
+    const user=usersById.get(row.dataset.userId);
+    const visible=!!user && systemUserMatches(user);
+    row.hidden=!visible;
+    if(visible) matches++;
+  });
+  document.getElementById('system-users-count').textContent=matches+' of '+DB.users.length+' users';
+  document.getElementById('system-users-empty').hidden=matches>0;
+}
 function settingsAccessHtml(){
+  const matchCount=DB.users.filter(systemUserMatches).length;
   return `<div class="card">
     <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department/hub), Password, Site/SOC (if role=admin/staff/hub), Department (if role=department), Department SOC (optional — only needed to disambiguate if that department name exists under more than one SOC), Process Access (staff/hub only — semicolon-separated: supplies;itassets;cageloading;parcelretrieval — blank = all), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
     <div class="card-sub">Every login signs in with just a username and password — no portal or site picker. Set the role (and, for Staff/Hub/Admin, which SOC they work out of; for Department, which department) right here when creating the login. <b>Site is required for Staff and Hub</b> — their dashboard and inventory are scoped to that one SOC only. Admin is the only role that can leave it blank, to view all SOCs combined.</div>
@@ -5415,8 +5613,10 @@ function settingsAccessHtml(){
   </div>
   <div class="card">
     <h3>System users (${DB.users.length})</h3>
-    <div class="tbl-wrap"><table><tr><th>Full name</th><th>Username</th><th>Portal</th><th>Role</th><th>Department / Site</th><th>Process access</th><th>Access scope</th><th></th></tr>
-      ${DB.users.map(u=>`<tr><td>${esc(u.fullName)}</td><td class="mono">${esc(u.username)}</td>
+    <div class="field" style="margin-bottom:12px;"><label for="system-users-search">Search system users</label><input id="system-users-search" type="search" placeholder="Search name, username, role, department, or SOC…" value="${esc(systemUsersSearch)}" oninput="filterSystemUsers(this.value)"></div>
+    <div id="system-users-count" class="small-note" role="status" style="margin-bottom:12px;">${matchCount} of ${DB.users.length} users</div>
+    <div class="tbl-wrap"><table id="system-users-table"><tr><th>Full name</th><th>Username</th><th>Portal</th><th>Role</th><th>Department / Site</th><th>Process access</th><th>Access scope</th><th></th></tr>
+      ${DB.users.map(u=>`<tr data-user-id="${esc(String(u.id))}" ${systemUserMatches(u)?'':'hidden'}><td>${esc(u.fullName)}</td><td class="mono">${esc(u.username)}</td>
       <td>${u.portal==='department'?'Department':'Supplies'}</td>
       <td><span class="badge ${roleBadgeClass(u.role)}">${u.role.toUpperCase()}</span></td>
       <td>${esc(u.department || u.site || '—')}${((u.role==='staff'||u.role==='hub') && !u.site)?'<div style="color:var(--danger);font-size:11px;font-weight:700;margin-top:2px;">&#9888; No SOC assigned — sees only shared/legacy stock. Edit to fix.</div>':''}${u.approverUsername?`<div class="small-note">Needs approval from: ${esc(u.approverUsername)}</div>`:''}</td>
@@ -5424,6 +5624,7 @@ function settingsAccessHtml(){
       <td>${userScopeCell(u)}</td>
       <td style="white-space:nowrap;">${u.id===session.id?'<span class="small-note">current user</span>':`<button class="btn btn-sm" onclick="openEditUser(${u.id})">Edit</button> <button class="icon-btn" onclick="deleteUser(${u.id})">&times;</button>`}</td></tr>`).join('')}
     </table></div>
+    <div id="system-users-empty" class="empty" ${matchCount?'hidden':''}>No system users found.</div>
   </div>`;
 }
 // ------------------------- Ops ID (Employee) directory -------------------------
@@ -5912,6 +6113,28 @@ function cageDashboardHtml(){
   const pending = rows.filter(cg=>cg.status!=='Received');
   const received = rows.filter(cg=>cg.status==='Received');
   const recent = rows.slice().reverse().slice(0,8);
+  const perSoc = isAdminAllSocView() ? `<div class="card">
+    <h3>Cage totals by SOC</h3>
+    <div class="tbl-wrap"><table><tr><th>SOC</th><th style="text-align:right;">Total cages</th><th style="text-align:right;">In transit</th><th style="text-align:right;">Received</th></tr>
+    ${dashboardSocEntries(['cages']).map(site=>{
+        const siteRows=rows.filter(cg=>dashboardSocKey(cg.soc)===dashboardSocKey(site.key));
+        return `<tr><td>${esc(site.label)}</td><td style="text-align:right;font-weight:700;">${siteRows.length}</td><td style="text-align:right;">${siteRows.filter(cg=>cg.status!=='Received').length}</td><td style="text-align:right;">${siteRows.filter(cg=>cg.status==='Received').length}</td></tr>`;
+      }).join('')||'<tr><td colspan="4"><div class="empty">No SOCs configured.</div></td></tr>'}
+    </table></div>
+  </div>
+  <div class="card"><h3>Received cages by hub</h3>
+    ${received.length===0?'<div class="empty"><div class="ic">&#128666;</div>No received cages yet.</div>':(()=>{
+      const grouped={};
+      received.forEach(cg=>{
+        const hub=String(cg.receivedHubName||cg.hubName||'Unknown hub').trim()||'Unknown hub';
+        const key=dashboardSocKey(cg.soc)+'|'+hub.toLowerCase();
+        if(!grouped[key]) grouped[key]={soc:cg.soc||'',hub,count:0};
+        grouped[key].count++;
+      });
+      return '<div class="tbl-wrap"><table><tr><th>SOC</th><th>Received hub</th><th style="text-align:right;">Cages received</th></tr>'+Object.values(grouped).sort((a,b)=>a.soc.localeCompare(b.soc)||a.hub.localeCompare(b.hub)).map(x=>`<tr><td>${esc(x.soc||'Shared / unassigned')}</td><td>${esc(x.hub)}</td><td style="text-align:right;font-weight:700;">${x.count}</td></tr>`).join('')+'</table></div>';
+    })()}
+  </div>` : '';
+  const showSoc = isAdminAllSocView();
   return `<div class="card">
     <h3>Cage activity overview</h3>
     <div class="card-sub">Snapshot of cages issued from Cage Issuance and confirmed through Receive Cage.</div>
@@ -5921,11 +6144,12 @@ function cageDashboardHtml(){
       <div class="metric success"><div class="lbl">Received</div><div class="val">${received.length}</div><div class="sub">confirmed at destination</div></div>
     </div>
   </div>
+  ${perSoc}
   <div class="card">
     <div class="list-head"><h3>Recent cages</h3></div>
     ${recent.length===0 ? '<div class="empty"><div class="ic">&#128666;</div>No cages logged yet.</div>' :
-      '<div class="tbl-wrap"><table><tr><th>Cage ID</th><th>AMS Tags</th><th>LH Trip #</th><th>Hub</th><th>Plate #</th><th>Status</th><th>Issued</th></tr>' +
-      recent.map(cg=>`<tr><td class="mono">${esc(cg.cageId)}</td><td>${(cg.amsTags||[]).length}</td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cg.hubName||'—')}</td><td class="mono">${esc(cg.plateNumber||'—')}</td><td>${cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td></tr>`).join('') +
+      '<div class="tbl-wrap"><table><tr><th>Cage ID</th>'+(showSoc?'<th>SOC</th>':'')+'<th>AMS Tags</th><th>LH Trip #</th><th>Hub</th><th>Plate #</th><th>Status</th><th>Issued</th></tr>' +
+      recent.map(cg=>`<tr><td class="mono">${esc(cg.cageId)}</td>${showSoc?`<td>${esc(cg.soc||'Shared / unassigned')}</td>`:''}<td>${(cg.amsTags||[]).length}</td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cg.hubName||'—')}</td><td class="mono">${esc(cg.plateNumber||'—')}</td><td>${cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td></tr>`).join('') +
       '</table></div>'}
   </div>`;
 }
@@ -6392,29 +6616,92 @@ function pdaScanHtml(){
 // full tab render and, on its own, by the live poll (see refreshPdaLiveSections)
 // so other users' scans show up here without disturbing this user's session.
 function pdaBorrowedTableHtml(){
+  const isAdmin=session && session.role==='admin';
   const rows = socFilter(DB.pdas).filter(p=>p.status==='Borrowed').map(p=>{
     const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Borrowed');
     return {p, log};
   }).sort((a,b)=> new Date(b.log?b.log.borrowedAt:0) - new Date(a.log?a.log.borrowedAt:0));
   if(rows.length===0) return '<div class="empty"><div class="ic">&#128241;</div>No PDAs currently out.</div>';
-  return '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition at issue</th><th>Borrower Ops ID</th><th>Full name</th><th>Agency</th><th>Department</th><th>Since</th></tr>' +
+  return '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition at issue</th><th>Borrower Ops ID</th><th>Full name</th><th>Agency</th><th>Department</th><th>Since</th>'+(isAdmin?'<th>Actions</th>':'')+'</tr>' +
     rows.map(({p,log})=>`<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td>
       <td>${pdaConditionTag(log && log.conditionOnBorrow ? log.conditionOnBorrow : p.condition)}</td>
       <td class="mono">${log?esc(log.opsId||'—'):'—'}</td>
       <td>${log?esc(log.borrowerName||'—'):'—'}</td>
       <td>${log?esc(log.borrowerAgency||'—'):'—'}</td>
       <td>${log?esc(log.borrowerDepartment||'—'):'—'}</td>
-      <td>${log?fmtDateTime(log.borrowedAt):'—'}</td></tr>`).join('') + '</table></div>';
+      <td>${log?fmtDateTime(log.borrowedAt):'—'}</td>
+      ${isAdmin?`<td style="white-space:nowrap;"><button class="icon-btn-view" title="Edit borrowing" aria-label="Edit borrowing for ${esc(p.pdaNo)}" data-pda="${esc(p.pdaNo)}" data-soc="${esc(p.soc||'')}" onclick="openBorrowedPdaAdmin(this.dataset.pda,this.dataset.soc,false)">&#9998;</button> <button class="icon-btn" title="Delete borrowing entry (keep PDA)" aria-label="Delete borrowing for ${esc(p.pdaNo)}" data-pda="${esc(p.pdaNo)}" data-soc="${esc(p.soc||'')}" onclick="openBorrowedPdaAdmin(this.dataset.pda,this.dataset.soc,true)">&times;</button></td>`:''}</tr>`).join('') + '</table></div>';
+}
+let borrowedPdaAdminContext=null;
+function borrowedPdaAdminState(pdaNo,soc){
+  const p=DB.pdas.find(p=>p.pdaNo===pdaNo && (p.soc||'')===soc);
+  const logs=DB.pdaLogs.filter(l=>l.pdaNo===pdaNo && (l.soc||'')===soc && l.status==='Borrowed');
+  return {p,logs,signature:JSON.stringify({p,logs})};
+}
+function openBorrowedPdaAdmin(pdaNo,soc,deleting){
+  if(!session || session.role!=='admin') return;
+  const state=borrowedPdaAdminState(pdaNo,soc);
+  if(!state.p || state.p.status!=='Borrowed'){toast('This PDA is no longer borrowed.');return;}
+  const context={pdaNo,soc,signature:state.signature};
+  borrowedPdaAdminContext=context;
+  if(deleting){
+    confirmAction('Delete the current borrowing entry for '+pdaNo+'? The PDA will become Available and remain in the masterlist. A copy of the removed borrowing details will be retained with the asset.',()=>saveBorrowedPdaAdmin(true,context));
+    return;
+  }
+  if(state.logs.length>1){toast('This PDA has multiple active borrowing records. Resolve the duplicate entries before editing.');return;}
+  const log=state.logs[0]||{};
+  const date=new Date(log.borrowedAt||'');
+  const localDate=Number.isFinite(date.getTime())?new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,19):'';
+  showModal(`<h3>Edit borrowing — ${esc(pdaNo)}</h3>
+    <div class="field"><label for="admin-borrow-ops">Borrower Ops ID</label><input id="admin-borrow-ops" value="${esc(log.opsId||'')}" placeholder="Existing employee Ops ID"></div>
+    <div class="hint">Name, agency, and department come from the Ops ID directory.</div>
+    <div class="field"><label for="admin-borrow-condition">Condition at issue</label><select id="admin-borrow-condition">${pdaConditionOptions(log.conditionOnBorrow||state.p.condition)}</select></div>
+    <div class="field"><label for="admin-borrow-date">Borrowed date and time</label><input id="admin-borrow-date" type="datetime-local" step="1" value="${localDate}"></div>
+    <div class="footer-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveBorrowedPdaAdmin(false)">Save changes</button></div>`);
+}
+async function saveBorrowedPdaAdmin(deleting,context=borrowedPdaAdminContext){
+  if(!session || session.role!=='admin' || !context || actionInFlight) return;
+  const state=borrowedPdaAdminState(context.pdaNo,context.soc);
+  if(!state.p || state.p.status!=='Borrowed' || state.signature!==context.signature){
+    closeModal();toast('This borrowing record changed. Reopen it before editing.');refreshPdaLiveSections();return;
+  }
+  let employee,condition,borrowedAt;
+  if(!deleting){
+    employee=empInfo(document.getElementById('admin-borrow-ops').value.trim());
+    if(!employee){toast('Enter an Ops ID from the employee directory.');return;}
+    condition=document.getElementById('admin-borrow-condition').value;
+    const date=new Date(document.getElementById('admin-borrow-date').value);
+    if(!Number.isFinite(date.getTime())){toast('Enter a valid borrowed date and time.');return;}
+    borrowedAt=date.toISOString();
+  }
+  actionInFlight=true;
+  try{
+    if(!Array.isArray(state.p.borrowingCorrections)) state.p.borrowingCorrections=[];
+    state.p.borrowingCorrections.push({action:deleting?'Delete borrowing':'Edit borrowing',by:session.username,date:nowISO(),previousLogs:JSON.parse(JSON.stringify(state.logs)),previousStatus:state.p.status});
+    if(deleting){
+      DB.pdaLogs=DB.pdaLogs.filter(l=>!state.logs.includes(l));
+      state.p.status='Available';
+    }else{
+      let log=state.logs[0];
+      if(!log){log={id:newPdaLogId(),pdaNo:state.p.pdaNo,soc:state.p.soc||'',status:'Borrowed',returnedAt:'',conditionOnReturn:'',remarks:'',irFile:'',irFileData:''};DB.pdaLogs.push(log);}
+      Object.assign(log,{opsId:employee.opsId,borrowerName:employee.fullName,borrowerAgency:employee.agency||'',borrowerDepartment:employee.department||'',conditionOnBorrow:condition,borrowedAt,editedBy:session.username,editedAt:nowISO()});
+    }
+    if(!await saveDB()){restorePdaSectionsAfterFailedSave();refreshPdaLiveSections();return;}
+    borrowedPdaAdminContext=null;
+    closeModal();
+    toast(deleting?'Borrowing entry deleted; PDA retained and available.':'Borrowing entry updated.');
+    renderITAssets();
+  }finally{actionInFlight=false;}
 }
 // Lightweight live refresh for the PDA Issuance (scan) tab: updates just the
 // "Currently borrowed" board and the borrow/return log so other users' scans
 // become visible within a few seconds, without the full-tab re-render that
-// onMetaUpdate normally does elsewhere — that re-render would blank out
+// pollForUpdates normally does elsewhere — that re-render would blank out
 // whatever this user has typed into the serial/Ops ID fields, or drop an
 // in-progress borrow/return session (see renderITAssets resetting pdaActiveMode
 // on every scan-tab render). Returns false when the scan tab isn't mounted, or
 // when this user is mid-scan themselves, so callers know to leave the (already
-// updated) DB to show up on the next heartbeat update instead.
+// updated) DB to show up on a later, quieter poll tick instead.
 function refreshPdaLiveSections(){
   const wrap = document.getElementById('pda-borrowed-wrap');
   if(!wrap) return false;
@@ -6514,12 +6801,16 @@ function pdaOpenBorrowLog(){
   if(!identity || identity.missing) return null;
   return DB.pdaLogs.find(l=>l.pdaNo===identity.pdaNo && l.soc===identity.soc && l.status==='Borrowed' && (identity.id ? l.id===identity.id : l.borrowedAt===identity.borrowedAt)) || null;
 }
+function canRecoverMissingPdaBorrow(){
+  const p=pdaActiveTarget();
+  return !!(session && session.role==='admin' && pdaReturnBorrowLogIdentity && pdaReturnBorrowLogIdentity.missing && p && p.status==='Borrowed' && !DB.pdaLogs.some(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Borrowed'));
+}
 function pdaReturnBorrowerInfoHtml(){
   const pda = pdaActiveTarget();
   if(!pda) return '';
   const log = pdaOpenBorrowLog();
   const conditionBeforeIssue = log && log.conditionOnBorrow ? log.conditionOnBorrow : pda.condition;
-  if(!log) return `<div class="field"><label>Condition before this issue</label><div>${pdaConditionTag(conditionBeforeIssue)}</div><div class="hint hint-error">No open borrow log was found. Refresh before completing this return.</div></div>`;
+  if(!log) return `<div class="field"><label>Condition before this issue</label><div>${pdaConditionTag(conditionBeforeIssue)}</div><div class="hint">${canRecoverMissingPdaBorrow()?'Borrowing history is missing. As an admin, you can record this return using a valid returner Ops ID and the actual return condition. The original borrower and borrowing date will remain unknown.':'No matching open borrowing log was found. Ask an admin to resolve this record or scan again if it changed.'}</div></div>`;
   return `<div class="field"><label>Borrowed by</label>
     <div class="autofill" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;">${esc(log.borrowerName||'—')} · ${esc(log.opsId||'—')} · ${esc(log.borrowerAgency||'—')} / ${esc(log.borrowerDepartment||'—')}</div>
     <div class="hint">Since ${esc(fmtDateTime(log.borrowedAt))}</div>
@@ -6709,7 +7000,7 @@ async function confirmPdaBorrow(){
   navigate(route, subroute);
 }
 function pdaReturnConditionSectionHtml(){
-  const canConfirm = !!pdaReturnEmployee && !!pdaOpenBorrowLog();
+  const canConfirm = !!pdaReturnEmployee && (!!pdaOpenBorrowLog() || canRecoverMissingPdaBorrow());
   const disabled = canConfirm ? '' : 'disabled';
   return `
     <div class="field"><label>Condition on return</label>
@@ -6747,10 +7038,11 @@ function pdaReturnOpsLookup(){
     openPdaReturnMismatchModal(emp, borrowLog);
     return;
   }
-  pdaReturnEmployee = !!borrowLog && !!isDirectoryMatch ? emp : null;
+  const canReturn=!!borrowLog || canRecoverMissingPdaBorrow();
+  pdaReturnEmployee = canReturn && !!isDirectoryMatch ? emp : null;
   pdaReturnTopChoice = ''; pdaReturnCondition = '';
   if(status){
-    status.textContent = !pdaOpenBorrowLog() ? 'This PDA is no longer borrowed. Close this prompt and scan again.' : (pdaReturnEmployee ? 'Ops ID matched — condition choices are enabled.' : (raw ? 'Ops ID not found. Check the ID or update the Ops ID Directory.' : 'A valid Ops ID is required to continue.'));
+    status.textContent = !canReturn ? 'No matching borrowing record is available. Ask an admin to resolve it or scan again.' : (pdaReturnEmployee ? 'Ops ID matched — condition choices are enabled.' : (raw ? 'Ops ID not found. Check the ID or update the Ops ID Directory.' : 'A valid Ops ID is required to continue.'));
     status.className = 'hint'+(pdaReturnEmployee?' hint-active':(raw?' hint-error':''));
   }
   if(details) details.innerHTML = pdaReturnEmployee
@@ -6783,8 +7075,11 @@ async function confirmPdaReturn(){
   if(!finalCondition) return; // Damaged picked, but the kind isn't chosen yet
   const pdaNo = pda.pdaNo, soc = pda.soc;
   const log0 = pdaOpenBorrowLog();
-  if(!log0){ toast('This PDA was already returned by another scanner. Scan it again to refresh.'); cancelPdaActiveSession(); refreshPdaLiveSections(); return; }
-  const borrowLogIdentity = {id:log0.id, borrowedAt:log0.borrowedAt};
+  const recovering=!log0 && canRecoverMissingPdaBorrow();
+  if(!log0 && !recovering){ toast('The borrowing record changed or requires an admin correction. Scan it again.'); cancelPdaActiveSession(); refreshPdaLiveSections(); return; }
+  const borrowLogIdentity = log0?{id:log0.id, borrowedAt:log0.borrowedAt}:null;
+  const recoveryId=recovering?newPdaLogId():null;
+  const recoverySnapshot=recovering?JSON.stringify(pda):null;
   const returner = {opsId:pdaReturnEmployee.opsId, name:pdaReturnEmployee.fullName, agency:pdaReturnEmployee.agency||'', department:pdaReturnEmployee.department||''};
   pdaReturnInProgress = true;
   const returnOpsInput = document.getElementById('pda-return-ops-input');
@@ -6805,11 +7100,19 @@ async function confirmPdaReturn(){
   // or backs off if someone else already closed this same log out.
   const applyReturn = ()=>{
     const target = DB.pdas.find(p=>p.pdaNo===pdaNo && p.soc===soc);
-    const log = DB.pdaLogs.find(l=>l.pdaNo===pdaNo && l.soc===soc && l.status==='Borrowed' && (borrowLogIdentity.id ? l.id===borrowLogIdentity.id : l.borrowedAt===borrowLogIdentity.borrowedAt));
-    if(!target || !log) return false;
+    if(!target || target.status!=='Borrowed') return false;
+    let log;
+    if(recovering){
+      if(!session || session.role!=='admin' || JSON.stringify(target)!==recoverySnapshot || DB.pdaLogs.some(l=>l.id===recoveryId || (l.pdaNo===pdaNo && l.soc===soc && l.status==='Borrowed'))) return false;
+      log={id:recoveryId,pdaNo,soc,opsId:'',borrowerName:'',borrowerAgency:'',borrowerDepartment:'',borrowedAt:'',conditionOnBorrow:target.condition||'',missingBorrowHistory:true,recoveredBy:session.username,recoveredAt:nowISO()};
+      DB.pdaLogs.push(log);
+    }else{
+      log=DB.pdaLogs.find(l=>l.pdaNo===pdaNo && l.soc===soc && l.status==='Borrowed' && (borrowLogIdentity.id ? l.id===borrowLogIdentity.id : l.borrowedAt===borrowLogIdentity.borrowedAt));
+      if(!log) return false;
+    }
     log.returnedAt = nowISO();
     log.returnedByOpsId = returner.opsId; log.returnedByName = returner.name; log.returnedByAgency = returner.agency; log.returnedByDepartment = returner.department;
-    log.conditionOnReturn = finalCondition; log.status = 'Returned'; log.irFile = irFile; log.irFileData = irFileData; log.remarks = remarks;
+    log.conditionOnReturn = finalCondition; log.status = 'Returned'; log.irFile = irFile; log.irFileData = irFileData; log.remarks = recovering?'Admin recorded return: original borrowing history is missing.':remarks;
     // Any change in condition (and remarks) made here carries straight over onto
     // the PDA's own masterlist record, so the masterlist always reflects the
     // latest known condition without a separate manual update.
@@ -6830,7 +7133,7 @@ async function confirmPdaReturn(){
   });
   if(!ok) restorePdaSectionsAfterFailedSave();
   pdaReturnInProgress = false;
-  closeModal();
+  if(ok) closeModal();
   pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnBorrowLogIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null;
   if(ok && !claimedByOther) toast(pdaNo+' returned — logged as '+pdaConditionLabel(finalCondition)+(needsIR ? ' (IR pending upload).' : '.'));
   else if(claimedByOther) toast('This device was already returned by someone else — your return was not saved.');
@@ -6854,19 +7157,7 @@ function pdaMasterlistHtml(){
     </div>` : ''}
     <div class="footer-actions"><button class="btn btn-primary" onclick="addPda()">Add PDA</button></div>
   </div>
-  <div class="card">
-    <h3>PDA allocation by department</h3>
-    <div class="card-sub">Set the department name and how many PDAs are allocated to it. Used to compare allocation against what's actually borrowed.</div>
-    <div class="form-row3">
-      ${PDA_DEPT_BUCKETS().map((b,i)=>`<div class="field">
-        <label>Department name</label>
-        <input id="pda-dept-name-${i}" value="${esc(b)}" style="margin-bottom:10px;">
-        <label>Allocated</label>
-        <input type="number" min="0" id="pda-alloc-${i}" value="${Number(DB.pdaAllocations[b])||0}">
-      </div>`).join('')}
-    </div>
-    <div class="footer-actions"><button class="btn btn-primary" onclick="savePdaAllocations()">Save allocation</button></div>
-  </div>
+  ${pdaAllocationEditorHtml()}
   ${pdaSocSummaryHtml()}
   <div class="card">
     <h3>PDA masterlist (${socFilter(DB.pdas).length})</h3>
@@ -6874,6 +7165,34 @@ function pdaMasterlistHtml(){
     '<div class="tbl-wrap"><table><tr><th>PDA #</th><th>Serial</th><th>Condition</th><th>Remarks</th><th>IR</th><th>Status</th>'+(isAdmin?'<th>SOC</th><th></th>':'')+'</tr>' +
     DB.pdas.map((p,i)=>({p,i})).filter(x=>socVisible(x.p.soc)).map(({p,i})=>`<tr><td class="mono">${esc(p.pdaNo)}</td><td class="mono">${esc(p.serial||'—')}</td><td><select onchange="updatePdaCondition(${i}, this.value)" style="padding:5px 8px;font-size:12px;">${pdaConditionOptions(p.condition)}</select></td><td>${p.remarks?esc(p.remarks):'<span class="small-note">—</span>'}</td><td>${pdaMasterlistIRCell(p,i)}</td><td>${pdaStatusTag(p.status)}</td>${isAdmin?`<td>${socOf(p.soc)}</td><td style="white-space:nowrap;"><button class="icon-btn-view" onclick="openEditPda(${i})" title="Edit">&#9998;</button> <button class="icon-btn" onclick="removePda(${i})" title="Remove">&times;</button></td>`:''}</tr>`).join('') +
     '</table></div>'}
+  </div>`;
+}
+function pdaAllocationEditorSocs(){
+  if(isAdminAllSocView()){
+    const sites=dashboardSocEntries(['pdas','pdaLogs']);
+    return sites.length ? sites : [{key:'',label:'Shared / unassigned'}];
+  }
+  const soc=currentSoc();
+  return [{key:soc,label:soc||'Shared / unassigned'}];
+}
+function pdaAllocationOf(bucket,soc){
+  const siteAllocations=(DB.pdaAllocationsBySoc||{})[String(soc||'')]||{};
+  if(Object.prototype.hasOwnProperty.call(siteAllocations,bucket)) return Number(siteAllocations[bucket])||0;
+  return Number((DB.pdaAllocations||{})[bucket])||0;
+}
+function pdaAllocationEditorHtml(){
+  const sites=pdaAllocationEditorSocs();
+  const buckets=PDA_DEPT_BUCKETS();
+  return `<div class="card">
+    <h3>PDA allocation by department and SOC</h3>
+    <div class="card-sub">Set department allocations for each SOC. Existing shared allocations are used as defaults until a SOC-specific value is saved.</div>
+    ${sites.map((site,siteIndex)=>`<div class="section-title">${esc(site.label)}</div><div class="form-row3">
+      ${buckets.map((bucket,i)=>`<div class="field">
+        ${siteIndex===0?`<label>Department name</label><input id="pda-dept-name-${i}" value="${esc(bucket)}" style="margin-bottom:10px;">`:`<label>${esc(bucket)}</label>`}
+        <label>Allocated</label><input type="number" min="0" id="pda-alloc-${siteIndex}-${i}" value="${pdaAllocationOf(bucket,site.key)}">
+      </div>`).join('')}
+    </div>`).join('')}
+    <div class="footer-actions"><button class="btn btn-primary" onclick="savePdaAllocations()">Save allocation</button></div>
   </div>`;
 }
 function pdaSocSummaryHtml(){
@@ -6899,7 +7218,9 @@ function pdaSocSummaryHtml(){
 function pdaAllocInputId(bucket){ return bucket.replace(/[^a-zA-Z0-9]+/g,'-'); }
 async function savePdaAllocations(){
   if(!DB.pdaAllocations) DB.pdaAllocations = {};
+  if(!DB.pdaAllocationsBySoc) DB.pdaAllocationsBySoc = {};
   const oldBuckets = PDA_DEPT_BUCKETS();
+  const sites = pdaAllocationEditorSocs();
   const newNames = oldBuckets.map((b,i)=>{
     const el = document.getElementById('pda-dept-name-'+i);
     const v = el ? el.value.trim() : '';
@@ -6909,16 +7230,20 @@ async function savePdaAllocations(){
   const dupIdx = lower.findIndex((n,i)=>lower.indexOf(n)!==i);
   if(dupIdx!==-1){ toast('Department names must be unique — "'+newNames[dupIdx]+'" is used more than once.'); return; }
   if(newNames.some(n=>!n)){ toast('Department name can\'t be blank.'); return; }
-  const newAllocations = {};
-  oldBuckets.forEach((oldName,i)=>{
-    const el = document.getElementById('pda-alloc-'+i);
-    const val = el ? parseInt(el.value,10) : 0;
-    newAllocations[newNames[i]] = isNaN(val) || val<0 ? 0 : val;
+  sites.forEach((site,siteIndex)=>{
+    const newAllocations = {};
+    const previous = DB.pdaAllocationsBySoc[String(site.key||'')]||{};
+    Object.keys(previous).forEach(name=>{ if(!oldBuckets.includes(name) && !newNames.includes(name)) newAllocations[name]=previous[name]; });
+    oldBuckets.forEach((oldName,i)=>{
+      const el = document.getElementById('pda-alloc-'+siteIndex+'-'+i);
+      const val = el ? parseInt(el.value,10) : pdaAllocationOf(oldName,site.key);
+      newAllocations[newNames[i]] = isNaN(val) || val<0 ? 0 : val;
+    });
+    DB.pdaAllocationsBySoc[String(site.key||'')] = newAllocations;
   });
   DB.pdaDeptBuckets = newNames;
-  DB.pdaAllocations = newAllocations;
   await saveDB();
-  toast('PDA allocation saved.');
+  toast('PDA allocation saved by SOC.');
   renderITAssets();
 }
 // A PDA number only has to be unique within the SOCs it's actually visible in:
@@ -7121,12 +7446,15 @@ async function submitPdaLogIRUpload(id){
   renderITAssets();
 }
 function pdaDashboardHtml(){
+  if(isAdminAllSocView()) return pdaDashboardBySocHtml();
   const logs = socFilter(DB.pdaLogs);
   const dateMap = {};
   logs.forEach(l=>{
-    const bd = localDateStr(l.borrowedAt);
-    if(!dateMap[bd]) dateMap[bd] = {borrowed:0, returned:0};
-    dateMap[bd].borrowed++;
+    if(l.borrowedAt){
+      const bd = localDateStr(l.borrowedAt);
+      if(!dateMap[bd]) dateMap[bd] = {borrowed:0, returned:0};
+      dateMap[bd].borrowed++;
+    }
     if(l.returnedAt){
       const rd = localDateStr(l.returnedAt);
       if(!dateMap[rd]) dateMap[rd] = {borrowed:0, returned:0};
@@ -7134,9 +7462,9 @@ function pdaDashboardHtml(){
     }
   });
   const dates = Object.keys(dateMap).sort((a,b)=> b.localeCompare(a));
-  const amTotal = logs.filter(l=>pdaShiftOf(new Date(l.borrowedAt))==='AM').length;
-  const pmTotal = logs.filter(l=>pdaShiftOf(new Date(l.borrowedAt))==='PM').length;
-  return `<div id="pda-dept-report-wrap">${pdaDeptAllocationReportHtml()}</div>
+  const amTotal = logs.filter(l=>l.borrowedAt && pdaShiftOf(new Date(l.borrowedAt))==='AM').length;
+  const pmTotal = logs.filter(l=>l.borrowedAt && pdaShiftOf(new Date(l.borrowedAt))==='PM').length;
+  return `${pdaCurrentOnHandHtml()}<div id="pda-dept-report-wrap">${pdaDeptAllocationReportHtml()}</div>
   <div class="card">
     <h3>Daily report</h3>
     <div class="card-sub">PDAs borrowed and returned per day, with overall AM / PM shift totals across all issuances.</div>
@@ -7150,6 +7478,76 @@ function pdaDashboardHtml(){
       '</table></div>'}
   </div>
   <div id="pda-shift-report-wrap">${pdaShiftReportHtml()}</div>`;
+}
+function pdaCurrentOnHandHtml(){
+  const pdas=socFilter(DB.pdas);
+  const borrowed=pdas.filter(p=>p.status==='Borrowed').length;
+  const available=pdas.length-borrowed;
+  const site=currentSoc()||'Shared / unassigned';
+  return `<div class="card"><h3>Current PDA stock — ${esc(site)}</h3><div class="grid g3" style="margin-top:14px;">
+    <div class="metric"><div class="lbl">On-hand PDAs</div><div class="val">${pdas.length}</div><div class="sub">in the masterlist</div></div>
+    <div class="metric amber"><div class="lbl">Borrowed</div><div class="val">${borrowed}</div><div class="sub">currently out</div></div>
+    <div class="metric success"><div class="lbl">Available</div><div class="val">${available}</div><div class="sub">ready to issue</div></div>
+  </div></div>`;
+}
+function pdaDashboardBySocHtml(){
+  const sites=dashboardSocEntries(['pdas','pdaLogs']);
+  const pdas=DB.pdas||[];
+  const logs=DB.pdaLogs||[];
+  const siteOf=row=>dashboardSocKey(row.soc);
+  const onHandRows=sites.map(site=>{
+    const sitePdas=pdas.filter(p=>siteOf(p)===dashboardSocKey(site.key));
+    const borrowed=sitePdas.filter(p=>p.status==='Borrowed').length;
+    return `<tr><td>${esc(site.label)}</td><td style="text-align:right;font-weight:700;">${sitePdas.length}</td><td style="text-align:right;">${borrowed}</td><td style="text-align:right;">${sitePdas.length-borrowed}</td><td style="text-align:right;">${sitePdas.filter(p=>p.condition==='DamagedWorking'||p.condition==='DamagedNotWorking').length}</td></tr>`;
+  }).join('');
+  const buckets=[...PDA_DEPT_BUCKETS(),'Other Department'];
+  const allocationRows=[];
+  sites.forEach(site=>{
+    const sitePdas=pdas.filter(p=>siteOf(p)===dashboardSocKey(site.key));
+    const borrowed=sitePdas.filter(p=>p.status==='Borrowed');
+    const siteLogs=logs.filter(l=>siteOf(l)===dashboardSocKey(site.key));
+    const byBucket={}; buckets.forEach(b=>byBucket[b]=0);
+    borrowed.forEach(p=>{
+      const log=siteLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo&&siteOf(l)===siteOf(p)&&l.status==='Borrowed');
+      const bucket=pdaDeptBucket(log?log.borrowerDepartment:'');
+      byBucket[bucket]=(byBucket[bucket]||0)+1;
+    });
+    buckets.forEach(bucket=>{
+      const isOther=bucket==='Other Department';
+      const allocated=isOther?null:pdaAllocationOf(bucket,site.key);
+      allocationRows.push(`<tr><td>${esc(site.label)}</td><td>${esc(bucket)}</td><td style="text-align:right;">${allocated===null?'—':allocated}</td><td style="text-align:right;">${byBucket[bucket]||0}</td><td style="text-align:right;${allocated!==null&&allocated-(byBucket[bucket]||0)<0?'color:var(--danger);font-weight:600;':''}">${allocated===null?'—':allocated-(byBucket[bucket]||0)}</td></tr>`);
+    });
+  });
+  const daily={};
+  logs.forEach(log=>{
+    const key=siteOf(log);
+    const site=sites.find(x=>dashboardSocKey(x.key)===key);
+    const ensure=date=>{
+      const rowKey=key+'|'+date;
+      if(!daily[rowKey]) daily[rowKey]={site:site?site.label:(log.soc||'Shared / unassigned'),date,borrowed:0,returned:0,am:0,pm:0};
+      return daily[rowKey];
+    };
+    if(log.borrowedAt){
+      const row=ensure(localDateStr(log.borrowedAt));
+      row.borrowed++;
+      row[pdaShiftOf(new Date(log.borrowedAt)).toLowerCase()]++;
+    }
+    if(log.returnedAt) ensure(localDateStr(log.returnedAt)).returned++;
+  });
+  const dailyRows=Object.values(daily).sort((a,b)=>b.date.localeCompare(a.date)||a.site.localeCompare(b.site));
+  return `<div class="card"><h3>Current PDA stock on hand by SOC</h3>
+    <div class="tbl-wrap"><table><tr><th>SOC</th><th style="text-align:right;">On hand</th><th style="text-align:right;">Borrowed</th><th style="text-align:right;">Available</th><th style="text-align:right;">Damaged</th></tr>
+      ${onHandRows||'<tr><td colspan="5"><div class="empty">No SOCs configured.</div></td></tr>'}
+    </table></div>
+  </div>
+  <div class="card"><h3>PDA allocation by department and SOC</h3>
+    <div class="card-sub">Allocated counts use the SOC-specific values set on PDA Masterlist; borrowed counts reflect devices currently out.</div>
+    ${allocationRows.length?'<div class="tbl-wrap"><table><tr><th>SOC</th><th>Department</th><th style="text-align:right;">Allocated</th><th style="text-align:right;">Borrowed</th><th style="text-align:right;">Remaining</th></tr>'+allocationRows.join('')+'</table></div>':'<div class="empty">No PDA departments configured.</div>'}
+  </div>
+  <div class="card"><div class="list-head"><h3>Daily PDA report by SOC</h3></div>
+    <div class="card-sub">Daily borrow and return activity, with AM / PM issuance counts (AM 6:00 AM–5:59 PM; PM 6:00 PM–5:59 AM).</div>
+    ${dailyRows.length?'<div class="tbl-wrap"><table><tr><th>Date</th><th>SOC</th><th style="text-align:right;">Borrowed</th><th style="text-align:right;">Returned</th><th style="text-align:right;">AM issued</th><th style="text-align:right;">PM issued</th></tr>'+dailyRows.map(r=>`<tr><td class="mono">${esc(r.date)}</td><td>${esc(r.site)}</td><td style="text-align:right;">${r.borrowed}</td><td style="text-align:right;">${r.returned}</td><td style="text-align:right;">${r.am}</td><td style="text-align:right;">${r.pm}</td></tr>`).join('')+'</table></div>':'<div class="empty"><div class="ic">&#128241;</div>No borrow/return activity yet.</div>'}
+  </div>`;
 }
 function pdaLogSerial(l){
   const p = DB.pdas.find(x=>x.pdaNo===l.pdaNo && x.soc===l.soc);
@@ -7178,7 +7576,7 @@ function pdaLogHtml(){
       <td>${esc(l.borrowerName)}</td>
       <td>${esc(l.borrowerAgency||'—')}</td>
       <td>${esc(l.borrowerDepartment||'—')}</td>
-      <td style="white-space:nowrap;">${fmtDateTime(l.borrowedAt)}</td>
+      <td style="white-space:nowrap;">${l.borrowedAt?fmtDateTime(l.borrowedAt):'Unknown'}</td>
       <td class="mono">${l.returnedByOpsId ? esc(l.returnedByOpsId) : '<span class="small-note">—</span>'}</td>
       <td>${esc(l.returnedByName||'')}</td>
       <td>${l.returnedByName ? esc(l.returnedByAgency||'—') : ''}</td>
@@ -7190,7 +7588,7 @@ function pdaLogHtml(){
     </tr>`).join('') + '</table></div></div>';
 }
 function exportPdaLog(){
-  const rows = socFilter(DB.pdaLogs).map(l=>[l.pdaNo,pdaLogSerial(l),l.opsId,l.borrowerName,l.borrowerAgency||'',l.borrowerDepartment||'',fmtDateTime(l.borrowedAt),pdaConditionLabel(pdaLogConditionOnBorrow(l)),l.returnedByOpsId||'',l.returnedByName||'',l.returnedByAgency||'',l.returnedByDepartment||'',l.returnedAt?fmtDateTime(l.returnedAt):'',pdaConditionLabel(l.conditionOnReturn),l.status,l.remarks||'',l.irFile||'']);
+  const rows = socFilter(DB.pdaLogs).map(l=>[l.pdaNo,pdaLogSerial(l),l.opsId,l.borrowerName,l.borrowerAgency||'',l.borrowerDepartment||'',fmtDateTimeOrBlank(l.borrowedAt),pdaConditionLabel(pdaLogConditionOnBorrow(l)),l.returnedByOpsId||'',l.returnedByName||'',l.returnedByAgency||'',l.returnedByDepartment||'',l.returnedAt?fmtDateTime(l.returnedAt):'',pdaConditionLabel(l.conditionOnReturn),l.status,l.remarks||'',l.irFile||'']);
   downloadCSV('pda-borrow-return-log.csv', ['PDA #','Serial','Borrower Ops ID','Borrower Name','Borrower Agency','Borrower Department','Borrowed date and time','Condition at issue','Returned By Ops ID','Returned By Name','Returned By Agency','Returned By Department','Returned date and time','Condition on return','Status','Remarks','IR file'], rows);
 }
 
@@ -7212,7 +7610,7 @@ function pdaReportsHtml(){
 }
 function pdaShiftReportHtml(){
   const dateStr = pdaShiftReportDate;
-  const dayLogs = socFilter(DB.pdaLogs).filter(l=>localDateStr(l.borrowedAt)===dateStr).slice().sort((a,b)=>new Date(a.borrowedAt)-new Date(b.borrowedAt));
+  const dayLogs = socFilter(DB.pdaLogs).filter(l=>l.borrowedAt && localDateStr(l.borrowedAt)===dateStr).slice().sort((a,b)=>new Date(a.borrowedAt)-new Date(b.borrowedAt));
   const amCount = dayLogs.filter(l=>pdaShiftOf(new Date(l.borrowedAt))==='AM').length;
   const pmCount = dayLogs.filter(l=>pdaShiftOf(new Date(l.borrowedAt))==='PM').length;
   return `<div class="card">
@@ -7246,7 +7644,7 @@ function onPdaShiftDateChange(){
 }
 function exportPdaShiftReport(){
   const dateStr = pdaShiftReportDate;
-  const dayLogs = socFilter(DB.pdaLogs).filter(l=>localDateStr(l.borrowedAt)===dateStr).slice().sort((a,b)=>new Date(a.borrowedAt)-new Date(b.borrowedAt));
+  const dayLogs = socFilter(DB.pdaLogs).filter(l=>l.borrowedAt && localDateStr(l.borrowedAt)===dateStr).slice().sort((a,b)=>new Date(a.borrowedAt)-new Date(b.borrowedAt));
   const rows = dayLogs.map(l=>[pdaShiftOf(new Date(l.borrowedAt)), l.pdaNo, l.opsId, l.borrowerName, l.borrowerDepartment||'', fmtDateTime(l.borrowedAt), l.returnedAt?fmtDateTime(l.returnedAt):'', l.status]);
   downloadCSV('pda-shift-report-'+dateStr+'.csv', ['Shift','PDA #','Ops ID','Borrower','Department','Borrowed','Returned','Status'], rows);
 }
@@ -7268,7 +7666,7 @@ function pdaDeptAllocationReportHtml(){
     const log = pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Borrowed');
     byBucket[pdaDeptBucket(log?log.borrowerDepartment:'')].push({pda:p, log});
   });
-  const allocOf = b => Number((DB.pdaAllocations||{})[b])||0;
+  const allocOf = b => pdaAllocationOf(b,currentSoc());
   const totalAllocated = PDA_DEPT_BUCKETS().reduce((s,b)=>s+allocOf(b),0);
   return `<div class="card">
     <div class="list-head"><h3>Allocated vs. borrowed vs. remaining</h3>${dlBtn('exportPdaDeptReport')}</div>
@@ -7511,6 +7909,20 @@ function parcelShiftReportRows(shiftDateStr){
   });
   return {rows, totals, labels, showSocColumn: !cs};
 }
+function parcelSocShiftSummaryRows(shiftDateStr){
+  const sites=dashboardSocEntries(['parcels']);
+  const summary={};
+  sites.forEach(site=>summary[dashboardSocKey(site.key)]={site:site.label,am:0,pm:0,total:0});
+  (DB.parcels||[]).forEach(parcel=>{
+    const idx=parcelBucketIndexFor(new Date(parcel.retrievedAt),shiftDateStr);
+    if(idx<0) return;
+    const key=dashboardSocKey(parcel.soc);
+    if(!summary[key]) summary[key]={site:parcel.soc||'Shared / unassigned',am:0,pm:0,total:0};
+    summary[key][idx<6?'am':'pm']++;
+    summary[key].total++;
+  });
+  return Object.values(summary);
+}
 function parcelDashboardHtml(){
   return `<div id="parcel-shift-report-wrap">${parcelShiftReportHtml()}</div>`;
 }
@@ -7521,6 +7933,7 @@ function parcelShiftReportHtml(){
   const pmTotal = totals.slice(6).reduce((a,b)=>a+b,0);
   const grand = amTotal+pmTotal;
   const leadCols = showSocColumn ? 2 : 1;
+  const socSummary=showSocColumn?parcelSocShiftSummaryRows(dateStr):[];
   return `<div class="card">
     <div class="list-head"><h3>Parcels retrieved — AM / PM shift report</h3>${dlBtn('exportParcelShiftReport')}</div>
     <div class="card-sub">Sorting station (each tied to its own SOC) on the left, 2-hour retrieval buckets across the top. AM shift 6:00 AM – 5:59 PM, PM shift 6:00 PM – 5:59 AM (spans into the next calendar day).${currentSoc()?'':' Viewing all SOCs combined — station names are grouped with the SOC they belong to.'}</div>
@@ -7530,6 +7943,7 @@ function parcelShiftReportHtml(){
       <div class="metric"><div class="lbl">PM shift</div><div class="val">${pmTotal}</div><div class="sub">6:00 PM – 5:59 AM</div></div>
       <div class="metric success"><div class="lbl">Total retrieved</div><div class="val">${grand}</div><div class="sub">this shift date</div></div>
     </div>
+    ${showSocColumn?'<div class="section-title">Retrieval totals by SOC</div><div class="tbl-wrap"><table><tr><th>SOC</th><th style="text-align:right;">AM shift</th><th style="text-align:right;">PM shift</th><th style="text-align:right;">Total retrieved</th></tr>'+socSummary.map(r=>`<tr><td>${esc(r.site)}</td><td style="text-align:right;">${r.am}</td><td style="text-align:right;">${r.pm}</td><td style="text-align:right;font-weight:700;">${r.total}</td></tr>`).join('')+'</table></div>':''}
     ${rows.length===0 ? '<div class="empty"><div class="ic">&#128233;</div>No sorting stations configured yet — add one in Settings &rarr; Sorting Station.</div>' :
       '<div class="tbl-wrap"><table><tr><th rowspan="2">Station</th>'+(showSocColumn?'<th rowspan="2">SOC</th>':'')+'<th colspan="6">AM shift</th><th colspan="6">PM shift</th><th rowspan="2">Total</th></tr>' +
       '<tr>' + labels.map(l=>`<th>${l}</th>`).join('') + '</tr>' +
