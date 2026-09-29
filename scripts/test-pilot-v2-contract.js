@@ -77,6 +77,33 @@ const migrationFactory = new Function('window', 'SECTION_KEYS', 'RECORD_SECTION_
   assert.deepEqual(copied.records.map(record => record.section), ['requests', 'returns', 'issuance']);
   assert.deepEqual(copied.records.map(record => record.id), ['REQ-101', 'RET-101', 'ISS-101']);
 
+  const recovered = {};
+  let staleStateReads = 0;
+  const staleMigration = migrationFactory({
+    storage: {
+      supportsRecordCollections: true,
+      async getMigrationState() {
+        staleStateReads++;
+        return staleStateReads === 1 ? {state: 'migrating', startedAt: 0} : null;
+      },
+      async getLegacy(key) {
+        const section = key.replace(/^section__/, '');
+        return Object.hasOwn(legacy, section) ? {value: JSON.stringify(legacy[section])} : null;
+      },
+      async claimMigration() { return 'owner'; },
+      async finishMigration(owner, sections, records) {
+        recovered.owner = owner;
+        recovered.sections = sections;
+        recovered.records = records;
+      },
+    }
+  }, ['users', 'requests', 'returns', 'issuance'], ['requests', 'returns', 'issuance'], 'sms_erp_state_v1', () => ({
+    users: [], requests: [], returns: [], issuance: []
+  }));
+  assert.equal(await staleMigration.ensurePilotMigration(), true);
+  assert.equal(recovered.sections.length, 1);
+  assert.equal(recovered.records.length, 3);
+
   console.log('pilot v2 storage contract checks passed');
 })().finally(() => {
   global.fetch = originalFetch;

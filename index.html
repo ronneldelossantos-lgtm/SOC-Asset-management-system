@@ -455,6 +455,7 @@ if(!window.storage){
     const docRef = (key, shared) => fsDB.collection(COLLECTION).doc((shared?'shared__':'local__')+STORAGE_VERSION+'__'+key);
     const legacyDocRef = (key, shared) => fsDB.collection(COLLECTION).doc((shared?'shared__':'local__')+key);
     const recordRef = (section, id) => fsDB.collection(STORAGE_VERSION+'_'+section).doc(id);
+    const recordChunkRef = (section, id, index) => recordRef(section,id).collection('__chunks').doc(String(index));
     /* Firestore limits every document to 1 MiB.  Employees has already grown
        to the edge of that limit, and request records can contain signed
        transmittals (base64) that grow just as quickly.  Keep the storage API
@@ -503,6 +504,18 @@ if(!window.storage){
       if(chunks.some(part=>!part.exists || typeof part.data().value !== 'string')) throw new Error('Incomplete legacy Firestore chunks for '+key+'.');
       return chunks.map(part=>part.data().value).join('');
     }
+    async function readRecordValue(section, id, snap){
+      if(!snap.exists) return null;
+      const data = snap.data();
+      if(!data.chunked){
+        if(typeof data.value!=='string') throw new Error('Invalid '+section+' record '+id+'.');
+        return data.value;
+      }
+      if(!Number.isInteger(data.chunks) || data.chunks<1) throw new Error('Invalid '+section+' record chunk manifest for '+id+'.');
+      const chunks = await Promise.all(Array.from({length:data.chunks}, (_, i)=>recordChunkRef(section,id,i).get()));
+      if(chunks.some(part=>!part.exists || typeof part.data().value!=='string')) throw new Error('Incomplete '+section+' record chunks for '+id+'.');
+      return chunks.map(part=>part.data().value).join('');
+    }
     window.storage = {
       supportsRecordCollections: true,
       async get(key, shared){
@@ -525,11 +538,7 @@ if(!window.storage){
             ? fsDB.collection(STORAGE_VERSION+'_'+section)
             : fsDB.collection(STORAGE_VERSION+'_'+section).where('archived','==',false);
           const snap = await query.get();
-          return snap.docs.map(doc=>{
-            const value = doc.data().value;
-            if(typeof value!=='string') throw new Error('Invalid '+section+' record '+doc.id+'.');
-            return JSON.parse(value);
-          });
+          return Promise.all(snap.docs.map(async doc=>JSON.parse(await readRecordValue(section,doc.id,doc))));
         }catch(e){
           console.error('storage.getRecords failed:', e);
           throw e;
@@ -538,12 +547,10 @@ if(!window.storage){
       async getRecordChanges(section, ids){
         try{
           const snaps = await Promise.all((ids||[]).map(id=>recordRef(section,id).get()));
-          return snaps.map((snap,index)=>{
+          return Promise.all(snaps.map(async (snap,index)=>{
             if(!snap.exists) return {id:ids[index], value:null};
-            const value = snap.data().value;
-            if(typeof value!=='string') throw new Error('Invalid '+section+' record '+ids[index]+'.');
-            return {id:ids[index], value};
-          });
+            return {id:ids[index], value:await readRecordValue(section,ids[index],snap)};
+          }));
         }catch(e){
           console.error('storage.getRecordChanges failed:', e);
           throw e;
@@ -586,12 +593,18 @@ if(!window.storage){
         });
         recordEntries.forEach(entry=>{
           const record = JSON.parse(entry.value);
-          writes.push({ref:recordRef(entry.section,entry.id), data:{
-            value:entry.value,
+          const chunks = splitValue(entry.value);
+          const data = {
             status:String(record.status||''),
             archived:recordIsArchived(entry.section,record),
             updatedAt
-          }});
+          };
+          if(chunks.length===1){
+            writes.push({ref:recordRef(entry.section,entry.id), data:{...data, value:entry.value}});
+            return;
+          }
+          writes.push({ref:recordRef(entry.section,entry.id), data:{...data, chunked:true, chunks:chunks.length}});
+          chunks.forEach((value,index)=>writes.push({ref:recordChunkRef(entry.section,entry.id,index), data:{value,updatedAt}}));
         });
         for(let offset=0; offset<writes.length; offset+=450){
           const batch = fsDB.batch();
@@ -691,6 +704,12 @@ if(!window.storage){
               if(!Number.isInteger(count) || count < 0) throw new Error('Invalid Firestore chunk manifest for '+entries[i].key+'.');
               return Promise.all(Array.from({length:count}, (_, n)=>tx.get(docRef(chunkKey(entries[i].key, n), shared))));
             }));
+            const oldRecordChunkSnaps = await Promise.all(recordSnaps.map((snap, i)=>{
+              const data = snap.exists ? snap.data() : null;
+              const count = data && data.chunked ? data.chunks : 0;
+              if(!Number.isInteger(count) || count<0) throw new Error('Invalid '+records[i].section+' record chunk manifest for '+records[i].id+'.');
+              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(recordChunkRef(records[i].section,records[i].id,n))));
+            }));
             const localConflicts = {};
             snaps.forEach((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
@@ -704,7 +723,13 @@ if(!window.storage){
             });
             const localRecordConflicts = {};
             recordSnaps.forEach((snap, i)=>{
-              const cur = snap.exists ? snap.data().value : null;
+              const data = snap.exists ? snap.data() : null;
+              const cur = !snap.exists ? null : (data.chunked
+                ? oldRecordChunkSnaps[i].map(part=>{
+                    if(!part.exists || typeof part.data().value!=='string') throw new Error('Incomplete '+records[i].section+' record chunks for '+records[i].id+'.');
+                    return part.data().value;
+                  }).join('')
+                : data.value);
               if(cur !== records[i].expectedPrevious) localRecordConflicts[records[i].section+'__'+records[i].id] = cur;
             });
             if(Object.keys(localConflicts).length || Object.keys(localRecordConflicts).length){
@@ -725,14 +750,26 @@ if(!window.storage){
               }
             });
             records.forEach((entry, i)=>{
-              if(entry.value===null){ tx.delete(recordRefs[i]); return; }
+              if(entry.value===null){
+                tx.delete(recordRefs[i]);
+                oldRecordChunkSnaps[i].forEach((part, n)=>tx.delete(recordChunkRef(entry.section,entry.id,n)));
+                return;
+              }
               const record = JSON.parse(entry.value);
-              tx.set(recordRefs[i], {
-                value:entry.value,
+              const chunks = splitValue(entry.value);
+              const data = {
                 status:String(record.status||''),
                 archived:recordIsArchived(entry.section,record),
                 updatedAt
-              });
+              };
+              if(chunks.length===1){
+                tx.set(recordRefs[i], {...data, value:entry.value});
+                oldRecordChunkSnaps[i].forEach((part,n)=>tx.delete(recordChunkRef(entry.section,entry.id,n)));
+              }else{
+                tx.set(recordRefs[i], {...data, chunked:true, chunks:chunks.length});
+                chunks.forEach((value,n)=>tx.set(recordChunkRef(entry.section,entry.id,n), {value,updatedAt}));
+                oldRecordChunkSnaps[i].slice(chunks.length).forEach((part,n)=>tx.delete(recordChunkRef(entry.section,entry.id,chunks.length+n)));
+              }
             });
           });
           if(conflicts || recordConflicts) return {conflict:true, conflicts:conflicts||{}, recordConflicts:recordConflicts||{}};
@@ -1150,14 +1187,15 @@ async function ensurePilotMigration(){
   if(!window.storage || !window.storage.supportsRecordCollections) return false;
   let state = await window.storage.getMigrationState();
   if(state && state.state==='complete') return true;
-  if(state && state.state==='migrating'){
+  const migrationLeaseMs = 10*60*1000;
+  if(state && state.state==='migrating' && Date.now()-Number(state.startedAt||0)<migrationLeaseMs){
     for(let attempt=0; attempt<30; attempt++){
       await new Promise(resolve=>setTimeout(resolve,1000));
       state = await window.storage.getMigrationState();
       if(state && state.state==='complete') return true;
-      if(!state || state.state!=='migrating') break;
+      if(!state || state.state!=='migrating' || Date.now()-Number(state.startedAt||0)>=migrationLeaseMs) break;
     }
-    if(state && state.state==='migrating') throw new Error('Legacy data migration is still in progress. Reload shortly.');
+    if(state && state.state==='migrating' && Date.now()-Number(state.startedAt||0)<migrationLeaseMs) throw new Error('Legacy data migration is still in progress. Reload shortly.');
   }
   const legacy = await readLegacyDatabase();
   if(!legacy) return false;

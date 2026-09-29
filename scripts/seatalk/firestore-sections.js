@@ -27,6 +27,24 @@ function recordFromDocument(document, section) {
   return JSON.parse(value);
 }
 
+async function recordFromDocumentValue(document, section) {
+  const fields = document && document.fields;
+  if (!fields || !fields.chunked || !fields.chunked.booleanValue) return recordFromDocument(document, section);
+  const count = Number(fields.chunks && fields.chunks.integerValue);
+  if (!Number.isInteger(count) || count < 1) throw new Error(`Invalid ${section} record chunk manifest.`);
+  const chunks = await Promise.all(Array.from({length: count}, (_, index) => {
+    return fetch(`https://firestore.googleapis.com/v1/${document.name}/__chunks/${index}`);
+  }));
+  const values = await Promise.all(chunks.map(async (response, index) => {
+    if (!response.ok) throw new Error(`Incomplete ${section} record chunks (missing chunk ${index}).`);
+    const chunk = await response.json();
+    const value = chunk.fields && chunk.fields.value && chunk.fields.value.stringValue;
+    if (typeof value !== 'string') throw new Error(`Invalid ${section} record chunk ${index}.`);
+    return value;
+  }));
+  return JSON.parse(values.join(''));
+}
+
 async function fetchCollection(section) {
   const records = [];
   let pageToken = '';
@@ -37,7 +55,7 @@ async function fetchCollection(section) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Firestore collection read failed for ${section}: HTTP ${res.status}`);
     const body = await res.json();
-    (body.documents || []).forEach(document => records.push(recordFromDocument(document, section)));
+    records.push(...await Promise.all((body.documents || []).map(document => recordFromDocumentValue(document, section))));
     pageToken = body.nextPageToken || '';
   } while (pageToken);
   return records;
@@ -63,7 +81,7 @@ async function fetchOpenCollection(section) {
   });
   if (!res.ok) throw new Error(`Firestore open-record query failed for ${section}: HTTP ${res.status}`);
   const rows = await res.json();
-  return rows.filter(row => row.document).map(row => recordFromDocument(row.document, section));
+  return Promise.all(rows.filter(row => row.document).map(row => recordFromDocumentValue(row.document, section)));
 }
 
 async function readRecord(section, id) {
@@ -71,7 +89,7 @@ async function readRecord(section, id) {
   const res = await fetch(url);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Firestore record read failed for ${section}/${id}: HTTP ${res.status}`);
-  return recordFromDocument(await res.json(), section);
+  return recordFromDocumentValue(await res.json(), section);
 }
 
 /* index.html splits any value over 240KB across several `<key>__chunk__<n>`
