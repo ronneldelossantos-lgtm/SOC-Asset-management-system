@@ -817,6 +817,7 @@ const STORE_KEY = 'sms_erp_state_v1';
 const UI_SESSION_KEY = 'sms_erp_ui_session_v1';
 let DB = null;
 let opsIdSheetLastPayload = '';
+let opsIdSheetLastCheckedAt = 0;
 let opsIdSheetSyncInFlight = false;
 let opsIdSheetStatus = 'Google Sheet sync is connecting…';
 let session = null; // {id, username, fullName, role, portal, department, site}
@@ -1646,9 +1647,11 @@ function stopOpsIdSheetSync(){
 async function syncOpsIdSheetOnce(){
   if(opsIdSheetSyncInFlight || document.hidden || !session || !loadedSections.has('employees')) return;
   if(!window.storage || typeof window.storage.getOpsIdSheetSnapshot!=='function') return;
+  if(Date.now()-opsIdSheetLastCheckedAt < 15*60*1000) return;
   opsIdSheetSyncInFlight = true;
   try{
     await applyOpsIdSheetSnapshot(await window.storage.getOpsIdSheetSnapshot());
+    opsIdSheetLastCheckedAt = Date.now();
   }catch(e){
     console.error('Ops ID sheet refresh failed:', e);
     setOpsIdSheetSyncStatus('Could not refresh the Google Sheet directory.');
@@ -1682,8 +1685,9 @@ function isFormScreenActive(){
   const formSubroutes = { request:'new', drequest:'new', receiving:'new', issuance:'new', dissuance:'new', dreceiving:'new', dreturn:'new', returns:'new', repair:'new' };
   return formSubroutes[route] && subroute===formSubroutes[route];
 }
-async function refreshFocusedData(){
-  if(!session || document.hidden || actionInFlight || isFormScreenActive()) return;
+async function refreshCurrentRoute(){
+  if(!session || actionInFlight) return;
+  if(isFormScreenActive()){ toast('Finish or cancel the current form before refreshing.'); return; }
   try{
     const keys = [...loadedSections];
     const sections = await loadSections(keys);
@@ -1701,9 +1705,11 @@ async function refreshFocusedData(){
     }else{
       navigate(route, subroute);
     }
-  }catch(e){ console.error('Focused refresh failed:', e); }
+  }catch(e){
+    console.error('Manual refresh failed:', e);
+    toast('Could not refresh data. Reload once the database connection is back.');
+  }
 }
-document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) refreshFocusedData(); });
 
 function toast(msg){
   const t = document.createElement('div');
@@ -6842,7 +6848,8 @@ function renderAppFontControls(){
   if(!right) return;
   const badge = right.querySelector('.badge');
   const badgeHtml = badge ? badge.outerHTML : '';
-  right.innerHTML = `<div class="app-font-control" role="group" aria-label="Application font size">
+  right.innerHTML = `<button class="btn btn-sm" type="button" aria-label="Refresh current data" title="Refresh current data" onclick="refreshCurrentRoute()">⟳</button>
+  <div class="app-font-control" role="group" aria-label="Application font size">
     <span class="font-size-text">Font size</span>
     <button class="btn btn-sm" type="button" aria-label="Decrease font size" onclick="adjustAppFontSize(-1)">A−</button>
     <button class="btn btn-sm" type="button" aria-label="Increase font size" onclick="adjustAppFontSize(1)">A+</button>
