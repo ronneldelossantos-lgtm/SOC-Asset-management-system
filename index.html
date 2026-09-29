@@ -522,8 +522,8 @@ if(!window.storage){
       async getRecords(section, includeArchived){
         try{
           const query = includeArchived
-            ? fsDB.collection(section)
-            : fsDB.collection(section).where('archived','==',false);
+            ? fsDB.collection(STORAGE_VERSION+'_'+section)
+            : fsDB.collection(STORAGE_VERSION+'_'+section).where('archived','==',false);
           const snap = await query.get();
           return snap.docs.map(doc=>{
             const value = doc.data().value;
@@ -548,6 +548,65 @@ if(!window.storage){
           console.error('storage.getRecordChanges failed:', e);
           throw e;
         }
+      },
+      async getLegacy(key, shared){
+        const snap = await legacyDocRef(key, shared).get();
+        if(!snap.exists) return null;
+        return {key, value:await readLegacyValue(key, shared, snap), shared:!!shared};
+      },
+      async getMigrationState(){
+        const snap = await docRef('__migration', true).get();
+        if(!snap.exists || typeof snap.data().value!=='string') return null;
+        return JSON.parse(snap.data().value);
+      },
+      async claimMigration(owner){
+        const ref = docRef('__migration', true);
+        let claim = 'wait';
+        await fsDB.runTransaction(async tx=>{
+          const snap = await tx.get(ref);
+          const state = snap.exists && typeof snap.data().value==='string' ? JSON.parse(snap.data().value) : null;
+          if(state && state.state==='complete'){ claim = 'complete'; return; }
+          if(state && state.state==='migrating' && Date.now()-Number(state.startedAt||0)<10*60*1000) return;
+          tx.set(ref, {value:JSON.stringify({state:'migrating', owner, startedAt:Date.now()}), updatedAt:Date.now()});
+          claim = 'owner';
+        });
+        return claim;
+      },
+      async finishMigration(owner, sectionEntries, recordEntries){
+        const writes = [];
+        const updatedAt = Date.now();
+        sectionEntries.forEach(entry=>{
+          const chunks = splitValue(entry.value);
+          if(chunks.length===1){
+            writes.push({ref:docRef(entry.key, true), data:{value:entry.value, updatedAt}});
+            return;
+          }
+          writes.push({ref:docRef(entry.key, true), data:{chunked:true, chunks:chunks.length, updatedAt}});
+          chunks.forEach((value,index)=>writes.push({ref:docRef(chunkKey(entry.key,index),true), data:{value,updatedAt}}));
+        });
+        recordEntries.forEach(entry=>{
+          const record = JSON.parse(entry.value);
+          writes.push({ref:recordRef(entry.section,entry.id), data:{
+            value:entry.value,
+            status:String(record.status||''),
+            archived:recordIsArchived(entry.section,record),
+            updatedAt
+          }});
+        });
+        for(let offset=0; offset<writes.length; offset+=450){
+          const batch = fsDB.batch();
+          writes.slice(offset,offset+450).forEach(write=>batch.set(write.ref,write.data));
+          await batch.commit();
+        }
+        const ref = docRef('__migration', true);
+        await fsDB.runTransaction(async tx=>{
+          const snap = await tx.get(ref);
+          const state = snap.exists && typeof snap.data().value==='string' ? JSON.parse(snap.data().value) : null;
+          if(!state || state.owner!==owner || state.state!=='migrating') throw new Error('Legacy migration lease was lost.');
+          tx.set(docRef('__meta', true), {value:'{}', updatedAt});
+          tx.set(docRef('__schema', true), {value:JSON.stringify({version:STORAGE_VERSION, migratedAt:updatedAt}), updatedAt});
+          tx.set(ref, {value:JSON.stringify({state:'complete', completedAt:updatedAt}), updatedAt});
+        });
       },
       async seedSections(entries, shared){
         const marker = docRef('__schema', shared);
@@ -1067,14 +1126,62 @@ function migrateDB(){
   });
 }
 
-/* The pilot schema starts empty and does not migrate legacy history during a
-   user session. That keeps boot cost bounded and leaves the prior pilot data
-   untouched for reference. */
 function isRecordSection(key){ return RECORD_SECTION_KEYS.includes(key); }
 function normalizeRecordSection(key, records){
   DB[key] = Array.isArray(records) ? records : [];
   recordSnapshots[key] = recordSnapshot(DB[key]);
   loadedRecordSections.add(key);
+}
+async function readLegacyDatabase(){
+  const legacy = await Promise.all(SECTION_KEYS.map(key=>window.storage.getLegacy('section__'+key,true)));
+  const old = legacy.some(Boolean) ? null : await window.storage.getLegacy(STORE_KEY,true);
+  if(!legacy.some(Boolean) && !old) return null;
+  const oldDB = old ? JSON.parse(old.value) : {};
+  const defaults = defaultDB();
+  const data = {};
+  SECTION_KEYS.forEach((key,index)=>{
+    data[key] = legacy[index] ? JSON.parse(legacy[index].value)
+      : (oldDB[key]!==undefined ? oldDB[key] : defaults[key]);
+  });
+  return data;
+}
+async function ensurePilotMigration(){
+  if(!window.storage || !window.storage.supportsRecordCollections) return false;
+  let state = await window.storage.getMigrationState();
+  if(state && state.state==='complete') return true;
+  if(state && state.state==='migrating'){
+    for(let attempt=0; attempt<30; attempt++){
+      await new Promise(resolve=>setTimeout(resolve,1000));
+      state = await window.storage.getMigrationState();
+      if(state && state.state==='complete') return true;
+      if(!state || state.state!=='migrating') break;
+    }
+    if(state && state.state==='migrating') throw new Error('Legacy data migration is still in progress. Reload shortly.');
+  }
+  const legacy = await readLegacyDatabase();
+  if(!legacy) return false;
+  const owner = 'tab_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+  const claim = await window.storage.claimMigration(owner);
+  if(claim==='complete') return true;
+  if(claim!=='owner'){
+    for(let attempt=0; attempt<30; attempt++){
+      await new Promise(resolve=>setTimeout(resolve,1000));
+      state = await window.storage.getMigrationState();
+      if(state && state.state==='complete') return true;
+    }
+    throw new Error('Legacy data migration is still in progress. Reload shortly.');
+  }
+  const sections = SECTION_KEYS.filter(key=>!isRecordSection(key)).map(key=>({
+    key:'section__'+key, value:JSON.stringify(legacy[key])
+  }));
+  const records = RECORD_SECTION_KEYS.flatMap(section=>(legacy[section]||[]).map(record=>{
+    if(!record || !record.id) throw new Error('Cannot migrate a '+section+' record without an id.');
+    const value = JSON.stringify(record);
+    if(new TextEncoder().encode(value).length>900*1024) throw new Error(section+' '+record.id+' is too large for a Firestore record document.');
+    return {section,id:record.id,value};
+  }));
+  await window.storage.finishMigration(owner, sections, records);
+  return true;
 }
 async function ensureRecordSchema(){
   return !!(window.storage && window.storage.supportsRecordCollections);
@@ -1163,6 +1270,7 @@ async function loadDB(){
   for(let attempt=0; attempt<2; attempt++){
     try{
       recordModeActive = await ensureRecordSchema();
+      if(recordModeActive) await ensurePilotMigration();
       const initialKeys = recordModeActive ? CORE_SECTION_KEYS : [...CORE_SECTION_KEYS, ...RECORD_SECTION_KEYS];
       sections = await loadSections(initialKeys);
       lastErr = null;
