@@ -1900,6 +1900,34 @@ function assetCodeValues(value){
     return true;
   });
 }
+/* QR readers may paste a plain asset tag, a URL containing the tag, or a
+   human-readable prefix such as "Asset tag: SPX-001". Normalize those forms
+   before comparing a scan against inventory. */
+function normalizeAssetTagScan(value){
+  let text=String(value||'').replace(/[\u200B-\u200D\uFEFF]/g,'').trim();
+  if(!text)return '';
+  try{if(/%[0-9a-f]{2}/i.test(text))text=decodeURIComponent(text);}catch(e){}
+  if(/^https?:\/\//i.test(text)){
+    try{
+      const parsed=new URL(text);
+      const params=parsed.searchParams;
+      const queryTag=params.get('assetTag')||params.get('asset-tag')||params.get('tag')||params.get('code');
+      if(queryTag)text=queryTag;
+      else if(parsed.hash)text=parsed.hash.replace(/^#(?:assetTag|asset-tag|tag|code)=?/i,'');
+      else text=parsed.pathname.split('/').filter(Boolean).pop()||text;
+    }catch(e){}
+  }
+  text=text.trim().replace(/^(?:asset\s*tag(?:ging)?|tag)\s*[:=#]\s*/i,'').replace(/^["']|["']$/g,'').trim();
+  return text;
+}
+function assetTagValuesForRecord(record){
+  if(!record)return [];
+  return [...assetCodeValues(record.assetCodes||[]),...assetCodeValues(record.assetTagging||''),...assetCodeValues(record.assetCode||'')];
+}
+function assetTagForRecord(record,scannedValue){
+  const key=normalizeAssetTagScan(scannedValue).toUpperCase();
+  return key?assetTagValuesForRecord(record).find(value=>normalizeAssetTagScan(value).toUpperCase()===key)||'':'';
+}
 function assetAmsTagsForCodes(codes){
   const tagsByCode = new Map();
   (DB.receiving||[]).forEach(r=>{
@@ -2021,23 +2049,22 @@ function syncOpenRequestAssetCodes(){
    a single physical tag therefore needs a "does this list include the
    tag" check, not an exact-string match against the whole list. */
 function issuanceRecordForTag(tag, deptOnly){
-  if(!tag) return null;
-  const T = tag.trim().toUpperCase();
+  const T = normalizeAssetTagScan(tag).toUpperCase();
+  if(!T) return null;
   return DB.issuance.find(i=>{
     if(deptOnly && i.department!==session.department) return false;
-    const ids = [...assetCodeValues(i.assetCodes||[]), ...assetCodeValues(i.assetTagging||'')];
-    return ids.some(value=>value.toUpperCase()===T);
+    return assetTagValuesForRecord(i).some(value=>normalizeAssetTagScan(value).toUpperCase()===T);
   }) || null;
 }
 function deptIssuanceRecordForTag(tag){
-  if(!tag) return null;
-  const T = tag.trim().toUpperCase();
-  return DB.deptIssuance.find(d=>d.assetTagging && d.department===session.department && d.assetTagging.split(',').map(t=>t.trim().toUpperCase()).includes(T)) || null;
+  const T = normalizeAssetTagScan(tag).toUpperCase();
+  if(!T) return null;
+  return DB.deptIssuance.find(d=>d.department===session.department && assetTagValuesForRecord(d).some(value=>normalizeAssetTagScan(value).toUpperCase()===T)) || null;
 }
 function returnRecordForTag(tag){
-  if(!tag) return null;
-  const T = tag.trim().toUpperCase();
-  return DB.returns.find(r=>r.assetTagging && r.department===session.department && r.assetTagging.split(',').map(t=>t.trim().toUpperCase()).includes(T)) || null;
+  const T = normalizeAssetTagScan(tag).toUpperCase();
+  if(!T) return null;
+  return DB.returns.find(r=>r.department===session.department && assetTagValuesForRecord(r).some(value=>normalizeAssetTagScan(value).toUpperCase()===T)) || null;
 }
 function nowISO(){ return new Date().toISOString(); }
 function skuInfo(code){ return DB.sku.find(s=>s.sku.toUpperCase()===String(code||'').toUpperCase()); }
@@ -3053,12 +3080,32 @@ function receivedAmsTagForAssetCode(assetTag){
   }
   return '';
 }
+/* QR labels must contain the physical Asset Tag, never the separate AMS tag.
+   For older open requests that only stored an AMS value, recover the physical
+   tag by matching it to the receiving record that paired the two identifiers. */
+function physicalAssetCodesForRequestItem(it){
+  if(!it) return [];
+  const directCodes=assetCodeValues(Array.isArray(it.assetCodes)?it.assetCodes.join('\n'):(it.assetCode||''));
+  if(directCodes.length) return directCodes;
+  return assetTagsArr(it).map(amsTag=>{
+    const key=String(amsTag||'').trim().toUpperCase();
+    if(!key) return '';
+    for(const received of DB.receiving||[]){
+      if(received.type!=='Asset') continue;
+      const tags=Array.isArray(received.amsTags)?received.amsTags:assetCodeValues(received.amsTags||'');
+      const index=tags.findIndex(tag=>String(tag||'').trim().toUpperCase()===key);
+      const codes=recvAssetCodesOf(received);
+      if(index>=0&&codes[index]) return codes[index];
+    }
+    return '';
+  }).filter(Boolean);
+}
 function requestAssetLabelRows(r){
   const labels = [];
   (r&&Array.isArray(r.items)?r.items:[]).forEach(it=>{
     if(it.type!=='Asset') return;
     const qty = Math.max(0,Math.floor(approvedQtyOf(it)||0));
-    requestAssetCodesArr(it).slice(0,qty).forEach(assetTag=>labels.push({
+    physicalAssetCodesForRequestItem(it).slice(0,qty).forEach(assetTag=>labels.push({
       assetTag,
       itemName:it.description||(skuInfo(it.sku)||{}).description||it.sku,
       department:r.department||'',
@@ -3145,7 +3192,7 @@ function printRequestAssetLabels(id){
   if(typeof QRCode==='undefined'){ toast('The QR-code library did not load. Reload the app and try again.'); return; }
   const labelHtml = labels.map((label,index)=>`
     <article class="asset-tag-label">
-      <div class="asset-tag-qr" id="asset-tag-qr-${index}" aria-label="QR code for ${esc(label.assetTag)}"></div>
+      <div class="asset-tag-qr" aria-label="QR code for ${esc(label.assetTag)}"><div class="asset-tag-qr-frame"><div class="asset-tag-qr-inset"><div class="asset-tag-qr-code" id="asset-tag-qr-${index}"></div></div></div></div>
       <div class="asset-tag-details">
         <div class="asset-tag-row"><strong class="asset-tag-value">${esc(label.assetTag)}</strong></div>
         <div class="asset-tag-row"><strong class="asset-tag-value">${esc(label.itemName)}</strong></div>
@@ -3161,9 +3208,11 @@ function printRequestAssetLabels(id){
       .asset-tag-sheet{display:flex;flex-direction:column;align-items:flex-start;gap:10px;}
       .asset-tag-label{width:3in;height:1in;box-sizing:border-box;display:grid;grid-template-columns:.92in 1fr;border:.6pt solid #111;background:#fff;color:#000;overflow:hidden;break-after:page;page-break-after:always;}
       .asset-tag-label:last-child{break-after:auto;page-break-after:auto;}
-      .asset-tag-qr{width:.92in;height:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:.07in;border-right:.6pt solid #111;overflow:hidden;}
-      .asset-tag-qr img,.asset-tag-qr canvas,.asset-tag-qr table{display:block!important;width:.68in!important;height:.68in!important;max-width:.68in!important;max-height:.68in!important;flex:0 0 auto;}
-      .asset-tag-qr table{border-collapse:collapse!important;table-layout:fixed!important;}
+      .asset-tag-qr{width:.92in;height:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:0!important;border-right:.6pt solid #111;overflow:hidden;background:#fff;}
+      .asset-tag-qr-frame{width:.90in;height:.90in;box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:0;background:transparent;border:0;border-radius:0;overflow:hidden;}
+      .asset-tag-qr-inset{width:100%;height:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:transparent;overflow:hidden;}
+      .asset-tag-qr-code{width:.90in;height:.90in;box-sizing:border-box;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#fff;}
+      .asset-tag-qr-code canvas{display:block!important;width:.90in!important;height:.90in!important;min-width:.90in!important;min-height:.90in!important;max-width:.90in!important;max-height:.90in!important;margin:0!important;flex:0 0 .90in!important;image-rendering:pixelated;box-sizing:border-box!important;}
       .asset-tag-details{min-width:0;display:grid;grid-template-rows:repeat(5,minmax(0,1fr));}
       .asset-tag-row{min-width:0;display:flex;align-items:center;gap:.025in;padding:0 .025in;border-bottom:.5pt solid #111;overflow:hidden;white-space:nowrap;line-height:1;}
       .asset-tag-row:last-child{border-bottom:0;}
@@ -3187,7 +3236,28 @@ function printRequestAssetLabels(id){
   labels.forEach((label,index)=>{
     const qrEl = document.getElementById('asset-tag-qr-'+index);
     const assetTagPayload = String(label.assetTag||'').trim();
-    if(qrEl && assetTagPayload) new QRCode(qrEl,{text:assetTagPayload,width:160,height:160,colorDark:'#000000',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M});
+    if(!qrEl || !assetTagPayload) return;
+    const qr = new QRCode(qrEl,{text:assetTagPayload,width:600,height:600,colorDark:'#000000',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M});
+    const model = qr && qr._oQRCode;
+    const moduleCount = model && typeof model.getModuleCount==='function' ? model.getModuleCount() : 0;
+    if(!moduleCount || typeof model.isDark!=='function') return;
+    /* The QR symbol needs four clear modules on every side. Draw the matrix
+       ourselves so its modules stay square and the white quiet zone survives
+       both the rounded label frame and printer scaling. */
+    const quietModules=4, pixelsPerModule=24, canvas=document.createElement('canvas');
+    const fullSize=(moduleCount+quietModules*2)*pixelsPerModule;
+    canvas.width=fullSize; canvas.height=fullSize;
+    canvas.setAttribute('role','img');
+    canvas.setAttribute('aria-label','QR code encoding asset tag '+assetTagPayload);
+    const ctx=canvas.getContext('2d');
+    if(!ctx) return;
+    ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,fullSize,fullSize);
+    ctx.fillStyle='#000000';
+    for(let row=0;row<moduleCount;row++) for(let col=0;col<moduleCount;col++){
+      if(model.isDark(row,col)) ctx.fillRect((col+quietModules)*pixelsPerModule,(row+quietModules)*pixelsPerModule,pixelsPerModule,pixelsPerModule);
+    }
+    while(qrEl.firstChild) qrEl.removeChild(qrEl.firstChild);
+    qrEl.appendChild(canvas);
   });
 }
 function openEditRequest(id){
@@ -3657,7 +3727,7 @@ async function finalizeIssueRequest(){
   r.items.forEach(it=>{
     const q = approvedQtyOf(it);
     if(q<=0) return;
-    const assetCodes = it.type==='Asset' ? requestAssetCodesArr(it).slice(0,q) : [];
+    const assetCodes = it.type==='Asset' ? physicalAssetCodesForRequestItem(it).slice(0,q) : [];
     const issId = nextCode('ISS','iss');
     DB.issuance.push({
       id: issId, sku: it.sku, description: it.description, type: it.type, uom: it.uom, qty: q, requestedQty: it.qty,
@@ -4278,10 +4348,11 @@ function onAssetCycleScanInput(){
 function addAssetCycleScan(){
   clearTimeout(assetCycleScanTimer);
   const el=document.getElementById('cc-asset-scan');
-  const value=(el?el.value:'').trim();
+  const value=normalizeAssetTagScan(el?el.value:'');
   if(!value){ toast('Scan or enter an asset tag first.'); return; }
-  if(assetCycleScanned.some(code=>code.toUpperCase()===value.toUpperCase())){ toast('That asset tag has already been scanned in this count.'); if(el){el.value='';el.focus();} return; }
-  assetCycleScanned.push(value);
+  if(assetCycleScanned.some(code=>normalizeAssetTagScan(code).toUpperCase()===value.toUpperCase())){ toast('That asset tag has already been scanned in this count.'); if(el){el.value='';el.focus();} return; }
+  const expected=assetCycleExpectedItems().find(item=>normalizeAssetTagScan(item.code).toUpperCase()===value.toUpperCase());
+  assetCycleScanned.push(expected?expected.code:value);
   if(el){el.value='';el.focus();}
   refreshAssetCycleCountView();
 }
@@ -4383,7 +4454,7 @@ function repairFormHtml(){
     <h3>Log a damaged asset</h3>
     <div class="card-sub">Look up by asset tagging to pull the SKU automatically, then set its status.</div>
     <div class="form-row">
-      <div class="field"><label>Asset tagging</label><input id="rep-tag" placeholder="e.g. AST-0001-014" oninput="repTagLookup()"></div>
+      <div class="field"><label>Asset tagging</label><input id="rep-tag" placeholder="Scan or enter asset tag" oninput="repTagLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();this.value=normalizeAssetTagScan(this.value);repTagLookup();}"></div>
       <div class="field"><label>SKU code</label><input id="rep-sku" placeholder="e.g. AST-0001" oninput="repSkuLookup()"></div>
     </div>
     <div class="form-row">
@@ -4404,7 +4475,7 @@ function repairFormHtml(){
 let repStatusPick = 'For Repair';
 function pickRepStatus(s){ repStatusPick = s; document.querySelectorAll('#rep-status-pills .pill').forEach(p=>p.classList.toggle('active', p.dataset.status===s)); }
 function repTagLookup(){
-  const tag = document.getElementById('rep-tag').value.trim();
+  const tag = normalizeAssetTagScan(document.getElementById('rep-tag').value);
   const found = issuanceRecordForTag(tag, false);
   if(found){ document.getElementById('rep-sku').value = found.sku; repSkuLookup(); }
 }
@@ -4413,12 +4484,14 @@ function repSkuLookup(){
   document.getElementById('rep-desc').value = info?info.description:'';
 }
 async function saveRepair(){
-  const tag = document.getElementById('rep-tag').value.trim();
+  let tag = normalizeAssetTagScan(document.getElementById('rep-tag').value);
   const info = skuInfo(document.getElementById('rep-sku').value);
   const date = document.getElementById('rep-date').value;
   const remarks = document.getElementById('rep-remarks').value.trim();
   if(!tag){ toast('Enter the asset tagging.'); return; }
   if(!info){ toast('Enter a valid SKU code.'); return; }
+  const matchedAsset=issuanceRecordForTag(tag,false);
+  if(matchedAsset)tag=assetTagForRecord(matchedAsset,tag)||tag;
   const id = nextCode('REP','rep');
   DB.repairs.push({id, assetTagging:tag, sku:info.sku, description:info.description, dateReceived:date, status:repStatusPick, remarks, soc:currentSoc()});
   await saveDB();
@@ -5299,7 +5372,7 @@ function deptIssuanceFormHtml(){
   const isAsset = dissuCategory==='Asset';
   const skuSectionHtml = isAsset ? `
     <div class="section-title">Asset lookup</div>
-    <div class="field"><label>Asset tagging</label><input id="dissu-assettag" placeholder="e.g. AST-0001-014" oninput="dissuTagLookup()"></div>
+    <div class="field"><label>Asset tagging</label><input id="dissu-assettag" placeholder="Scan or enter asset tag" oninput="dissuTagLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();this.value=normalizeAssetTagScan(this.value);dissuTagLookup();}"></div>
     <div class="form-row3">
       <div class="field"><label>SKU code</label><input id="dissu-sku-auto" class="autofill" disabled></div>
       <div class="field"><label>Item description</label><input id="dissu-desc" class="autofill" disabled></div>
@@ -5338,7 +5411,7 @@ function deptIssuanceFormHtml(){
   </div>`;
 }
 function dissuTagLookup(){
-  const tag = document.getElementById('dissu-assettag').value.trim();
+  const tag = normalizeAssetTagScan(document.getElementById('dissu-assettag').value);
   const skuEl=document.getElementById('dissu-sku-auto'), descEl=document.getElementById('dissu-desc'),
         qtyEl=document.getElementById('dissu-qty-auto'), hintEl=document.getElementById('dissu-tag-hint');
   dissuAutoFound = null;
@@ -5359,7 +5432,7 @@ function dissuTagLookup(){
     if(hintEl) hintEl.textContent = 'This asset has already been returned to Supplies.';
     return;
   }
-  dissuAutoFound = {sku:invRec.sku, description:invRec.description, uom:invRec.uom};
+  dissuAutoFound = {sku:invRec.sku, description:invRec.description, uom:invRec.uom, assetTag:assetTagForRecord(invRec,tag)||tag};
   skuEl.value=invRec.sku; descEl.value=invRec.description; qtyEl.value='1';
   if(hintEl) hintEl.textContent = 'Asset found in your department\'s inventory. Auto-filled.';
 }
@@ -5378,7 +5451,8 @@ async function submitDeptIssuance(){
   const remarks = document.getElementById('dissu-remarks').value.trim();
   let info, qty, assetTagging='', deployedArea='';
   if(dissuCategory==='Asset'){
-    const tag = document.getElementById('dissu-assettag').value.trim();
+    const scannedTag = normalizeAssetTagScan(document.getElementById('dissu-assettag').value);
+    const tag = dissuAutoFound&&dissuAutoFound.assetTag?dissuAutoFound.assetTag:scannedTag;
     if(!tag){ toast('Enter the asset tagging to look it up.'); return; }
     if(!dissuAutoFound){ toast('No available asset was found for that tag in your department\'s inventory.'); return; }
     deployedArea = document.getElementById('dissu-deployed-area').value.trim();
@@ -5437,7 +5511,7 @@ function deptReturnFormHtml(){
   const withTagging = showTagToggle && dretTagMode==='with';
   const skuSectionHtml = withTagging ? `
     <div class="section-title">Asset lookup</div>
-    <div class="field"><label>Asset tagging</label><input id="dret-assettag-lookup" placeholder="e.g. AST-0001-014" oninput="dretTagAutoLookup()"></div>
+    <div class="field"><label>Asset tagging</label><input id="dret-assettag-lookup" placeholder="Scan or enter asset tag" oninput="dretTagAutoLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();this.value=normalizeAssetTagScan(this.value);dretTagAutoLookup();}"></div>
     <div class="form-row3">
       <div class="field"><label>SKU code</label><input id="dret-sku-auto" class="autofill" disabled></div>
       <div class="field"><label>Item description</label><input id="dret-desc" class="autofill" disabled></div>
@@ -5513,18 +5587,18 @@ function dretSkuLookup(){
   document.getElementById('dret-desc').value = info?info.description:'';
 }
 function dretTagAutoLookup(){
-  const tag = document.getElementById('dret-assettag-lookup').value.trim();
+  const tag = normalizeAssetTagScan(document.getElementById('dret-assettag-lookup').value);
   let found = null, foundSource = '';
   if(tag){
     let rec = issuanceRecordForTag(tag, true);
-    if(rec){ found = {sku:rec.sku, description:rec.description, uom:rec.uom, qty:1, department:rec.department}; foundSource = 'inventory'; }
+    if(rec){ found = {sku:rec.sku, description:rec.description, uom:rec.uom, qty:1, department:rec.department, assetTag:assetTagForRecord(rec,tag)||tag}; foundSource = 'inventory'; }
     if(!found){
       const drec = deptIssuanceRecordForTag(tag);
-      if(drec){ found = {sku:drec.sku, description:drec.description, uom:drec.uom, qty:1, department:drec.department}; foundSource = 'issued'; }
+      if(drec){ found = {sku:drec.sku, description:drec.description, uom:drec.uom, qty:1, department:drec.department, assetTag:assetTagForRecord(drec,tag)||tag}; foundSource = 'issued'; }
     }
     if(!found){
       rec = issuanceRecordForTag(tag, false);
-      if(rec){ found = {sku:rec.sku, description:rec.description, uom:rec.uom, qty:1, department:rec.department}; foundSource = 'inventory'; }
+      if(rec){ found = {sku:rec.sku, description:rec.description, uom:rec.uom, qty:1, department:rec.department, assetTag:assetTagForRecord(rec,tag)||tag}; foundSource = 'inventory'; }
     }
   }
   dretAutoFound = found || null;
@@ -5547,12 +5621,12 @@ async function submitDeptReturn(){
   const usingTagLookup = dretCategory==='Asset' && dretCondition==='Damaged' && dretTagMode==='with';
   let info, qty, assetTagging='', irFile='';
   if(usingTagLookup){
-    const tag = document.getElementById('dret-assettag-lookup').value.trim();
-    if(!tag){ toast('Enter the asset tagging to look it up.'); return; }
+    const scannedTag = normalizeAssetTagScan(document.getElementById('dret-assettag-lookup').value);
+    if(!scannedTag){ toast('Enter the asset tagging to look it up.'); return; }
     if(!dretAutoFound){ toast('No matching asset was found in your inventory or issued records for that tag — check it, or switch to "No Tagging".'); return; }
     info = skuInfo(dretAutoFound.sku);
     qty = Number(dretAutoFound.qty)||1;
-    assetTagging = tag;
+    assetTagging = dretAutoFound.assetTag||scannedTag;
     if(!info){ toast('That asset\'s SKU is no longer in the master list.'); return; }
     const fileEl = document.getElementById('dret-ir-file');
     const irFileObj = fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
