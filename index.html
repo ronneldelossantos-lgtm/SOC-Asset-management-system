@@ -950,7 +950,7 @@ function defaultDB(){
    here becomes its own Firestore document ('section__'+key) — see the
    setMulti() comment above for why the app moved off one giant document. */
 const SECTION_KEYS = Object.keys(defaultDB());
-const RECORD_SECTION_KEYS = ['requests','returns','issuance','itAssetReturns'];
+const RECORD_SECTION_KEYS = ['requests','returns','issuance'];
 const CORE_SECTION_KEYS = ['users','notifications','counters','issuanceMetrics'];
 const ROUTE_SECTIONS = {
   dashboard: ['sku','stock','reorderPoint','repairs'],
@@ -984,8 +984,7 @@ const ROUTE_RECORD_SECTIONS = {
   drequest: ['requests','issuance'],
   dreceiving: ['requests','issuance'],
   dissuance: ['issuance'],
-  dreturn: ['returns','issuance'],
-  itassets: ['itAssetReturns']
+  dreturn: ['returns','issuance']
 };
 const ARCHIVE_RECORD_SECTIONS = {
   issuance: ['issuance'],
@@ -2297,14 +2296,14 @@ const NAV = [
       {id:'repair', sub:'', label:'Repair & Maintenance'}
     ]},
     {type:'dropdown', id:'proc-itassets', processKey:'itassets', label:'IT Assets', ic:'&#128187;', children:[
-      {id:'itassets', sub:'it-masterlist', label:'IT Asset Masterlist'},
-      {id:'itassets', sub:'it-issuance', label:'IT Asset Issuance'},
-      {id:'itassets', sub:'it-return', label:'Returned to I.T'},
-      {id:'itassets', sub:'pda-cycle-count', label:'PDA Daily Cycle Count'},
-      {id:'itassets', sub:'it-cycle-count', label:'IT Asset Monthly Cycle Count'},
+      {id:'itassets', sub:'log', label:'Dashboard'},
       {id:'itassets', sub:'scan', label:'PDA Issuance'},
       {id:'itassets', sub:'masterlist', label:'PDA Masterlist'},
-      {id:'itassets', sub:'log', label:'Dashboard'}
+      {id:'itassets', sub:'pda-cycle-count', label:'PDA Daily Cycle Count'},
+      {id:'itassets', sub:'it-issuance', label:'IT Asset Issuance'},
+      {id:'itassets', sub:'it-masterlist', label:'IT Asset Masterlist'},
+      {id:'itassets', sub:'it-cycle-count', label:'IT Asset Monthly Cycle Count'},
+      {id:'itassets', sub:'it-return', label:'Returned to I.T'}
     ]},
     {type:'dropdown', id:'proc-cageloading', processKey:'cageloading', label:'Cage Loading', ic:'&#128666;', children:[
       {id:'cageloading', sub:'dashboard', label:'Dashboard'},
@@ -7190,19 +7189,19 @@ function renderAppFontControls(){
 }
 function renderITAssets(){
   const c = document.getElementById('content');
-  const tab = subroute || 'scan';
+  const tab = subroute || 'log';
   document.body.style.setProperty('--app-font-adjust', appFontAdjust+'px');
   if(tab==='scan' && !pdaBorrowInProgress && !pdaReturnInProgress){ pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null; pdaReturnBorrowLogIdentity = null; pdaReturnTopChoice = ''; pdaReturnCondition = ''; pdaReturnEmployee = null; pdaReturnMismatchApprovedOpsId = ''; pdaReturnMismatchPendingOpsId = ''; pdaReturnMismatchPromptOpen = false; }
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='log'?'active':''}" onclick="navigate('itassets','log')">Dashboard</div>
-      <div class="tab ${tab==='it-masterlist'?'active':''}" onclick="navigate('itassets','it-masterlist')">IT Asset Masterlist (${socFilter(DB.itAssetIssuances).filter(item=>!item.returnedToITAt).length})</div>
-      <div class="tab ${tab==='it-issuance'?'active':''}" onclick="navigate('itassets','it-issuance')">IT Asset Issuance</div>
-      <div class="tab ${tab==='it-return'?'active':''}" onclick="navigate('itassets','it-return')">Returned to I.T</div>
-      <div class="tab ${tab==='pda-cycle-count'?'active':''}" onclick="navigate('itassets','pda-cycle-count')">PDA Daily Count</div>
-      <div class="tab ${tab==='it-cycle-count'?'active':''}" onclick="navigate('itassets','it-cycle-count')">IT Asset Monthly Count</div>
       <div class="tab ${tab==='scan'?'active':''}" onclick="navigate('itassets','scan')">PDA Issuance</div>
       <div class="tab ${tab==='masterlist'?'active':''}" onclick="navigate('itassets','masterlist')">PDA Masterlist (${socFilter(DB.pdas).length})</div>
+      <div class="tab ${tab==='pda-cycle-count'?'active':''}" onclick="navigate('itassets','pda-cycle-count')">PDA Daily Cycle Count</div>
+      <div class="tab ${tab==='it-issuance'?'active':''}" onclick="navigate('itassets','it-issuance')">IT Asset Issuance</div>
+      <div class="tab ${tab==='it-masterlist'?'active':''}" onclick="navigate('itassets','it-masterlist')">IT Asset Masterlist (${socFilter(DB.itAssetIssuances).filter(item=>!item.returnedToITAt).length})</div>
+      <div class="tab ${tab==='it-cycle-count'?'active':''}" onclick="navigate('itassets','it-cycle-count')">IT Asset Monthly Cycle Count</div>
+      <div class="tab ${tab==='it-return'?'active':''}" onclick="navigate('itassets','it-return')">Returned to I.T</div>
     </div>
     <div id="pda-body"></div>
   `;
@@ -7430,7 +7429,7 @@ function itReturnedToITHtml(){
   itReturnSelectedCandidate=null;
   return `<div class="card">
     <h3>Returned to I.T</h3>
-    <div class="card-sub">Scan or enter the serial number of an IT asset or PDA being handed over to the IT Department. Asset details and the current accountable person appear automatically. Add the supporting files and remarks, then save to create a transmittal.</div>
+    <div class="card-sub">Scan or enter the serial number of an IT asset or PDA being handed over to the IT Department. Asset details and the current accountable person appear automatically. Upload the IR and damage photo, enter the IT ticket number and remarks, then save to create a transmittal.</div>
     <div class="field scan-field"><label for="it-return-serial">Serial number</label><input id="it-return-serial" placeholder="Scan or enter serial number" autocomplete="off" oninput="onItReturnSerialInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();lookupItReturnSerial();}"><div class="hint" id="it-return-lookup-status"></div></div>
     <div id="it-return-candidate-list"></div>
     <div id="it-return-form-wrap"></div>
@@ -7502,10 +7501,10 @@ function itReturnFormHtml(item){
     <div class="form-row3">
       <div class="field"><label>IR / incident report</label><input id="it-return-ir-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"></div>
       <div class="field"><label>Photo of damaged item</label><input id="it-return-photo-file" type="file" accept="image/*"></div>
-      <div class="field"><label>IT ticket</label><input id="it-return-ticket-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"></div>
+      <div class="field"><label>IT ticket number</label><input id="it-return-ticket-number" type="text" placeholder="Enter IT ticket number" autocomplete="off"></div>
     </div>
     <div class="field"><label>Remarks</label><textarea id="it-return-remarks" rows="3" placeholder="Add condition, reason for return, or other notes"></textarea></div>
-    <div class="hint">Each attachment can be up to 4 MB. The return date and processed-by name are recorded automatically.</div>
+    <div class="hint">Each uploaded file can be up to 4 MB. The return date and processed-by name are recorded automatically.</div>
     <div class="footer-actions"><button class="btn btn-primary" onclick="saveItReturnToIT()">Save return &amp; generate transmittal</button></div>
   </div>`;
 }
@@ -7513,19 +7512,20 @@ async function saveItReturnToIT(){
   if(actionInFlight)return;
   const selected=itReturnSelectedCandidate;
   if(!selected){toast('Scan a serial number and select the matching asset first.');return;}
-  const files={ir:document.getElementById('it-return-ir-file')?.files?.[0]||null,photo:document.getElementById('it-return-photo-file')?.files?.[0]||null,ticket:document.getElementById('it-return-ticket-file')?.files?.[0]||null};
+  const files={ir:document.getElementById('it-return-ir-file')?.files?.[0]||null,photo:document.getElementById('it-return-photo-file')?.files?.[0]||null};
   for(const [kind,file] of Object.entries(files)){
-    if(file&&file.size>4*1024*1024){toast((kind==='photo'?'Damage photo':kind==='ir'?'IR file':'IT ticket')+' exceeds the 4 MB limit.');return;}
+    if(file&&file.size>4*1024*1024){toast((kind==='photo'?'Damage photo':'IR file')+' exceeds the 4 MB limit.');return;}
     if(kind==='photo'&&file&&!String(file.type||'').startsWith('image/')){toast('The damaged-item photo must be an image file.');return;}
   }
   const remarks=document.getElementById('it-return-remarks')?.value.trim()||'';
+  const itTicketNumber=document.getElementById('it-return-ticket-number')?.value.trim()||'';
   let attachments={};
   try{
-    attachments={irFile:files.ir?files.ir.name:'',irFileData:files.ir?await readFileAsDataURL(files.ir):'',damagePhotoFile:files.photo?files.photo.name:'',damagePhotoData:files.photo?await readFileAsDataURL(files.photo):'',itTicketFile:files.ticket?files.ticket.name:'',itTicketData:files.ticket?await readFileAsDataURL(files.ticket):''};
+    attachments={irFile:files.ir?files.ir.name:'',irFileData:files.ir?await readFileAsDataURL(files.ir):'',damagePhotoFile:files.photo?files.photo.name:'',damagePhotoData:files.photo?await readFileAsDataURL(files.photo):''};
   }catch(error){console.error('IT return attachment read error',error);toast('Could not read one of the attachments. Nothing was saved.');return;}
   const returnId=nextCode('ITR','itr');
   const returnedAt=nowISO();
-  const returnRecord={id:returnId,sourceType:selected.kind,sourceIdentity:selected.identity,serialNumber:selected.serialNumber,pdaNo:selected.pdaNo||'',assetType:selected.assetType,accountable:selected.accountable||'',department:selected.department||'',sourceDate:selected.sourceDate||'',soc:selected.soc||'',returnedAt,returnedBy:session.fullName||session.username||'',remarks,...attachments};
+  const returnRecord={id:returnId,sourceType:selected.kind,sourceIdentity:selected.identity,serialNumber:selected.serialNumber,pdaNo:selected.pdaNo||'',assetType:selected.assetType,accountable:selected.accountable||'',department:selected.department||'',sourceDate:selected.sourceDate||'',soc:selected.soc||'',returnedAt,returnedBy:session.fullName||session.username||'',itTicketNumber,remarks,...attachments};
   let sourceChanged=false;
   const applyReturn=()=>{
     if((DB.itAssetReturns||[]).some(row=>row.id===returnId))return;
@@ -7553,7 +7553,7 @@ async function saveItReturnToIT(){
 function itReturnHistoryHtml(){
   const rows=socFilter(DB.itAssetReturns||[]).slice().sort((a,b)=>new Date(b.returnedAt||0)-new Date(a.returnedAt||0));
   if(!rows.length)return '<div class="empty"><div class="ic">&#8635;</div>No IT assets have been returned to IT yet.</div>';
-  return '<div class="tbl-wrap"><table><tr><th>Transmittal</th><th>Serial #</th><th>Asset type</th><th>Accountable person</th><th>Department</th><th>Date returned</th><th>Files</th><th></th></tr>'+rows.map(row=>`<tr><td class="mono">${esc(row.id)}</td><td class="mono">${esc(row.serialNumber)}</td><td>${esc(row.assetType)}</td><td>${esc(row.accountable||'—')}</td><td>${esc(row.department||'—')}</td><td>${fmtDateTime(row.returnedAt)}</td><td>${[['ir','IR',row.irFile],['photo','Photo',row.damagePhotoFile],['ticket','IT ticket',row.itTicketFile]].filter(item=>item[2]).map(item=>`<button class="btn btn-sm" style="margin:2px;" onclick="viewItReturnAttachment('${esc(row.id)}','${item[0]}')">${item[1]}</button>`).join('')||'—'}</td><td><button class="btn btn-sm btn-primary" onclick="openItReturnTransmittal('${esc(row.id)}')">Transmittal</button></td></tr>`).join('')+'</table></div>';
+  return '<div class="tbl-wrap"><table><tr><th>Transmittal</th><th>Serial #</th><th>Asset type</th><th>Accountable person</th><th>Department</th><th>IT ticket #</th><th>Date returned</th><th>Files</th><th></th></tr>'+rows.map(row=>`<tr><td class="mono">${esc(row.id)}</td><td class="mono">${esc(row.serialNumber)}</td><td>${esc(row.assetType)}</td><td>${esc(row.accountable||'—')}</td><td>${esc(row.department||'—')}</td><td class="mono">${esc(row.itTicketNumber||'—')}</td><td>${fmtDateTime(row.returnedAt)}</td><td>${[['ir','IR',row.irFile],['photo','Photo',row.damagePhotoFile],['ticket','Old ticket file',row.itTicketFile]].filter(item=>item[2]).map(item=>`<button class="btn btn-sm" style="margin:2px;" onclick="viewItReturnAttachment('${esc(row.id)}','${item[0]}')">${item[1]}</button>`).join('')||'—'}</td><td><button class="btn btn-sm btn-primary" onclick="openItReturnTransmittal('${esc(row.id)}')">Transmittal</button></td></tr>`).join('')+'</table></div>';
 }
 function viewItReturnAttachment(id,kind){
   const row=(DB.itAssetReturns||[]).find(item=>item.id===id);
@@ -7571,10 +7571,11 @@ function itReturnAttachmentAnchor(name,data){
   return `<a href="${data}" download="${esc(name)}">${esc(name)}</a>`;
 }
 function itReturnTransmittalParts(row){
-  const attachmentRows=[['IR / Incident report',row.irFile,row.irFileData],['Photo of damaged item',row.damagePhotoFile,row.damagePhotoData],['IT ticket',row.itTicketFile,row.itTicketData]];
+  const attachmentRows=[['IR / Incident report',row.irFile,row.irFileData],['Photo of damaged item',row.damagePhotoFile,row.damagePhotoData]];
+  if(row.itTicketFile)attachmentRows.push(['Previous IT ticket attachment',row.itTicketFile,row.itTicketData]);
   const photo=row.damagePhotoData&&String(row.damagePhotoData).startsWith('data:image/')?`<div class="it-return-photo"><div class="it-return-label">Damage photo</div><img src="${row.damagePhotoData}" alt="Damage photo"></div>`:'';
   const styles=`.it-return-doc{font:14px Arial,sans-serif;color:#172033;background:#fff;border:1px solid #cbd5e1;padding:28px;max-width:850px;margin:0 auto}.it-return-doc h1{font-size:23px;margin:0 0 5px}.it-return-doc .subtitle{color:#64748b;margin:0 0 22px}.it-return-doc .it-return-no{float:right;text-align:right;font-weight:700}.it-return-doc table{width:100%;border-collapse:collapse;margin:14px 0 20px}.it-return-doc th,.it-return-doc td{border:1px solid #cbd5e1;text-align:left;padding:9px 10px;vertical-align:top}.it-return-doc th{width:28%;background:#f1f5f9}.it-return-label{font-weight:700;margin:14px 0 8px}.it-return-doc .remarks{min-height:58px;white-space:pre-wrap}.it-return-photo img{max-width:320px;max-height:240px;object-fit:contain;border:1px solid #cbd5e1;padding:4px}.it-return-signatures{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:42px}.it-return-signatures div{border-top:1px solid #475569;padding-top:7px;font-size:12px}.it-return-doc a{color:#075985}@media print{.it-return-doc{border:0;margin:0;max-width:none;padding:0}.it-return-doc a{color:#172033;text-decoration:none}}`;
-  const body=`<article class="it-return-doc"><div class="it-return-no">Transmittal no.<br>${esc(row.id)}</div><h1>IT ASSET / PDA RETURN TRANSMITTAL</h1><p class="subtitle">Return of equipment to the IT Department</p><table><tr><th>Serial number</th><td>${esc(row.serialNumber||'—')}</td></tr><tr><th>Type of IT asset</th><td>${esc(row.assetType||'—')}</td></tr><tr><th>Accountable person</th><td>${esc(row.accountable||'—')}</td></tr><tr><th>Department</th><td>${esc(row.department||'—')}</td></tr><tr><th>Date deployed / borrowed</th><td>${row.sourceDate?fmtDateTime(row.sourceDate):'—'}</td></tr><tr><th>Date returned to I.T</th><td>${fmtDateTime(row.returnedAt)}</td></tr><tr><th>SOC</th><td>${esc(row.soc||'—')}</td></tr><tr><th>Processed by</th><td>${esc(row.returnedBy||'—')}</td></tr></table><div class="it-return-label">Supporting documents</div><table>${attachmentRows.map(([label,name,data])=>`<tr><th>${label}</th><td>${itReturnAttachmentAnchor(name,data)}</td></tr>`).join('')}</table>${photo}<div class="it-return-label">Remarks</div><div class="remarks">${esc(row.remarks||'—')}</div><div class="it-return-signatures"><div>Returned by / Accountable person</div><div>Received by / IT Department</div></div></article>`;
+  const body=`<article class="it-return-doc"><div class="it-return-no">Transmittal no.<br>${esc(row.id)}</div><h1>IT ASSET / PDA RETURN TRANSMITTAL</h1><p class="subtitle">Return of equipment to the IT Department</p><table><tr><th>Serial number</th><td>${esc(row.serialNumber||'—')}</td></tr><tr><th>Type of IT asset</th><td>${esc(row.assetType||'—')}</td></tr><tr><th>Accountable person</th><td>${esc(row.accountable||'—')}</td></tr><tr><th>Department</th><td>${esc(row.department||'—')}</td></tr><tr><th>Date deployed / borrowed</th><td>${row.sourceDate?fmtDateTime(row.sourceDate):'—'}</td></tr><tr><th>Date returned to I.T</th><td>${fmtDateTime(row.returnedAt)}</td></tr><tr><th>IT ticket number</th><td>${esc(row.itTicketNumber||'—')}</td></tr><tr><th>SOC</th><td>${esc(row.soc||'—')}</td></tr><tr><th>Processed by</th><td>${esc(row.returnedBy||'—')}</td></tr></table><div class="it-return-label">Supporting documents</div><table>${attachmentRows.map(([label,name,data])=>`<tr><th>${label}</th><td>${itReturnAttachmentAnchor(name,data)}</td></tr>`).join('')}</table>${photo}<div class="it-return-label">Remarks</div><div class="remarks">${esc(row.remarks||'—')}</div><div class="it-return-signatures"><div>Returned by / Accountable person</div><div>Received by / IT Department</div></div></article>`;
   return {styles,body};
 }
 function openItReturnTransmittal(id){
