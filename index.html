@@ -2030,7 +2030,7 @@ function returnRecordForTag(tag){
 function nowISO(){ return new Date().toISOString(); }
 function skuInfo(code){ return DB.sku.find(s=>s.sku.toUpperCase()===String(code||'').toUpperCase()); }
 /* Daily average consumption: total qty issued for a SKU (from the
-   Issuance / Accountability log) spread across the days since its
+   Accountability log) spread across the days since its
    earliest issuance. No issuance history yet => 0 (no basis to project). */
 function dailyAvgConsumption(sku){
   const metrics = DB.issuanceMetrics || {};
@@ -2278,8 +2278,8 @@ const NAV = [
       {id:'dashboard', sub:'asset', label:'Dashboard'},
       {id:'request', sub:'', label:'Request'},
       {id:'receiving', sub:'', label:'Receiving'},
-      {id:'issuance', sub:'', label:'Issuance / Accountability'},
-      {id:'returns', sub:'', label:'Department Returns'},
+      {id:'issuance', sub:'', label:'Accountability'},
+      {id:'returns', sub:'', label:'Returned Supplies'},
       {id:'cyclecount', sub:'', label:'Cycle Count'},
       {id:'repair', sub:'', label:'Repair & Maintenance'}
     ]},
@@ -2309,8 +2309,8 @@ const TITLES = {
   dashboard:['Dashboard','Overview of stock, requests, and asset condition'],
   request:['Request','File and approve supply replenishment requests'],
   receiving:['Receiving','Log incoming asset and consumable supplies'],
-  issuance:['Issuance / Accountability','Auto-generated log of items issued from completed requests'],
-  returns:['Department Returns','Receive items returned by departments back into inventory'],
+  issuance:['Accountability','Auto-generated log of items issued from completed requests'],
+  returns:['Returned Supplies','Receive items returned by departments back into inventory'],
   cyclecount:['Cycle Count','Reconcile physical counts against system stock'],
   repair:['Repair & Maintenance','Track damaged assets, weekly asset counts and preventive maintenance'],
   cageloading:['Cage Loading','Issue cages to their destination, receive incoming cages, and track activity'],
@@ -4012,7 +4012,7 @@ function renderIssuance(){
   const tab = subroute || 'log';
   c.innerHTML = `
     <div class="tabs">
-      <div class="tab ${tab==='log'?'active':''}" onclick="navigate('issuance','log')">Issuance / Accountability</div>
+      <div class="tab ${tab==='log'?'active':''}" onclick="navigate('issuance','log')">Accountability</div>
       <div class="tab ${tab==='deployed'?'active':''}" onclick="navigate('issuance','deployed')">Deployed Assets</div>
     </div>
     <div id="iss-body"></div>
@@ -4021,7 +4021,7 @@ function renderIssuance(){
 }
 function issuanceLogTabHtml(){
   return `<div class="card">
-      <div class="list-head"><h3>Issuance / Accountability log (${socFilter(DB.issuance).length})</h3>${dlBtn('exportIssuance')}</div>
+      <div class="list-head"><h3>Accountability log (${socFilter(DB.issuance).length})</h3>${dlBtn('exportIssuance')}</div>
       <div class="card-sub">Auto-generated whenever a request is marked Issued. Each line ties back to its source request.</div>
     </div>
     ${issuanceListHtml()}`;
@@ -5641,7 +5641,7 @@ function settingsSkuHtml(){
   </div>
   <div class="card">
     <h3>SKU master list (${DB.sku.length})</h3>
-    <div class="card-sub">For assets, set a classification — it reflects on the Supplies Portal's Department Returns module for both admin and staff. Set <b>PM</b> to Yes on assets that need preventive maintenance — they then appear in Repair &amp; Maintenance &rarr; Weekly count &amp; PM, and you build each one's checklist under Settings &rarr; PM Checklist. Safety stock (days) sets the coverage window used to calculate each SKU's safety stock on the Dashboard.${session.role==='admin'?` "On hand" reflects whichever SOC you're currently viewing (top-right switcher) — <b>${esc(adminViewSoc||'All SOCs combined')}</b>.`:''}</div>
+    <div class="card-sub">For assets, set a classification — it reflects on the Supplies Portal's Returned Supplies module for both admin and staff. Set <b>PM</b> to Yes on assets that need preventive maintenance — they then appear in Repair &amp; Maintenance &rarr; Weekly count &amp; PM, and you build each one's checklist under Settings &rarr; PM Checklist. Safety stock (days) sets the coverage window used to calculate each SKU's safety stock on the Dashboard.${session.role==='admin'?` "On hand" reflects whichever SOC you're currently viewing (top-right switcher) — <b>${esc(adminViewSoc||'All SOCs combined')}</b>.`:''}</div>
     <div class="tbl-wrap"><table><tr><th>SKU</th><th>Description</th><th>Type</th><th>UOM</th><th>On hand</th><th>Asset condition</th><th>PM</th><th>Safety stock (days)</th><th></th></tr>
       ${DB.sku.map(s=>`<tr><td class="mono">${esc(s.sku)}</td><td>${esc(s.description)}</td>
         <td>${s.type==='Asset'?'<span class="tag tag-asset">Asset</span>':'<span class="tag tag-consumable">Consumable</span>'}</td>
