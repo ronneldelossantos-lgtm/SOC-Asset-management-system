@@ -3604,13 +3604,13 @@ function receivingFormHtml(){
     <h3>Receive incoming supplies</h3>
     <div class="card-sub">Assets are added to the batch when their AMS tags are entered. Consumables are added to the batch after quantity is entered. Enter the supplier and attach the transmittal before receiving the batch.</div>
     <div class="section-title">Add item</div>
-    <div class="form-row" id="recv-sku-row" style="grid-template-columns:1fr;">
-      <div class="field"><label>SKU code</label><input id="recv-sku" placeholder="e.g. AST-0001" oninput="recvSkuLookup();scheduleRecvAutoAdd();" onkeydown="if(event.key==='Enter'){event.preventDefault();scheduleRecvAutoAdd();}"></div>
-      <div class="field" id="recv-asset-code-field" style="display:none;"><label>Asset Tag(s)</label><textarea id="recv-asset-code" oninput="scheduleRecvAutoAdd()" placeholder="Scan or enter asset tags; one tag per line"></textarea></div>
+    <div class="form-row" id="recv-sku-row" style="grid-template-columns:repeat(2,minmax(0,1fr));">
+      <div class="field" style="position:relative;"><label>Item description</label><input id="recv-desc" placeholder="Type to search item description…" autocomplete="off" oninput="recvDescInput();scheduleRecvAutoAdd();" onfocus="recvDescInput()" onblur="recvDescBlur()"><div id="recv-desc-suggest" class="suggest-dropdown"></div></div>
+      <div class="field"><label>SKU code</label><input id="recv-sku" class="autofill" disabled placeholder="Auto-filled from item description"></div>
     </div>
-    <div class="form-row" id="recv-ams-row" style="grid-template-columns:1fr;">
-      <div class="field" id="recv-ams-tagging-field" style="display:none;"><label>AMS Asset Tagging</label><input id="recv-ams-tagging" oninput="scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}" placeholder="Scan or type AMS tag(s); separate multiple tags with commas"></div>
-      <div class="field"><label>Item description</label><input id="recv-desc" class="autofill" disabled></div>
+    <div class="form-row" id="recv-ams-row" style="display:none;grid-template-columns:repeat(2,minmax(0,1fr));">
+      <div class="field" id="recv-asset-code-field"><label>Asset Tag(s)</label><textarea id="recv-asset-code" oninput="scheduleRecvAutoAdd()" placeholder="Scan or enter asset tags; one tag per line"></textarea></div>
+      <div class="field" id="recv-ams-tagging-field"><label>AMS Asset Tagging</label><input id="recv-ams-tagging" oninput="scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}" placeholder="Scan or type AMS tag(s); separate multiple tags with commas"></div>
     </div>
     <div class="form-row3" id="recv-meta-row">
       <div class="field"><label>Type of supply</label><input id="recv-type" class="autofill" disabled></div>
@@ -3639,22 +3639,67 @@ function receivingFormHtml(){
 function recvSkuLookup(){
   const v = document.getElementById('recv-sku').value;
   const info = skuInfo(v);
-  document.getElementById('recv-desc').value = info?info.description:'';
+  recvApplySkuInfo(info, true);
+  const hintEl = document.getElementById('recv-sku-hint');
+  if(hintEl) hintEl.innerHTML = '';
+}
+function recvApplySkuInfo(info, updateDescription){
+  if(updateDescription) document.getElementById('recv-desc').value = info?info.description:'';
+  document.getElementById('recv-sku').value = info?info.sku:'';
   document.getElementById('recv-type').value = info?info.type:'';
   document.getElementById('recv-uom').value = info?info.uom:'';
   const isAsset = !!info && info.type==='Asset';
-  document.getElementById('recv-asset-code-field').style.display = isAsset ? '' : 'none';
-  document.getElementById('recv-ams-tagging-field').style.display = isAsset ? '' : 'none';
-  document.getElementById('recv-sku-row').style.gridTemplateColumns = isAsset ? 'repeat(2,minmax(0,1fr))' : '1fr';
-  document.getElementById('recv-ams-row').style.gridTemplateColumns = isAsset ? 'repeat(2,minmax(0,1fr))' : '1fr';
+  document.getElementById('recv-ams-row').style.display = isAsset ? '' : 'none';
   document.getElementById('recv-qty-field').style.display = isAsset ? 'none' : '';
   document.getElementById('recv-meta-row').style.gridTemplateColumns = isAsset ? 'repeat(2,minmax(0,1fr))' : 'repeat(3,minmax(0,1fr))';
   if(!isAsset){
     document.getElementById('recv-asset-code').value = '';
     document.getElementById('recv-ams-tagging').value = '';
   }
+}
+function recvDescMatches(q){
+  q = String(q||'').trim().toLowerCase();
+  if(!q) return [];
+  return DB.sku.filter(s=>s.description.toLowerCase().includes(q) || s.sku.toLowerCase().includes(q)).slice(0,8);
+}
+function recvDescInput(){
+  const v = document.getElementById('recv-desc').value;
+  const exact = DB.sku.filter(s=>s.description.toLowerCase()===v.trim().toLowerCase());
+  const box = document.getElementById('recv-desc-suggest');
   const hintEl = document.getElementById('recv-sku-hint');
-  if(hintEl) hintEl.innerHTML = info ? '' : (v?'SKU not found in master list.':'');
+  if(exact.length===1){ recvDescPick(exact[0].sku); return; }
+  recvApplySkuInfo(null, false);
+  if(hintEl) hintEl.innerHTML = exact.length>1 ? 'Several items share this description — choose the correct one from the suggestions.' : '';
+  const matches = recvDescMatches(v);
+  if(!v.trim() || matches.length===0){ box.innerHTML=''; box.style.display='none'; return; }
+  box.innerHTML = matches.map(s=>`<div class="suggest-item" onmousedown="recvDescPick('${esc(s.sku).replace(/'/g,"\\'")}')"><span class="mono">${esc(s.sku)}</span> — ${esc(s.description)}</div>`).join('');
+  box.style.display='block';
+}
+function recvDescPick(sku){
+  const info = skuInfo(sku);
+  if(!info) return;
+  document.getElementById('recv-sku').value = info.sku;
+  recvSkuLookup();
+  const box = document.getElementById('recv-desc-suggest');
+  box.innerHTML=''; box.style.display='none';
+}
+function recvDescBlur(){
+  setTimeout(()=>{
+    const box = document.getElementById('recv-desc-suggest');
+    if(box){ box.innerHTML=''; box.style.display='none'; }
+    if(document.getElementById('recv-sku').value) return;
+    const v = document.getElementById('recv-desc').value.trim().toLowerCase();
+    const exact = DB.sku.filter(s=>s.description.toLowerCase()===v);
+    const matches = recvDescMatches(v);
+    const hintEl = document.getElementById('recv-sku-hint');
+    if(exact.length===1) recvDescPick(exact[0].sku);
+    else if(exact.length>1 && hintEl) hintEl.innerHTML = 'Several items share this description — choose the correct one from the suggestions.';
+    else if(v && hintEl) hintEl.innerHTML = matches.length ? 'Choose an item from the suggestions to fill its SKU.' : 'No matching item in the SKU master list.';
+  }, 150);
+}
+function recvHideDescSuggestions(){
+  const box = document.getElementById('recv-desc-suggest');
+  if(box){ box.innerHTML=''; box.style.display='none'; }
 }
 function recvAssetCodes(value){
   const seen = new Set();
@@ -3688,7 +3733,7 @@ function scheduleRecvAutoAdd(){
 function addRecvItem(automatic=false){
   const sku = document.getElementById('recv-sku').value.trim();
   const info = skuInfo(sku);
-  if(!info){ if(!automatic) toast('Enter a valid SKU code first.'); return; }
+  if(!info){ if(!automatic) toast('Select an item description from the matching items.'); return; }
   const assetCodes = info.type==='Asset' ? recvAssetCodes(document.getElementById('recv-asset-code').value) : [];
   const qty = info.type==='Asset' ? assetCodes.length : Number(document.getElementById('recv-qty').value);
   if(info.type==='Asset' && assetCodes.length===0){ if(!automatic) toast('Enter at least one Asset Tag.'); return; }
@@ -3701,10 +3746,11 @@ function addRecvItem(automatic=false){
   recvDraftItems.push({sku:info.sku, description:info.description, type:info.type, uom:info.uom, qty, assetCode, assetCodes, amsTags});
   document.getElementById('recv-sku').value=''; document.getElementById('recv-desc').value=''; document.getElementById('recv-type').value=''; document.getElementById('recv-uom').value=''; document.getElementById('recv-qty').value='';
   document.getElementById('recv-asset-code').value=''; document.getElementById('recv-ams-tagging').value='';
+  recvHideDescSuggestions();
   recvSkuLookup();
   const hintEl = document.getElementById('recv-sku-hint'); if(hintEl) hintEl.innerHTML='';
   refreshRecvItemsTable();
-  const skuEl = document.getElementById('recv-sku'); if(skuEl) skuEl.focus();
+  const descEl = document.getElementById('recv-desc'); if(descEl) descEl.focus();
   if(automatic) toast(info.type==='Asset'?'Tagged asset added to delivery batch.':'Consumable added to delivery batch.');
 }
 function removeRecvItem(i){ recvDraftItems.splice(i,1); refreshRecvItemsTable(); }
