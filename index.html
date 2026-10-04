@@ -932,12 +932,16 @@ function defaultDB(){
     cageCycleCounts: [],
     pdas: [],
     pdaLogs: [],
+    itAssetIssuances: [],
+    itAssetReturns: [],
+    pdaCycleCounts: [],
+    itAssetCycleCounts: [],
     pdaAllocations: {},
     pdaAllocationsBySoc: {},
     pdaDeptBuckets: ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'],
     departmentSoc: {},
     parcels: [],
-    counters: {req:100, recv:100, iss:100, rep:100, trn:100, ret:100, di:100, cg:100, pl:100, pmi:100, wc:100, ccage:100}
+    counters: {req:100, recv:100, iss:100, rep:100, trn:100, ret:100, di:100, cg:100, pl:100, pmi:100, wc:100, ccage:100, itai:100, itr:100, pcc:100, itcc:100}
   };
 }
 /* The full set of top-level DB fields, derived once from defaultDB() rather
@@ -946,7 +950,7 @@ function defaultDB(){
    here becomes its own Firestore document ('section__'+key) — see the
    setMulti() comment above for why the app moved off one giant document. */
 const SECTION_KEYS = Object.keys(defaultDB());
-const RECORD_SECTION_KEYS = ['requests','returns','issuance'];
+const RECORD_SECTION_KEYS = ['requests','returns','issuance','itAssetReturns'];
 const CORE_SECTION_KEYS = ['users','notifications','counters','issuanceMetrics'];
 const ROUTE_SECTIONS = {
   dashboard: ['sku','stock','reorderPoint','repairs'],
@@ -957,7 +961,7 @@ const ROUTE_SECTIONS = {
   cyclecount: ['sku','stock','cycleCountConsumable','cycleCountAsset'],
   repair: ['sku','stock','repairs','pmChecklists','pmCounts','pmInspections'],
   cageloading: ['cages','cageCycleCounts','warehouses','counters'],
-  itassets: ['pdas','pdaLogs','pdaAllocations','pdaAllocationsBySoc','pdaDeptBuckets','employees','departments'],
+  itassets: ['pdas','pdaLogs','itAssetIssuances','itAssetReturns','pdaCycleCounts','itAssetCycleCounts','pdaAllocations','pdaAllocationsBySoc','pdaDeptBuckets','employees','departments','accountability'],
   parcelretrieval: ['parcels','sortingStations','handOverTo','counters'],
   settings: ['sku','departments','suppliers','warehouses','sortingStations','handOverTo','accountability','employees','pmChecklists','users','departmentSoc'],
   ddashboard: ['sku','stock','deptIssuance'],
@@ -980,7 +984,8 @@ const ROUTE_RECORD_SECTIONS = {
   drequest: ['requests','issuance'],
   dreceiving: ['requests','issuance'],
   dissuance: ['issuance'],
-  dreturn: ['returns','issuance']
+  dreturn: ['returns','issuance'],
+  itassets: ['itAssetReturns']
 };
 const ARCHIVE_RECORD_SECTIONS = {
   issuance: ['issuance'],
@@ -1103,6 +1108,14 @@ function migrateDB(){
   if(!DB.handOverTo || !DB.handOverTo.length) DB.handOverTo = ['Security','Parcel Sweeper','Reject Operator'];
   if(!DB.cages) DB.cages = [];
   if(!DB.pdas) DB.pdas = [];
+  if(!DB.itAssetIssuances) DB.itAssetIssuances = [];
+  if(!DB.itAssetReturns) DB.itAssetReturns = [];
+  if(!DB.pdaCycleCounts) DB.pdaCycleCounts = [];
+  if(!DB.itAssetCycleCounts) DB.itAssetCycleCounts = [];
+  if(!DB.counters.itai) DB.counters.itai = 100;
+  if(!DB.counters.itr) DB.counters.itr = 100;
+  if(!DB.counters.pcc) DB.counters.pcc = 100;
+  if(!DB.counters.itcc) DB.counters.itcc = 100;
   DB.pdas.forEach(p=>{ if(p.soc===undefined) p.soc=''; if(p.exceptionStatus===undefined) p.exceptionStatus=''; if(p.remarks===undefined) p.remarks=''; if(p.irFile===undefined) p.irFile=''; if(p.irFileData===undefined) p.irFileData=''; });
   if(!DB.pdaLogs) DB.pdaLogs = [];
   if(!DB.pdaAllocations) DB.pdaAllocations = {};
@@ -2284,6 +2297,11 @@ const NAV = [
       {id:'repair', sub:'', label:'Repair & Maintenance'}
     ]},
     {type:'dropdown', id:'proc-itassets', processKey:'itassets', label:'IT Assets', ic:'&#128187;', children:[
+      {id:'itassets', sub:'it-masterlist', label:'IT Asset Masterlist'},
+      {id:'itassets', sub:'it-issuance', label:'IT Asset Issuance'},
+      {id:'itassets', sub:'it-return', label:'Returned to I.T'},
+      {id:'itassets', sub:'pda-cycle-count', label:'PDA Daily Cycle Count'},
+      {id:'itassets', sub:'it-cycle-count', label:'IT Asset Monthly Cycle Count'},
       {id:'itassets', sub:'scan', label:'PDA Issuance'},
       {id:'itassets', sub:'masterlist', label:'PDA Masterlist'},
       {id:'itassets', sub:'log', label:'Dashboard'}
@@ -2314,7 +2332,7 @@ const TITLES = {
   cyclecount:['Cycle Count','Reconcile physical counts against system stock'],
   repair:['Repair & Maintenance','Track damaged assets, weekly asset counts and preventive maintenance'],
   cageloading:['Cage Loading','Issue cages to their destination, receive incoming cages, and track activity'],
-  itassets:['IT Assets','Scan a PDA\'s serial number to issue or return it'],
+  itassets:['IT Assets','Register assigned IT equipment and view assets issued on floor'],
   parcelretrieval:['Parcel Retrieval','Scan parcels retrieved from each sack sorting station'],
   settings:['Settings','Manage master data and system access']
 };
@@ -7178,13 +7196,23 @@ function renderITAssets(){
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='log'?'active':''}" onclick="navigate('itassets','log')">Dashboard</div>
+      <div class="tab ${tab==='it-masterlist'?'active':''}" onclick="navigate('itassets','it-masterlist')">IT Asset Masterlist (${socFilter(DB.itAssetIssuances).filter(item=>!item.returnedToITAt).length})</div>
+      <div class="tab ${tab==='it-issuance'?'active':''}" onclick="navigate('itassets','it-issuance')">IT Asset Issuance</div>
+      <div class="tab ${tab==='it-return'?'active':''}" onclick="navigate('itassets','it-return')">Returned to I.T</div>
+      <div class="tab ${tab==='pda-cycle-count'?'active':''}" onclick="navigate('itassets','pda-cycle-count')">PDA Daily Count</div>
+      <div class="tab ${tab==='it-cycle-count'?'active':''}" onclick="navigate('itassets','it-cycle-count')">IT Asset Monthly Count</div>
       <div class="tab ${tab==='scan'?'active':''}" onclick="navigate('itassets','scan')">PDA Issuance</div>
       <div class="tab ${tab==='masterlist'?'active':''}" onclick="navigate('itassets','masterlist')">PDA Masterlist (${socFilter(DB.pdas).length})</div>
     </div>
     <div id="pda-body"></div>
   `;
-  const map = {scan: pdaScanHtml, masterlist: pdaMasterlistHtml, log: pdaDashboardHtml};
+  const map = {scan: pdaScanHtml, masterlist: pdaMasterlistHtml, log: pdaDashboardHtml, 'it-masterlist':itAssetMasterlistHtml, 'it-issuance':itAssetIssuanceHtml, 'it-return':itReturnedToITHtml, 'pda-cycle-count':()=>itCycleCountHtml('pda'), 'it-cycle-count':()=>itCycleCountHtml('it')};
   document.getElementById('pda-body').innerHTML = (map[tab]||pdaScanHtml)();
+  if(tab==='pda-cycle-count' || tab==='it-cycle-count'){
+    const kind=tab==='pda-cycle-count'?'pda':'it';
+    refreshItCycleCountView(kind);
+    setTimeout(()=>{ const el=document.getElementById('it-cycle-scan-'+kind); if(el) el.focus(); },50);
+  }
   if(tab==='scan'){
     if(pdaBorrowInProgress || pdaReturnInProgress){
       const scanEl = document.getElementById('pda-scan-input');
@@ -7195,7 +7223,374 @@ function renderITAssets(){
     }else setTimeout(()=>{ const el=document.getElementById('pda-scan-input'); if(el) el.focus(); }, 50);
   }
 }
-function pdaStatusTag(s){ return s==='Borrowed' ? '<span class="tag tag-pending">Borrowed</span>' : '<span class="tag tag-ok">Available</span>'; }
+const IT_ASSET_TYPES = ['Laptop','PC monitor','Desktop','Mouse','Keyboard'];
+const IT_ASSET_CONDITIONS = ['New','Good','Fair','Damaged','Non-functional'];
+const IT_EMPLOYMENT_TYPES = ['FTE','NFTE'];
+function itAssetIssuanceHtml(){
+  const people=(DB.accountability||[]).filter(a=>a&&a.name).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const adminAllSites=session.role==='admin'&&isAdminAllSocView();
+  const siteField=adminAllSites
+    ? `<div class="field"><label>SOC (site)</label><select id="it-asset-soc"><option value="">Select site</option>${(DB.warehouses||[]).map(w=>`<option value="${esc(w)}">${esc(w)}</option>`).join('')}</select></div>`
+    : `<div class="field"><label>SOC (site)</label><input class="autofill" value="${esc(currentSoc()||'Shared / unassigned')}" disabled></div>`;
+  return `<div class="card">
+    <h3>IT Asset Issuance</h3>
+    <div class="card-sub">Record an IT asset when it is deployed. Type the accountable person's name; when it matches a person in Settings &gt; Accountability, the department fills automatically. The deployment date is set automatically.</div>
+    <div class="form-row3">
+      <div class="field"><label>Serial #</label><input id="it-asset-serial" placeholder="Enter or scan serial number" autocomplete="off"></div>
+      <div class="field"><label>Asset type</label><select id="it-asset-type">${IT_ASSET_TYPES.map(type=>`<option value="${esc(type)}">${esc(type)}</option>`).join('')}</select></div>
+      <div class="field"><label>Condition of IT asset</label><select id="it-asset-condition">${IT_ASSET_CONDITIONS.map((condition,i)=>`<option value="${esc(condition)}" ${i===1?'selected':''}>${esc(condition)}</option>`).join('')}</select></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Accountable person</label><input id="it-asset-accountable" list="it-asset-accountable-options" placeholder="Type accountable person's name" autocomplete="off" oninput="itAssetAccountableChanged()"><datalist id="it-asset-accountable-options">${people.map(a=>`<option value="${esc(a.name)}"></option>`).join('')}</datalist></div>
+      <div class="field"><label>Department</label><input id="it-asset-department" class="autofill" placeholder="Filled from accountable person" readonly></div>
+    </div>
+    <div class="form-row3">
+      <div class="field"><label>For (FTE/NFTE)</label><select id="it-asset-employment-type"><option value="">Select FTE or NFTE</option>${IT_EMPLOYMENT_TYPES.map(type=>`<option value="${esc(type)}">${esc(type)}</option>`).join('')}</select></div>
+      <div class="field"><label>Date deployed</label><input id="it-asset-deployed-date" type="date" value="${localDateStr()}" readonly></div>
+      ${siteField}
+    </div>
+    <div class="footer-actions"><button class="btn btn-primary" onclick="saveItAssetIssuance()">Record issuance</button></div>
+  </div>`;
+}
+function itAssetAccountableChanged(){
+  const accountableEl=document.getElementById('it-asset-accountable');
+  const deptEl=document.getElementById('it-asset-department');
+  const entered=accountableEl?accountableEl.value.trim().toLowerCase():'';
+  const person=entered?(DB.accountability||[]).find(a=>String(a.name||'').trim().toLowerCase()===entered):null;
+  if(deptEl) deptEl.value=person?(person.department||''):'';
+}
+async function saveItAssetIssuance(){
+  const serialEl=document.getElementById('it-asset-serial');
+  const typeEl=document.getElementById('it-asset-type');
+  const conditionEl=document.getElementById('it-asset-condition');
+  const employmentTypeEl=document.getElementById('it-asset-employment-type');
+  const accountableEl=document.getElementById('it-asset-accountable');
+  const serial=serialEl?serialEl.value.trim():'';
+  const assetType=typeEl?typeEl.value:'';
+  const condition=conditionEl?conditionEl.value:'';
+  const employmentType=employmentTypeEl?employmentTypeEl.value:'';
+  const accountable=accountableEl?accountableEl.value.trim():'';
+  const person=(DB.accountability||[]).find(a=>String(a.name||'').trim().toLowerCase()===accountable.toLowerCase());
+  const siteEl=document.getElementById('it-asset-soc');
+  const soc=siteEl?siteEl.value:currentSoc();
+  if(!serial){toast('Enter or scan the IT asset serial number.');return;}
+  if(!IT_ASSET_TYPES.includes(assetType)){toast('Select an asset type.');return;}
+  if(!IT_ASSET_CONDITIONS.includes(condition)){toast('Select the asset condition.');return;}
+  if(!IT_EMPLOYMENT_TYPES.includes(employmentType)){toast('Select whether the IT asset is for FTE or NFTE.');return;}
+  if(!accountable){toast('Enter the accountable person\'s name.');return;}
+  if(siteEl&&!soc){toast('Select the SOC site for this issuance.');return;}
+  if((DB.itAssetIssuances||[]).some(item=>String(item.serialNumber||'').trim().toUpperCase()===serial.toUpperCase())){toast('That serial number is already in the IT asset masterlist.');return;}
+  DB.itAssetIssuances.push({id:nextCode('ITAI','itai'),serialNumber:serial,assetType,condition,employmentType,accountable,
+    accountableEmail:person?(person.email||''):'',department:person?(person.department||''):'',dateDeployed:nowISO(),deployedBy:session.fullName,soc:soc||''});
+  await saveDB();
+  toast(serial+' recorded as issued to '+accountable+'.');
+  navigate('itassets','it-masterlist');
+}
+function itAssetMasterlistHtml(){
+  const rows=socFilter(DB.itAssetIssuances).filter(item=>!item.returnedToITAt).slice().sort((a,b)=>new Date(b.dateDeployed||0)-new Date(a.dateDeployed||0));
+  return `<div class="card">
+    <div class="list-head"><h3>IT Asset Masterlist — issued on floor (${rows.length})</h3>${dlBtn('exportItAssetIssuances')}</div>
+    <div class="card-sub">IT assets recorded as deployed to accountable employees.</div>
+    ${rows.length===0?'<div class="empty"><div class="ic">&#128187;</div>No IT assets have been issued yet.</div>':'<div class="tbl-wrap"><table><tr><th>Serial #</th><th>Asset type</th><th>For</th><th>Condition</th><th>Accountability</th><th>Department</th><th>Date deployed</th><th>SOC</th></tr>'+rows.map(item=>`<tr><td class="mono">${esc(item.serialNumber)}</td><td>${esc(item.assetType)}</td><td>${esc(item.employmentType||'—')}</td><td>${esc(item.condition)}</td><td>${esc(item.accountable)}${item.accountableEmail?'<div class="small-note">'+esc(item.accountableEmail)+'</div>':''}</td><td>${esc(item.department||'—')}</td><td>${fmtDate(item.dateDeployed)}</td><td>${esc(item.soc||'—')}</td></tr>`).join('')+'</table></div>'}
+  </div>`;
+}
+function exportItAssetIssuances(){
+  const rows=socFilter(DB.itAssetIssuances).filter(item=>!item.returnedToITAt).map(item=>[item.serialNumber,item.assetType,item.employmentType||'',item.condition,item.accountable,item.accountableEmail||'',item.department,fmtDate(item.dateDeployed),item.deployedBy,item.soc||'']);
+  downloadCSV('it-asset-masterlist.csv',['Serial #','Asset Type','For (FTE/NFTE)','Condition','Accountable Person','Email','Department','Date Deployed','Deployed By','SOC'],rows);
+}
+let itCycleScanSessions={pda:[],it:[]};
+let itCycleScanTimers={pda:null,it:null};
+function itCycleExpectedItems(kind){
+  if(kind==='pda'){
+    const logs=socFilter(DB.pdaLogs).slice().reverse();
+    return socFilter(DB.pdas).filter(p=>p.status!=='Returned to IT').map(p=>{
+      const log=logs.find(item=>item.pdaNo===p.pdaNo&&item.soc===p.soc&&item.status==='Borrowed');
+      const aliases=[p.serial,p.pdaNo].map(v=>String(v||'').trim()).filter(Boolean);
+      return {key:'PDA:'+String(p.soc||'').toUpperCase()+':'+String(p.pdaNo||'').toUpperCase(),primaryCode:p.serial||p.pdaNo,
+        secondaryCode:p.serial&&p.pdaNo&&p.serial!==p.pdaNo?p.pdaNo:'',description:'PDA',status:p.status==='Borrowed'?'Borrowed':'Available',
+        accountable:log?log.borrowerName||'':'',department:log?log.borrowerDepartment||'':'',soc:p.soc||'',aliases};
+    });
+  }
+  return socFilter(DB.itAssetIssuances).filter(item=>!item.returnedToITAt).map(item=>({key:'IT:'+String(item.id||item.serialNumber||'').toUpperCase(),primaryCode:item.serialNumber,
+    secondaryCode:'',description:item.assetType||'IT asset',status:'Issued on floor',accountable:item.accountable||'',department:item.department||'',soc:item.soc||'',aliases:[String(item.serialNumber||'').trim()].filter(Boolean)}));
+}
+function itCycleCountsFor(kind){ return kind==='pda'?(DB.pdaCycleCounts||[]):(DB.itAssetCycleCounts||[]); }
+function itCycleCountHtml(kind){
+  const isPda=kind==='pda';
+  const title=isPda?'PDA daily cycle count':'IT asset monthly cycle count';
+  const target=isPda?'each PDA in the PDA Masterlist':'each IT asset serial number in the IT Asset Masterlist';
+  const scanLabel=isPda?'PDA Serial # or PDA #':'IT asset Serial #';
+  return `<div id="it-cycle-dashboard-${kind}"></div>
+    <div class="card">
+      <h3>${esc(title)} — scan assets</h3>
+      <div class="card-sub">Scan ${target}${currentSoc()?' for '+esc(currentSoc()):' for the current view'}. The dashboard shows what is found and missing; no quantity entry is needed.</div>
+      <div class="field scan-field"><label>${esc(scanLabel)}</label><input id="it-cycle-scan-${kind}" placeholder="Scan or enter ${esc(scanLabel.toLowerCase())}" autocomplete="off" oninput="onItCycleScanInput('${kind}')" onkeydown="if(event.key==='Enter'){event.preventDefault();addItCycleScan('${kind}');}"></div>
+      <div class="field" style="max-width:300px;margin-top:10px;"><label>Counted by</label><input id="it-cycle-by-${kind}" value="${esc(session.fullName)}"></div>
+      <div class="footer-actions"><button class="btn" onclick="itCycleScanSessions['${kind}']=[];refreshItCycleCountView('${kind}');">Clear scanned</button><button class="btn btn-primary" onclick="saveItCycleCount('${kind}')">Save ${isPda?'daily':'monthly'} cycle count</button></div>
+    </div>
+    <div id="it-cycle-details-${kind}"></div>
+    <div class="card"><div class="list-head"><h3>Recent ${isPda?'PDA daily':'IT asset monthly'} cycle counts</h3>${dlBtn(isPda?'exportPdaCycleCounts':'exportItAssetCycleCounts')}</div><div id="it-cycle-history-${kind}">${itCycleCountHistoryHtml(kind)}</div></div>`;
+}
+function onItCycleScanInput(kind){
+  const el=document.getElementById('it-cycle-scan-'+kind);
+  if(!el) return;
+  clearTimeout(itCycleScanTimers[kind]);
+  const value=el.value.trim();
+  if(!value) return;
+  itCycleScanTimers[kind]=setTimeout(()=>{const cur=document.getElementById('it-cycle-scan-'+kind);if(cur&&cur.value.trim()===value)addItCycleScan(kind);},150);
+}
+function addItCycleScan(kind){
+  clearTimeout(itCycleScanTimers[kind]);
+  const el=document.getElementById('it-cycle-scan-'+kind);
+  const value=(el?el.value:'').trim();
+  if(!value){toast('Scan or enter an asset identifier first.');return;}
+  const expected=itCycleExpectedItems(kind);
+  const matched=expected.find(item=>item.aliases.some(alias=>alias.toUpperCase()===value.toUpperCase()));
+  const key=matched?matched.key:'UNEXPECTED:'+value.toUpperCase();
+  const scans=itCycleScanSessions[kind];
+  if(scans.some(scan=>scan.key===key)){toast(matched?'That asset has already been scanned in this count.':'That identifier has already been scanned in this count.');if(el){el.value='';el.focus();}return;}
+  scans.push({value,key:matched?matched.key:null});
+  if(el){el.value='';el.focus();}
+  refreshItCycleCountView(kind);
+}
+function removeItCycleScan(kind,index){itCycleScanSessions[kind].splice(index,1);refreshItCycleCountView(kind);}
+function refreshItCycleCountView(kind){
+  const dashboard=document.getElementById('it-cycle-dashboard-'+kind);
+  const details=document.getElementById('it-cycle-details-'+kind);
+  if(!dashboard||!details)return;
+  const expected=itCycleExpectedItems(kind);
+  const expectedByKey=new Map(expected.map(item=>[item.key,item]));
+  const scans=itCycleScanSessions[kind]||[];
+  const foundScanByKey=new Map();
+  const unexpected=scans.map((scan,index)=>({scan,index})).filter(row=>!row.scan.key||!expectedByKey.has(row.scan.key));
+  scans.forEach((scan,index)=>{if(scan.key&&expectedByKey.has(scan.key)&&!foundScanByKey.has(scan.key))foundScanByKey.set(scan.key,{value:scan.value,index});});
+  const found=expected.filter(item=>foundScanByKey.has(item.key));
+  const missing=expected.filter(item=>!foundScanByKey.has(item.key));
+  const percent=expected.length?Math.round(found.length/expected.length*1000)/10:0;
+  const title=kind==='pda'?'PDA daily cycle count':'IT asset monthly cycle count';
+  dashboard.innerHTML=`<div class="card"><h3>${esc(title)} dashboard</h3>
+    <div style="display:flex;flex-wrap:nowrap;gap:12px;margin-bottom:14px;overflow-x:auto;">
+      <div class="metric" style="flex:1 0 180px;"><div class="lbl">For cycle count</div><div class="val">${expected.length}</div><div class="sub">from the masterlist</div></div>
+      <div class="metric success" style="flex:1 0 180px;"><div class="lbl">Found</div><div class="val">${found.length}</div><div class="sub">expected assets scanned</div></div>
+      <div class="metric ${missing.length?'danger':''}" style="flex:1 0 180px;"><div class="lbl">Missing</div><div class="val">${missing.length}</div><div class="sub">not scanned yet</div></div>
+      <div class="metric" style="flex:1 0 180px;"><div class="lbl">Found progress</div><div class="val">${percent.toFixed(1)}%</div><div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" style="height:8px;background:var(--border);border-radius:99px;overflow:hidden;margin:8px 0;"><div style="height:100%;width:${percent}%;background:var(--success);border-radius:99px;"></div></div><div class="sub">${found.length} of ${expected.length} assets</div></div>
+    </div></div>`;
+  const foundRows=found.map(item=>{const scan=foundScanByKey.get(item.key);return `<tr><td class="mono">${esc(item.primaryCode||'—')}</td>${item.secondaryCode?`<td class="mono">${esc(item.secondaryCode)}</td>`:''}<td>${esc(item.description)}</td><td>${esc(item.status)}</td><td>${esc(item.department||'—')}</td><td>${esc(item.accountable||'—')}</td><td class="mono">${esc(scan.value)}</td><td><button class="icon-btn" onclick="removeItCycleScan('${kind}',${scan.index})" title="Remove">&times;</button></td></tr>`;});
+  const missingRows=missing.map(item=>`<tr><td class="mono">${esc(item.primaryCode||'—')}</td>${item.secondaryCode?`<td class="mono">${esc(item.secondaryCode)}</td>`:''}<td>${esc(item.description)}</td><td>${esc(item.status)}</td><td>${esc(item.department||'—')}</td><td>${esc(item.accountable||'—')}</td></tr>`);
+  details.innerHTML=`<div class="card"><div class="section-title">Found (${found.length})</div>
+    ${foundRows.length?'<div class="tbl-wrap"><table><tr><th>Serial / PDA #</th>'+(kind==='pda'?'<th>Other identifier</th>':'')+'<th>Asset type</th><th>Status</th><th>Department</th><th>Accountable person</th><th>Scanned as</th><th></th></tr>'+foundRows.join('')+'</table></div>':'<div class="empty"><div class="ic">&#128247;</div>No expected assets scanned yet.</div>'}
+    ${missing.length?'<div class="section-title">Missing ('+missing.length+')</div><div class="tbl-wrap"><table><tr><th>Serial / PDA #</th>'+(kind==='pda'?'<th>Other identifier</th>':'')+'<th>Asset type</th><th>Status</th><th>Department</th><th>Accountable person</th></tr>'+missingRows.join('')+'</table></div>':''}
+    ${unexpected.length?'<div class="section-title">Unexpected scans ('+unexpected.length+')</div><div class="tbl-wrap"><table><tr><th>Scanned identifier</th><th></th></tr>'+unexpected.map(row=>`<tr><td class="mono">${esc(row.scan.value)}</td><td><button class="icon-btn" onclick="removeItCycleScan('${kind}',${row.index})" title="Remove">&times;</button></td></tr>`).join('')+'</table></div>':''}
+  </div>`;
+}
+async function saveItCycleCount(kind){
+  const expected=itCycleExpectedItems(kind);
+  const expectedByKey=new Map(expected.map(item=>[item.key,item]));
+  const scans=itCycleScanSessions[kind]||[];
+  const foundKeys=new Set(scans.filter(scan=>scan.key&&expectedByKey.has(scan.key)).map(scan=>scan.key));
+  const found=expected.filter(item=>foundKeys.has(item.key));
+  const missing=expected.filter(item=>!foundKeys.has(item.key));
+  const unexpected=scans.filter(scan=>!scan.key||!expectedByKey.has(scan.key)).map(scan=>scan.value);
+  if(!expected.length&&!scans.length){toast('Nothing to count — the masterlist has no assets for this site.');return;}
+  const byEl=document.getElementById('it-cycle-by-'+kind);
+  const countedBy=(byEl&&byEl.value.trim())||session.fullName;
+  const isPda=kind==='pda';
+  const rec={id:nextCode(isPda?'PDA-CC':'IT-CC',isPda?'pcc':'itcc'),frequency:isPda?'Daily':'Monthly',period:isPda?localDateStr():localDateStr().slice(0,7),
+    expectedCount:expected.length,foundCount:found.length,missingCount:missing.length,unexpectedCount:unexpected.length,
+    expected:expected.map(item=>({key:item.key,code:item.primaryCode,secondaryCode:item.secondaryCode||'',description:item.description,status:item.status,department:item.department,accountable:item.accountable})),
+    found:found.map(item=>({key:item.key,code:item.primaryCode,scannedAs:scans.find(scan=>scan.key===item.key)?.value||item.primaryCode})),
+    missing:missing.map(item=>item.primaryCode),unexpected,scanned:scans.map(scan=>scan.value),countedBy,date:nowISO(),soc:currentSoc()};
+  const target=itCycleCountsFor(kind);
+  target.push(rec);
+  await saveDB();
+  itCycleScanSessions[kind]=[];
+  toast((isPda?'PDA daily':'IT asset monthly')+' cycle count saved — '+found.length+' found, '+missing.length+' missing, '+unexpected.length+' unexpected.');
+  refreshItCycleCountView(kind);
+  const history=document.getElementById('it-cycle-history-'+kind);
+  if(history)history.innerHTML=itCycleCountHistoryHtml(kind);
+}
+function itCycleCountHistoryHtml(kind){
+  const rows=socFilter(itCycleCountsFor(kind)).slice().reverse().slice(0,15);
+  if(!rows.length)return '<div class="empty"><div class="ic">&#8635;</div>No cycle counts recorded yet.</div>';
+  return '<div class="tbl-wrap"><table><tr><th>Count period</th><th>For cycle count</th><th>Found</th><th>Missing</th><th>Unexpected</th><th>Counted by</th></tr>'+rows.map(row=>`<tr><td>${kind==='pda'?fmtDate(row.period||row.date):esc(row.period||fmtDate(row.date))}</td><td>${row.expectedCount||0}</td><td>${row.foundCount||0}</td><td>${row.missingCount||0}</td><td>${row.unexpectedCount||0}</td><td>${esc(row.countedBy||'—')}</td></tr>`).join('')+'</table></div>';
+}
+function exportPdaCycleCounts(){
+  const rows=socFilter(DB.pdaCycleCounts).map(row=>[row.period||fmtDate(row.date),row.soc||'',row.expectedCount||0,row.foundCount||0,row.missingCount||0,row.unexpectedCount||0,row.countedBy||'']);
+  downloadCSV('pda-daily-cycle-count.csv',['Count Date','SOC','For Cycle Count','Found','Missing','Unexpected','Counted By'],rows);
+}
+function exportItAssetCycleCounts(){
+  const rows=socFilter(DB.itAssetCycleCounts).map(row=>[row.period||fmtDate(row.date),row.soc||'',row.expectedCount||0,row.foundCount||0,row.missingCount||0,row.unexpectedCount||0,row.countedBy||'']);
+  downloadCSV('it-asset-monthly-cycle-count.csv',['Count Month','SOC','For Cycle Count','Found','Missing','Unexpected','Counted By'],rows);
+}
+let itReturnLookupTimer=null;
+let itReturnCandidates=[];
+let itReturnSelectedCandidate=null;
+function itReturnedToITHtml(){
+  itReturnCandidates=[];
+  itReturnSelectedCandidate=null;
+  return `<div class="card">
+    <h3>Returned to I.T</h3>
+    <div class="card-sub">Scan or enter the serial number of an IT asset or PDA being handed over to the IT Department. Asset details and the current accountable person appear automatically. Add the supporting files and remarks, then save to create a transmittal.</div>
+    <div class="field scan-field"><label for="it-return-serial">Serial number</label><input id="it-return-serial" placeholder="Scan or enter serial number" autocomplete="off" oninput="onItReturnSerialInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();lookupItReturnSerial();}"><div class="hint" id="it-return-lookup-status"></div></div>
+    <div id="it-return-candidate-list"></div>
+    <div id="it-return-form-wrap"></div>
+  </div>
+  <div class="card"><div class="list-head"><h3>Returned items history</h3><span class="small-note">Most recent first</span></div>${itReturnHistoryHtml()}</div>`;
+}
+function onItReturnSerialInput(){
+  const input=document.getElementById('it-return-serial');
+  if(!input)return;
+  clearTimeout(itReturnLookupTimer);
+  itReturnSelectedCandidate=null;
+  itReturnCandidates=[];
+  const value=input.value.trim();
+  const status=document.getElementById('it-return-lookup-status');
+  const list=document.getElementById('it-return-candidate-list');
+  const form=document.getElementById('it-return-form-wrap');
+  if(form)form.innerHTML='';
+  if(list)list.innerHTML='';
+  if(status)status.textContent=value?'Looking up serial number…':'';
+  if(value)itReturnLookupTimer=setTimeout(()=>{const current=document.getElementById('it-return-serial');if(current&&current.value.trim().toUpperCase()===value.toUpperCase())lookupItReturnSerial();},220);
+}
+function itReturnSourceIdentity(item){ return String(item.id||[item.serialNumber||'',item.dateDeployed||'',item.accountable||''].join('|')); }
+function findItReturnCandidates(serial){
+  const normalized=String(serial||'').trim().toUpperCase();
+  const candidates=[];
+  socFilter(DB.itAssetIssuances).filter(item=>!item.returnedToITAt&&String(item.serialNumber||'').trim().toUpperCase()===normalized).forEach(item=>candidates.push({kind:'IT asset',identity:itReturnSourceIdentity(item),serialNumber:item.serialNumber,assetType:item.assetType||'IT asset',accountable:item.accountable||'',department:item.department||'',sourceDate:item.dateDeployed||'',soc:item.soc||'',status:'Issued on floor'}));
+  socFilter(DB.pdas).filter(item=>item.status!=='Returned to IT'&&String(item.serial||'').trim().toUpperCase()===normalized).forEach(item=>{
+    const logs=socFilter(DB.pdaLogs).filter(log=>log.pdaNo===item.pdaNo&&(log.soc||'')===(item.soc||''));
+    const active=logs.slice().reverse().find(log=>log.status==='Borrowed');
+    candidates.push({kind:'PDA',identity:String(item.pdaNo)+'|'+String(item.soc||'')+'|'+String(item.serial||''),serialNumber:item.serial,assetType:'PDA',pdaNo:item.pdaNo,accountable:active?active.borrowerName:'',department:active?active.borrowerDepartment||'':'',sourceDate:active?active.borrowedAt:(item.dateDeployed||item.createdAt||''),soc:item.soc||'',status:item.status==='Borrowed'?'Borrowed':'Available'});
+  });
+  return candidates;
+}
+function lookupItReturnSerial(){
+  clearTimeout(itReturnLookupTimer);
+  const input=document.getElementById('it-return-serial');
+  const serial=input?input.value.trim():'';
+  const status=document.getElementById('it-return-lookup-status');
+  const list=document.getElementById('it-return-candidate-list');
+  const form=document.getElementById('it-return-form-wrap');
+  if(!serial){if(status)status.textContent='Scan or enter a serial number.';return;}
+  itReturnCandidates=findItReturnCandidates(serial);
+  if(form)form.innerHTML='';
+  if(!itReturnCandidates.length){if(status){status.textContent='No active IT asset or PDA matches this serial number in the current site.';status.className='hint hint-error';}if(list)list.innerHTML='';return;}
+  if(status){status.textContent=itReturnCandidates.length===1?'Asset found. Review the details, then attach the return documents.':'More than one asset uses this serial. Select the correct record.';status.className='hint hint-active';}
+  if(itReturnCandidates.length===1){if(list)list.innerHTML='';selectItReturnCandidate(0);return;}
+  if(list)list.innerHTML='<div class="field"><label>Matching asset records</label><div class="grid g2">'+itReturnCandidates.map((item,index)=>`<button class="btn" style="text-align:left;height:auto;padding:12px;" type="button" onclick="selectItReturnCandidate(${index})"><strong>${esc(item.assetType)}</strong><br><span class="mono">${esc(item.serialNumber)}</span> · ${esc(item.accountable||'No current accountable person')}<br><span class="small-note">${esc(item.department||'—')} · ${esc(item.status)}</span></button>`).join('')+'</div></div>';
+}
+function selectItReturnCandidate(index){
+  const candidate=itReturnCandidates[index];
+  if(!candidate)return;
+  itReturnSelectedCandidate=candidate;
+  const form=document.getElementById('it-return-form-wrap');
+  if(form)form.innerHTML=itReturnFormHtml(candidate);
+}
+function itReturnFormHtml(item){
+  return `<div class="card" style="margin:12px 0 0;background:var(--surface2);">
+    <h3>Return details</h3>
+    <div class="form-row3">
+      <div class="field"><label>Serial number</label><input class="autofill mono" value="${esc(item.serialNumber)}" readonly></div>
+      <div class="field"><label>Type of IT asset</label><input class="autofill" value="${esc(item.assetType)}" readonly></div>
+      <div class="field"><label>Accountable person</label><input class="autofill" value="${esc(item.accountable||'—')}" readonly></div>
+    </div>
+    <div class="form-row3">
+      <div class="field"><label>Department</label><input class="autofill" value="${esc(item.department||'—')}" readonly></div>
+      <div class="field"><label>Date deployed / borrowed</label><input class="autofill" value="${esc(item.sourceDate?fmtDateTime(item.sourceDate):'—')}" readonly></div>
+      <div class="field"><label>Date returned to I.T</label><input class="autofill" type="date" value="${localDateStr()}" readonly></div>
+    </div>
+    <div class="form-row3">
+      <div class="field"><label>IR / incident report</label><input id="it-return-ir-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"></div>
+      <div class="field"><label>Photo of damaged item</label><input id="it-return-photo-file" type="file" accept="image/*"></div>
+      <div class="field"><label>IT ticket</label><input id="it-return-ticket-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"></div>
+    </div>
+    <div class="field"><label>Remarks</label><textarea id="it-return-remarks" rows="3" placeholder="Add condition, reason for return, or other notes"></textarea></div>
+    <div class="hint">Each attachment can be up to 4 MB. The return date and processed-by name are recorded automatically.</div>
+    <div class="footer-actions"><button class="btn btn-primary" onclick="saveItReturnToIT()">Save return &amp; generate transmittal</button></div>
+  </div>`;
+}
+async function saveItReturnToIT(){
+  if(actionInFlight)return;
+  const selected=itReturnSelectedCandidate;
+  if(!selected){toast('Scan a serial number and select the matching asset first.');return;}
+  const files={ir:document.getElementById('it-return-ir-file')?.files?.[0]||null,photo:document.getElementById('it-return-photo-file')?.files?.[0]||null,ticket:document.getElementById('it-return-ticket-file')?.files?.[0]||null};
+  for(const [kind,file] of Object.entries(files)){
+    if(file&&file.size>4*1024*1024){toast((kind==='photo'?'Damage photo':kind==='ir'?'IR file':'IT ticket')+' exceeds the 4 MB limit.');return;}
+    if(kind==='photo'&&file&&!String(file.type||'').startsWith('image/')){toast('The damaged-item photo must be an image file.');return;}
+  }
+  const remarks=document.getElementById('it-return-remarks')?.value.trim()||'';
+  let attachments={};
+  try{
+    attachments={irFile:files.ir?files.ir.name:'',irFileData:files.ir?await readFileAsDataURL(files.ir):'',damagePhotoFile:files.photo?files.photo.name:'',damagePhotoData:files.photo?await readFileAsDataURL(files.photo):'',itTicketFile:files.ticket?files.ticket.name:'',itTicketData:files.ticket?await readFileAsDataURL(files.ticket):''};
+  }catch(error){console.error('IT return attachment read error',error);toast('Could not read one of the attachments. Nothing was saved.');return;}
+  const returnId=nextCode('ITR','itr');
+  const returnedAt=nowISO();
+  const returnRecord={id:returnId,sourceType:selected.kind,sourceIdentity:selected.identity,serialNumber:selected.serialNumber,pdaNo:selected.pdaNo||'',assetType:selected.assetType,accountable:selected.accountable||'',department:selected.department||'',sourceDate:selected.sourceDate||'',soc:selected.soc||'',returnedAt,returnedBy:session.fullName||session.username||'',remarks,...attachments};
+  let sourceChanged=false;
+  const applyReturn=()=>{
+    if((DB.itAssetReturns||[]).some(row=>row.id===returnId))return;
+    if(selected.kind==='IT asset'){
+      const source=(DB.itAssetIssuances||[]).find(item=>itReturnSourceIdentity(item)===selected.identity);
+      if(!source||source.returnedToITAt){sourceChanged=true;return;}
+      source.returnedToITAt=returnedAt;source.returnedToITId=returnId;source.status='Returned to IT';
+    }else{
+      const source=(DB.pdas||[]).find(item=>String(item.pdaNo)+'|'+String(item.soc||'')+'|'+String(item.serial||'')===selected.identity);
+      if(!source||source.status==='Returned to IT'){sourceChanged=true;return;}
+      const active=(DB.pdaLogs||[]).slice().reverse().find(log=>log.pdaNo===source.pdaNo&&(log.soc||'')===(source.soc||'')&&log.status==='Borrowed');
+      if(active){active.status='Returned';active.returnedAt=returnedAt;active.returnedByName=session.fullName||session.username||'';active.returnDestination='IT Department';if(remarks)active.remarks=[active.remarks,remarks].filter(Boolean).join(' · ');}
+      source.status='Returned to IT';source.exceptionStatus='HandoverIT';source.returnedToITAt=returnedAt;source.returnedToITId=returnId;
+    }
+    DB.itAssetReturns.push(returnRecord);
+  };
+  applyReturn();
+  if(sourceChanged){toast('This asset was already returned or its record changed. Look it up again before saving.');return;}
+  if(!await saveDBWithRetry(applyReturn))return;
+  if(sourceChanged){toast('This asset was returned by another user while you were entering it. No duplicate transmittal was created.');navigate('itassets','it-return');return;}
+  toast(returnRecord.serialNumber+' recorded as returned to I.T.');
+  navigate('itassets','it-return');
+  setTimeout(()=>openItReturnTransmittal(returnId),80);
+}
+function itReturnHistoryHtml(){
+  const rows=socFilter(DB.itAssetReturns||[]).slice().sort((a,b)=>new Date(b.returnedAt||0)-new Date(a.returnedAt||0));
+  if(!rows.length)return '<div class="empty"><div class="ic">&#8635;</div>No IT assets have been returned to IT yet.</div>';
+  return '<div class="tbl-wrap"><table><tr><th>Transmittal</th><th>Serial #</th><th>Asset type</th><th>Accountable person</th><th>Department</th><th>Date returned</th><th>Files</th><th></th></tr>'+rows.map(row=>`<tr><td class="mono">${esc(row.id)}</td><td class="mono">${esc(row.serialNumber)}</td><td>${esc(row.assetType)}</td><td>${esc(row.accountable||'—')}</td><td>${esc(row.department||'—')}</td><td>${fmtDateTime(row.returnedAt)}</td><td>${[['ir','IR',row.irFile],['photo','Photo',row.damagePhotoFile],['ticket','IT ticket',row.itTicketFile]].filter(item=>item[2]).map(item=>`<button class="btn btn-sm" style="margin:2px;" onclick="viewItReturnAttachment('${esc(row.id)}','${item[0]}')">${item[1]}</button>`).join('')||'—'}</td><td><button class="btn btn-sm btn-primary" onclick="openItReturnTransmittal('${esc(row.id)}')">Transmittal</button></td></tr>`).join('')+'</table></div>';
+}
+function viewItReturnAttachment(id,kind){
+  const row=(DB.itAssetReturns||[]).find(item=>item.id===id);
+  if(!row)return;
+  const fields={ir:['irFile','irFileData'],photo:['damagePhotoFile','damagePhotoData'],ticket:['itTicketFile','itTicketData']}[kind];
+  if(!fields)return;
+  const [nameKey,dataKey]=fields;
+  const data=row[dataKey];
+  if(!data){toast('No file attached.');return;}
+  if(/^data:(image\/|application\/pdf)/i.test(data)){showFileModal(row[nameKey],data);return;}
+  showModal(`<h3>${esc(row[nameKey]||'Attached file')}</h3><p class="card-sub">This file type cannot be previewed here.</p><div class="footer-actions"><button class="btn" onclick="closeModal()">Close</button><a class="btn btn-primary" href="${data}" download="${esc(row[nameKey]||'attachment')}">Download file</a></div>`);
+}
+function itReturnAttachmentAnchor(name,data){
+  if(!name||!data)return '<span class="small-note">Not attached</span>';
+  return `<a href="${data}" download="${esc(name)}">${esc(name)}</a>`;
+}
+function itReturnTransmittalParts(row){
+  const attachmentRows=[['IR / Incident report',row.irFile,row.irFileData],['Photo of damaged item',row.damagePhotoFile,row.damagePhotoData],['IT ticket',row.itTicketFile,row.itTicketData]];
+  const photo=row.damagePhotoData&&String(row.damagePhotoData).startsWith('data:image/')?`<div class="it-return-photo"><div class="it-return-label">Damage photo</div><img src="${row.damagePhotoData}" alt="Damage photo"></div>`:'';
+  const styles=`.it-return-doc{font:14px Arial,sans-serif;color:#172033;background:#fff;border:1px solid #cbd5e1;padding:28px;max-width:850px;margin:0 auto}.it-return-doc h1{font-size:23px;margin:0 0 5px}.it-return-doc .subtitle{color:#64748b;margin:0 0 22px}.it-return-doc .it-return-no{float:right;text-align:right;font-weight:700}.it-return-doc table{width:100%;border-collapse:collapse;margin:14px 0 20px}.it-return-doc th,.it-return-doc td{border:1px solid #cbd5e1;text-align:left;padding:9px 10px;vertical-align:top}.it-return-doc th{width:28%;background:#f1f5f9}.it-return-label{font-weight:700;margin:14px 0 8px}.it-return-doc .remarks{min-height:58px;white-space:pre-wrap}.it-return-photo img{max-width:320px;max-height:240px;object-fit:contain;border:1px solid #cbd5e1;padding:4px}.it-return-signatures{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:42px}.it-return-signatures div{border-top:1px solid #475569;padding-top:7px;font-size:12px}.it-return-doc a{color:#075985}@media print{.it-return-doc{border:0;margin:0;max-width:none;padding:0}.it-return-doc a{color:#172033;text-decoration:none}}`;
+  const body=`<article class="it-return-doc"><div class="it-return-no">Transmittal no.<br>${esc(row.id)}</div><h1>IT ASSET / PDA RETURN TRANSMITTAL</h1><p class="subtitle">Return of equipment to the IT Department</p><table><tr><th>Serial number</th><td>${esc(row.serialNumber||'—')}</td></tr><tr><th>Type of IT asset</th><td>${esc(row.assetType||'—')}</td></tr><tr><th>Accountable person</th><td>${esc(row.accountable||'—')}</td></tr><tr><th>Department</th><td>${esc(row.department||'—')}</td></tr><tr><th>Date deployed / borrowed</th><td>${row.sourceDate?fmtDateTime(row.sourceDate):'—'}</td></tr><tr><th>Date returned to I.T</th><td>${fmtDateTime(row.returnedAt)}</td></tr><tr><th>SOC</th><td>${esc(row.soc||'—')}</td></tr><tr><th>Processed by</th><td>${esc(row.returnedBy||'—')}</td></tr></table><div class="it-return-label">Supporting documents</div><table>${attachmentRows.map(([label,name,data])=>`<tr><th>${label}</th><td>${itReturnAttachmentAnchor(name,data)}</td></tr>`).join('')}</table>${photo}<div class="it-return-label">Remarks</div><div class="remarks">${esc(row.remarks||'—')}</div><div class="it-return-signatures"><div>Returned by / Accountable person</div><div>Received by / IT Department</div></div></article>`;
+  return {styles,body};
+}
+function openItReturnTransmittal(id){
+  const row=(DB.itAssetReturns||[]).find(item=>item.id===id);
+  if(!row){toast('Return transmittal was not found.');return;}
+  const {styles,body}=itReturnTransmittalParts(row);
+  showModal(`<style>${styles}</style><div class="footer-actions no-print" style="margin-bottom:16px;"><button class="btn" onclick="closeModal()">Close</button><button class="btn" onclick="downloadItReturnTransmittal('${esc(row.id)}')">&#8615; Download HTML</button><button class="btn btn-primary" onclick="printModalContent()">&#128438; Print / Save as PDF</button></div>${body}`);
+  const modal=document.querySelector('#modal-root .modal');if(modal)modal.classList.add('modal-wide');
+}
+function downloadItReturnTransmittal(id){
+  const row=(DB.itAssetReturns||[]).find(item=>item.id===id);if(!row)return;
+  const {styles,body}=itReturnTransmittalParts(row);
+  const html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>IT Return Transmittal ${esc(row.id)}</title><style>body{margin:24px;background:#f8fafc;}${styles}</style></head><body>${body}</body></html>`;
+  const url=URL.createObjectURL(new Blob([html],{type:'text/html;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download='IT-return-transmittal-'+String(row.id).replace(/[^a-z0-9_-]/gi,'-')+'.html';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function pdaStatusTag(s){ return s==='Borrowed' ? '<span class="tag tag-pending">Borrowed</span>' : s==='Returned to IT' ? '<span class="tag tag-rejected">Returned to I.T</span>' : '<span class="tag tag-ok">Available</span>'; }
 // The 3-tier condition scale used on return — captured on the PDA log entry and
 // carried over onto the PDA masterlist record as its current condition.
 const PDA_CONDITIONS = [
@@ -7390,6 +7785,7 @@ function processPdaScan(){
   if(!code) return;
   const pda = socFilter(DB.pdas).find(p=> (p.serial && p.serial.toUpperCase()===code.toUpperCase()) || p.pdaNo.toUpperCase()===code.toUpperCase());
   if(!pda){ setPdaScanStatus('That serial number isn\'t in the PDA masterlist — add it there first.', 'error'); return; }
+  if(pda.status==='Returned to IT'){ setPdaScanStatus(pda.pdaNo+' has been returned to I.T and is not available for floor issuance.', 'error'); return; }
   el.disabled = true;
   pdaModalTarget = DB.pdas.indexOf(pda);
   pdaModalIdentity = {pdaNo:pda.pdaNo, soc:pda.soc};
@@ -7614,7 +8010,7 @@ async function confirmPdaBorrow(){
   const logId = newPdaLogId();
   const applyBorrow = ()=>{
     const target = DB.pdas.find(p=>p.pdaNo===pdaNo && p.soc===soc);
-    if(!target || target.status==='Borrowed') return false; // already taken — by us or by someone else's scan
+    if(!target || target.status==='Borrowed' || target.status==='Returned to IT') return false; // already taken or transferred to I.T.
     if(!DB.pdaLogs.some(l=>l.id===logId)){
       DB.pdaLogs.push({
         id: logId, pdaNo, opsId, borrowerName: emp.fullName, borrowerAgency: emp.agency||'', borrowerDepartment: emp.department||'',
@@ -7628,7 +8024,7 @@ async function confirmPdaBorrow(){
   };
   if(!applyBorrow()){
     pdaBorrowInProgress = false;
-    toast(pdaNo+' was just borrowed by someone else — pick another device.');
+    toast(pdaNo+' is no longer available for floor issuance.');
     pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null;
     navigate(route, subroute);
     return;
@@ -7641,7 +8037,7 @@ async function confirmPdaBorrow(){
   pdaBorrowInProgress = false;
   pdaActiveMode = null; pdaModalTarget = null; pdaModalIdentity = null;
   if(ok && !claimedByOther) toast(pdaNo+' issued to '+emp.fullName+'.');
-  else if(claimedByOther) toast(pdaNo+' was just borrowed by someone else — your scan was not saved.');
+  else if(claimedByOther) toast(pdaNo+' is no longer available for floor issuance — your scan was not saved.');
   navigate(route, subroute);
 }
 function pdaReturnConditionSectionHtml(){
@@ -7841,7 +8237,7 @@ function pdaAllocationEditorHtml(){
   </div>`;
 }
 function pdaSocSummaryHtml(){
-  const pdas = socFilter(DB.pdas);
+  const pdas = socFilter(DB.pdas).filter(p=>p.status!=='Returned to IT');
   const handoverCount = pdas.filter(p=>p.exceptionStatus==='HandoverIT').length;
   const missingCount = pdas.filter(p=>p.exceptionStatus==='Missing').length;
   const goodCount = pdas.filter(p=>p.condition==='Good').length;
@@ -8126,13 +8522,16 @@ function pdaDashboardHtml(){
 }
 function pdaCurrentOnHandHtml(){
   const pdas=socFilter(DB.pdas);
-  const borrowed=pdas.filter(p=>p.status==='Borrowed').length;
-  const available=pdas.length-borrowed;
+  const returned=pdas.filter(p=>p.status==='Returned to IT').length;
+  const floorPdas=pdas.filter(p=>p.status!=='Returned to IT');
+  const borrowed=floorPdas.filter(p=>p.status==='Borrowed').length;
+  const available=floorPdas.length-borrowed;
   const site=currentSoc()||'Shared / unassigned';
-  return `<div class="card"><h3>Current PDA stock — ${esc(site)}</h3><div class="grid g3" style="margin-top:14px;">
-    <div class="metric"><div class="lbl">On-hand PDAs</div><div class="val">${pdas.length}</div><div class="sub">in the masterlist</div></div>
+  return `<div class="card"><h3>Current PDA stock — ${esc(site)}</h3><div class="grid g4" style="margin-top:14px;">
+    <div class="metric"><div class="lbl">On-hand PDAs</div><div class="val">${floorPdas.length}</div><div class="sub">on floor / in circulation</div></div>
     <div class="metric amber"><div class="lbl">Borrowed</div><div class="val">${borrowed}</div><div class="sub">currently out</div></div>
     <div class="metric success"><div class="lbl">Available</div><div class="val">${available}</div><div class="sub">ready to issue</div></div>
+    <div class="metric"><div class="lbl">Returned to I.T</div><div class="val">${returned}</div><div class="sub">transferred out of floor stock</div></div>
   </div></div>`;
 }
 function pdaDashboardBySocHtml(){
@@ -8141,14 +8540,14 @@ function pdaDashboardBySocHtml(){
   const logs=DB.pdaLogs||[];
   const siteOf=row=>dashboardSocKey(row.soc);
   const onHandRows=sites.map(site=>{
-    const sitePdas=pdas.filter(p=>siteOf(p)===dashboardSocKey(site.key));
+    const sitePdas=pdas.filter(p=>siteOf(p)===dashboardSocKey(site.key)&&p.status!=='Returned to IT');
     const borrowed=sitePdas.filter(p=>p.status==='Borrowed').length;
     return `<tr><td>${esc(site.label)}</td><td style="text-align:right;font-weight:700;">${sitePdas.length}</td><td style="text-align:right;">${borrowed}</td><td style="text-align:right;">${sitePdas.length-borrowed}</td><td style="text-align:right;">${sitePdas.filter(p=>p.condition==='DamagedWorking'||p.condition==='DamagedNotWorking').length}</td></tr>`;
   }).join('');
   const buckets=[...PDA_DEPT_BUCKETS(),'Other Department'];
   const allocationRows=[];
   sites.forEach(site=>{
-    const sitePdas=pdas.filter(p=>siteOf(p)===dashboardSocKey(site.key));
+    const sitePdas=pdas.filter(p=>siteOf(p)===dashboardSocKey(site.key)&&p.status!=='Returned to IT');
     const borrowed=sitePdas.filter(p=>p.status==='Borrowed');
     const siteLogs=logs.filter(l=>siteOf(l)===dashboardSocKey(site.key));
     const byBucket={}; buckets.forEach(b=>byBucket[b]=0);
@@ -8228,13 +8627,13 @@ function pdaLogHtml(){
       <td>${l.returnedByName ? esc(l.returnedByDepartment||'—') : ''}</td>
       <td style="white-space:nowrap;">${l.returnedAt?fmtDateTime(l.returnedAt):''}</td>
       <td>${pdaConditionTag(pdaLogConditionOnBorrow(l))}</td>
-      <td style="white-space:nowrap;">${pdaConditionTag(l.conditionOnReturn)} ${l.status==='Borrowed'?'<span class="tag tag-pending">Borrowed</span>':'<span class="tag tag-approved">Returned</span>'}${l.remarks?'<div class="small-note" style="white-space:normal;">'+esc(l.remarks)+'</div>':''}</td>
+      <td style="white-space:nowrap;">${pdaConditionTag(l.conditionOnReturn)} ${l.status==='Borrowed'?'<span class="tag tag-pending">Borrowed</span>':'<span class="tag tag-approved">Returned</span>'}${l.returnDestination==='IT Department'?'<div class="small-note">Returned to I.T</div>':''}${l.remarks?'<div class="small-note" style="white-space:normal;">'+esc(l.remarks)+'</div>':''}</td>
       <td>${pdaLogIRCell(l)}</td>
     </tr>`).join('') + '</table></div></div>';
 }
 function exportPdaLog(){
-  const rows = socFilter(DB.pdaLogs).map(l=>[l.pdaNo,pdaLogSerial(l),l.opsId,l.borrowerName,l.borrowerAgency||'',l.borrowerDepartment||'',fmtDateTimeOrBlank(l.borrowedAt),pdaConditionLabel(pdaLogConditionOnBorrow(l)),l.returnedByOpsId||'',l.returnedByName||'',l.returnedByAgency||'',l.returnedByDepartment||'',l.returnedAt?fmtDateTime(l.returnedAt):'',pdaConditionLabel(l.conditionOnReturn),l.status,l.remarks||'',l.irFile||'']);
-  downloadCSV('pda-borrow-return-log.csv', ['PDA #','Serial','Borrower Ops ID','Borrower Name','Borrower Agency','Borrower Department','Borrowed date and time','Condition at issue','Returned By Ops ID','Returned By Name','Returned By Agency','Returned By Department','Returned date and time','Condition on return','Status','Remarks','IR file'], rows);
+  const rows = socFilter(DB.pdaLogs).map(l=>[l.pdaNo,pdaLogSerial(l),l.opsId,l.borrowerName,l.borrowerAgency||'',l.borrowerDepartment||'',fmtDateTimeOrBlank(l.borrowedAt),pdaConditionLabel(pdaLogConditionOnBorrow(l)),l.returnedByOpsId||'',l.returnedByName||'',l.returnedByAgency||'',l.returnedByDepartment||'',l.returnedAt?fmtDateTime(l.returnedAt):'',pdaConditionLabel(l.conditionOnReturn),l.status,l.returnDestination||'',l.remarks||'',l.irFile||'']);
+  downloadCSV('pda-borrow-return-log.csv', ['PDA #','Serial','Borrower Ops ID','Borrower Name','Borrower Agency','Borrower Department','Borrowed date and time','Condition at issue','Returned By Ops ID','Returned By Name','Returned By Agency','Returned By Department','Returned date and time','Condition on return','Status','Return destination','Remarks','IR file'], rows);
 }
 
 
@@ -8300,11 +8699,11 @@ function pdaDeptBucket(deptName){
   return found || 'Other Department';
 }
 function pdaDeptAllocationReportHtml(){
-  const pdas = socFilter(DB.pdas);
+  const pdas = socFilter(DB.pdas).filter(p=>p.status!=='Returned to IT');
   const pdaLogs = socFilter(DB.pdaLogs);
   const totalPdas = pdas.length;
   const borrowed = pdas.filter(p=>p.status==='Borrowed');
-  const available = pdas.filter(p=>p.status!=='Borrowed');
+  const available = pdas.filter(p=>p.status!=='Borrowed'&&p.status!=='Returned to IT');
   const buckets = [...PDA_DEPT_BUCKETS(), 'Other Department'];
   const byBucket = {}; buckets.forEach(b=>byBucket[b]=[]);
   borrowed.forEach(p=>{
@@ -8347,10 +8746,10 @@ function pdaAllocBarRow(label, count, total, isRemaining){
   </div>`;
 }
 function exportPdaDeptReport(){
-  const pdas = socFilter(DB.pdas);
+  const pdas = socFilter(DB.pdas).filter(p=>p.status!=='Returned to IT');
   const pdaLogs = socFilter(DB.pdaLogs);
   const borrowed = pdas.filter(p=>p.status==='Borrowed');
-  const available = pdas.filter(p=>p.status!=='Borrowed');
+  const available = pdas.filter(p=>p.status!=='Borrowed'&&p.status!=='Returned to IT');
   const rows = borrowed.map(p=>{
     const log = pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Borrowed');
     return [pdaDeptBucket(log?log.borrowerDepartment:''), 'Borrowed', p.pdaNo, p.serial||'', log?log.borrowerName:'', log?log.opsId:'', log?fmtDateTime(log.borrowedAt):''];
