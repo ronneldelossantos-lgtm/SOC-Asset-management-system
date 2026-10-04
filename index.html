@@ -412,6 +412,7 @@ body.app-theme .modal .hint:not(.hint-error):not(.hint-active):not([id]):not(#pd
      formula text. If this fails to load (e.g. offline), CSV import still
      works; only .xlsx/.xls uploads are affected. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script>
@@ -3022,6 +3023,34 @@ function requestStatusCell(r){
   }
   return statusTag(r.status);
 }
+function receivedAmsTagForAssetCode(assetTag){
+  const key = String(assetTag||'').trim().toUpperCase();
+  if(!key) return '';
+  for(const r of DB.receiving||[]){
+    if(r.type!=='Asset') continue;
+    const codes = recvAssetCodesOf(r);
+    const index = codes.findIndex(code=>String(code).trim().toUpperCase()===key);
+    if(index<0) continue;
+    const amsTags = Array.isArray(r.amsTags) ? r.amsTags : assetCodeValues(r.amsTags);
+    return String(amsTags[index]||'').trim();
+  }
+  return '';
+}
+function requestAssetLabelRows(r){
+  const labels = [];
+  (r&&Array.isArray(r.items)?r.items:[]).forEach(it=>{
+    if(it.type!=='Asset') return;
+    const qty = Math.max(0,Math.floor(approvedQtyOf(it)||0));
+    requestAssetCodesArr(it).slice(0,qty).forEach(assetTag=>labels.push({
+      assetTag,
+      itemName:it.description||(skuInfo(it.sku)||{}).description||it.sku,
+      department:r.department||'',
+      accountablePerson:r.accountableName||'',
+      amsTag:receivedAmsTagForAssetCode(assetTag)
+    }));
+  });
+  return labels;
+}
 function requestListHtml(){
   const rows = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilterRequests(DB.requests);
   const header = `<div class="list-head"><h3>${portalMode==='department'?'My department requests':'All requests'} (${rows.length})</h3>${dlBtn('exportRequests')}</div>`;
@@ -3059,6 +3088,13 @@ function requestListHtml(){
           actionCell = who ? '<span class="small-note">by '+esc(who)+'</span>' : '';
         }
       }
+      if(portalMode==='supplies'){
+        const labelCount = requestAssetLabelRows(r).length;
+        if(labelCount){
+          const printButton = `<button class="btn btn-sm" title="Print 3 x 1 inch QR asset labels" onclick="printRequestAssetLabels('${esc(r.id)}')">&#128438; Print asset labels (${labelCount})</button>`;
+          actionCell = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${actionCell}${printButton}</div>`;
+        }
+      }
       const transmittalCell = r.transmittalNo
         ? `<div style="display:flex;gap:6px;align-items:center;">
             <button class="icon-btn-view" title="Transmittal ${esc(r.transmittalNo)}" onclick="openTransmittal('${r.id}')">&#128220;</button>
@@ -3083,6 +3119,59 @@ function requestListHtml(){
       ${session.role==='admin'?`<td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openEditRequest('${esc(r.id)}')">Edit</button> <button class="icon-btn" onclick="deleteRequest('${esc(r.id)}')">&times;</button></td>`:''}
     </tr>`;
     }).join('') + '</table></div></div>';
+}
+function printRequestAssetLabels(id){
+  const r = DB.requests.find(x=>x.id===id);
+  if(!r) return;
+  const labels = requestAssetLabelRows(r);
+  if(!labels.length){ toast('No assigned asset tags are available to print for this request.'); return; }
+  if(typeof QRCode==='undefined'){ toast('The QR-code library did not load. Reload the app and try again.'); return; }
+  const labelHtml = labels.map((label,index)=>`
+    <article class="asset-tag-label">
+      <div class="asset-tag-qr" id="asset-tag-qr-${index}" aria-label="QR code for ${esc(label.assetTag)}"></div>
+      <div class="asset-tag-details">
+        <div class="asset-tag-row"><strong class="asset-tag-value">${esc(label.assetTag)}</strong></div>
+        <div class="asset-tag-row"><strong class="asset-tag-value">${esc(label.itemName)}</strong></div>
+        <div class="asset-tag-row"><strong class="asset-tag-value">${esc(label.department)}</strong></div>
+        <div class="asset-tag-row"><strong class="asset-tag-value">${esc(label.accountablePerson||'—')}</strong></div>
+        <div class="asset-tag-row"><strong class="asset-tag-value">${esc(label.amsTag||'—')}</strong></div>
+      </div>
+    </article>`).join('');
+  showModal(`
+    <style>
+      @page{size:3in 1in;margin:0;}
+      .asset-tag-toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;}
+      .asset-tag-sheet{display:flex;flex-direction:column;align-items:flex-start;gap:10px;}
+      .asset-tag-label{width:3in;height:1in;box-sizing:border-box;display:grid;grid-template-columns:.92in 1fr;border:.6pt solid #111;background:#fff;color:#000;overflow:hidden;break-after:page;page-break-after:always;}
+      .asset-tag-label:last-child{break-after:auto;page-break-after:auto;}
+      .asset-tag-qr{width:.92in;height:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:.07in;border-right:.6pt solid #111;overflow:hidden;}
+      .asset-tag-qr img,.asset-tag-qr canvas,.asset-tag-qr table{display:block!important;width:.68in!important;height:.68in!important;max-width:.68in!important;max-height:.68in!important;flex:0 0 auto;}
+      .asset-tag-qr table{border-collapse:collapse!important;table-layout:fixed!important;}
+      .asset-tag-details{min-width:0;display:grid;grid-template-rows:repeat(5,minmax(0,1fr));}
+      .asset-tag-row{min-width:0;display:flex;align-items:center;gap:.025in;padding:0 .025in;border-bottom:.5pt solid #111;overflow:hidden;white-space:nowrap;line-height:1;}
+      .asset-tag-row:last-child{border-bottom:0;}
+      .asset-tag-value{min-width:0;flex:1;font-size:8pt;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+      @media print{
+        html,body{width:3in!important;margin:0!important;padding:0!important;}
+        body.printing-transmittal #modal-root .modal.asset-tag-modal{width:3in!important;max-width:3in!important;max-height:none!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;box-shadow:none!important;overflow:visible!important;background:#fff!important;}
+        body.printing-transmittal #modal-root .modal-bg{position:static!important;display:block!important;padding:0!important;background:#fff!important;}
+        body.printing-transmittal #modal-root .asset-tag-sheet{gap:0!important;}
+        body.printing-transmittal #modal-root .asset-tag-label{margin:0!important;}
+      }
+    </style>
+    <div class="asset-tag-toolbar no-print">
+      <button class="btn btn-primary" onclick="printModalContent()">&#128438; Print ${labels.length} label${labels.length===1?'':'s'} (3 x 1 in)</button>
+      <button class="btn" onclick="closeModal()">Close</button>
+    </div>
+    <div class="asset-tag-sheet">${labelHtml}</div>
+  `);
+  const modalEl = document.querySelector('#modal-root .modal');
+  if(modalEl) modalEl.classList.add('asset-tag-modal');
+  labels.forEach((label,index)=>{
+    const qrEl = document.getElementById('asset-tag-qr-'+index);
+    const assetTagPayload = String(label.assetTag||'').trim();
+    if(qrEl && assetTagPayload) new QRCode(qrEl,{text:assetTagPayload,width:160,height:160,colorDark:'#000000',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M});
+  });
 }
 function openEditRequest(id){
   if(session.role!=='admin') return;
@@ -4040,6 +4129,7 @@ function renderCycleCount(){
     <div id="cc-body"></div>
   `;
   document.getElementById('cc-body').innerHTML = tab==='consumable' ? ccConsumableHtml() : ccAssetHtml();
+  if(tab==='asset') refreshAssetCycleCountView();
 }
 function ccConsumableHtml(){
   const cons = DB.sku.filter(s=>s.type==='Consumable');
@@ -4081,39 +4171,178 @@ async function saveConsCount(sku){
   toast('Count saved for '+sku+'.');
   renderCycleCount();
 }
+/* Asset Cycle Count scans physical Asset Tag codes. Expected assets are the
+   current, unique physical codes either still issued to departments or on hand. */
+let assetCycleScanned = [];
+let assetCycleScanTimer = null;
+function assetCycleExpectedItems(){
+  const codeInfo = new Map();
+  const amsCodeMap = new Map();
+  const events = [];
+  const addEvent = (code, skuCode, eventSoc, date, kind, order, record)=>{
+    const rawKey = String(code||'').trim().toUpperCase();
+    const key = codeInfo.has(rawKey) ? rawKey : (amsCodeMap.get(rawKey)||rawKey);
+    if(!key || !codeInfo.has(key)) return;
+    const info = codeInfo.get(key);
+    if(skuCode && String(info.sku||'').trim().toUpperCase()!==String(skuCode).trim().toUpperCase()) return;
+    if(socKey(eventSoc) && socKey(info.soc) && socKey(eventSoc)!==socKey(info.soc)) return;
+    const parsed = Date.parse(date||'');
+    events.push({key,time:Number.isFinite(parsed)?parsed:0,kind,order,record:record||null});
+  };
+  (DB.receiving||[]).forEach((r,idx)=>{
+    if(r.type!=='Asset') return;
+    const codes = recvAssetCodesOf(r);
+    const amsTags = Array.isArray(r.amsTags) ? r.amsTags : assetCodeValues(r.amsTags);
+    codes.forEach((code,unitIdx)=>{
+      const key=String(code).toUpperCase();
+      if(codeInfo.has(key)) return;
+      codeInfo.set(key,{code,sku:String(r.sku||''),description:r.description||skuInfo(r.sku)?.description||'',soc:r.soc||'',order:idx*1000+unitIdx});
+      events.push({key,time:Number.isFinite(Date.parse(r.date||''))?Date.parse(r.date):0,kind:'onhand',order:idx*1000+unitIdx,record:r});
+      if(amsTags[unitIdx] && !amsCodeMap.has(amsTags[unitIdx].toUpperCase())) amsCodeMap.set(amsTags[unitIdx].toUpperCase(),key);
+    });
+  });
+  (DB.issuance||[]).forEach((i,idx)=>{
+    if(i.type!=='Asset') return;
+    const codes = Array.isArray(i.assetCodes)&&i.assetCodes.length ? i.assetCodes : assetCodeValues(i.assetTagging);
+    codes.forEach((code,unitIdx)=>addEvent(code,i.sku,i.soc,i.date,'issued',1000000+idx*1000+unitIdx,i));
+  });
+  (DB.returns||[]).forEach((r,idx)=>{
+    if(r.category!=='Asset' || r.condition!=='Good' || !['Received','Asset Received'].includes(r.status)) return;
+    const codes = Array.isArray(r.assetCodes)&&r.assetCodes.length ? r.assetCodes : assetCodeValues(r.assetTagging);
+    codes.forEach((code,unitIdx)=>addEvent(code,r.sku,r.soc,r.dateReceived||r.dateReturned,'onhand',2000000+idx*1000+unitIdx,r));
+  });
+  (DB.repairs||[]).forEach((r,idx)=>{
+    if(r.status==='Added to Inventory') addEvent(r.assetTagging,r.sku,r.soc,r.inventoryDate||r.dateReceived,'onhand',3000000+idx,r);
+    else if(r.status==='Disposed'||r.status==='Backloaded') addEvent(r.assetTagging,r.sku,r.soc,r.disposedDate||r.backloadDate,'disposed',3000000+idx,r);
+  });
+  events.sort((a,b)=>a.time-b.time || a.order-b.order);
+  const state = new Map();
+  events.forEach(e=>{
+    if(e.kind==='disposed') state.delete(e.key);
+    else state.set(e.key,{kind:e.kind,record:e.record});
+  });
+  const site = currentSoc();
+  return Array.from(state.entries()).map(([key,status])=>{
+    const info=codeInfo.get(key), rec=status.record||{};
+    return {code:info.code,sku:info.sku,description:rec.description||info.description||'',status:status.kind,
+      department:status.kind==='issued'?(rec.department||''):'',accountable:status.kind==='issued'?(rec.accountability||rec.receivedByName||''):'',soc:info.soc||''};
+  }).filter(item=>{
+    const info=codeInfo.get(item.code.toUpperCase());
+    return info && String(info.sku||'').trim() && String(info.sku||'').trim().toUpperCase()===String(item.sku||'').trim().toUpperCase()
+      && (socKey(site) ? (!socKey(info.soc)||socKey(info.soc)===socKey(site)) : !socKey(info.soc));
+  }).sort((a,b)=>(a.status===b.status?0:(a.status==='issued'?-1:1)) || a.sku.localeCompare(b.sku) || a.code.localeCompare(b.code,undefined,{numeric:true}));
+}
 function ccAssetHtml(){
-  if(socFilter(DB.issuance).filter(i=>i.type==='Asset').length===0){
-    return '<div class="card"><div class="empty"><div class="ic">&#9673;</div>No issued assets to count yet — issue assets first.</div></div>';
-  }
-  const issuedAssets = socFilter(DB.issuance).filter(i=>i.type==='Asset');
-  return `<div class="card">
-    <h3>Asset count sheet</h3>
-    <div class="card-sub">Verify each issued/tagged asset against physical presence.</div>
-    <div class="tbl-wrap"><table>
-      <tr><th>SKU</th><th>Item</th><th>Asset tagging</th><th>Qty issued</th><th>Counted qty</th><th></th></tr>
-      ${issuedAssets.map((r,i)=>`<tr>
-        <td class="mono">${esc(r.sku)}</td><td>${esc(r.description)}</td><td class="mono">${esc(r.assetTagging)}</td><td>${r.qty}</td>
-        <td><input type="number" id="cc-a-${i}" style="width:90px;" placeholder="qty"></td>
-        <td><button class="btn btn-sm" onclick="saveAssetCount(${i}, '${esc(r.sku)}', '${esc(r.assetTagging)}', ${r.qty})">Save</button></td>
-      </tr>`).join('')}
-    </table></div>
-    <div class="list-head" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);"><div class="section-title" style="margin:0;padding-top:0;border-top:none;">Recent count history</div>${dlBtn('exportCycleCountAsset')}</div>
-    ${socFilter(DB.cycleCountAsset).length===0?'<div class="empty"><div class="ic">&#8635;</div>No counts recorded yet.</div>':
-    '<div class="tbl-wrap"><table><tr><th>SKU</th><th>Asset tagging</th><th>Qty issued</th><th>Counted qty</th><th>Counted by</th><th>Date</th></tr>' +
-    socFilter(DB.cycleCountAsset).slice().reverse().slice(0,15).map(r=>`<tr><td class="mono">${esc(r.sku)}</td><td class="mono">${esc(r.assetTagging)}</td><td>${r.qtyIssued}</td><td>${r.countedQty}</td><td>${esc(r.countedBy)}</td><td>${fmtDate(r.date)}</td></tr>`).join('') + '</table></div>'}
+  return `<div id="cc-asset-summary"></div>
+  <div class="card">
+    <h3>Scan asset tags</h3>
+    <div class="card-sub">Scan the physical Asset Tag on each asset issued to a department and each asset on hand${currentSoc()?' at '+esc(currentSoc()):''}. The report above updates as you scan. No quantity entry is needed.</div>
+    <div class="field scan-field"><label>Asset Tag</label><input id="cc-asset-scan" placeholder="Scan asset tag" autocomplete="off" oninput="onAssetCycleScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();addAssetCycleScan();}"></div>
+    <div class="field" style="max-width:300px;margin-top:10px;"><label>Counted by</label><input id="cc-asset-by" value="${esc(session.fullName)}"></div>
+    <div class="footer-actions">
+      <button class="btn" onclick="assetCycleScanned=[];refreshAssetCycleCountView();">Clear scanned</button>
+      <button class="btn btn-primary" onclick="saveAssetCycleCount()">Save cycle count</button>
+    </div>
+  </div>
+  <div id="cc-asset-detail-report"></div>
+  <div class="card">
+    <div class="list-head"><h3>Recent asset cycle counts</h3>${dlBtn('exportCycleCountAsset')}</div>
+    <div id="cc-asset-history">${assetCycleCountHistoryHtml()}</div>
   </div>`;
 }
-function exportCycleCountAsset(){
-  const rows = socFilter(DB.cycleCountAsset).map(r=>[r.sku,r.assetTagging,r.qtyIssued,r.countedQty,r.countedBy,fmtDate(r.date)]);
-  downloadCSV('cycle-count-asset.csv', ['SKU','Asset tagging','Qty issued','Counted qty','Counted by','Date'], rows);
+function onAssetCycleScanInput(){
+  const el=document.getElementById('cc-asset-scan');
+  if(!el) return;
+  clearTimeout(assetCycleScanTimer);
+  const value=el.value.trim();
+  if(!value) return;
+  assetCycleScanTimer=setTimeout(()=>{ const cur=document.getElementById('cc-asset-scan'); if(cur&&cur.value.trim()===value) addAssetCycleScan(); },150);
 }
-async function saveAssetCount(i, sku, tag, qtyIssued){
-  const val = document.getElementById('cc-a-'+i).value;
-  if(val===''){ toast('Enter a counted quantity first.'); return; }
-  DB.cycleCountAsset.push({sku, assetTagging:tag, qtyIssued, countedQty:Number(val), countedBy:session.fullName, date:nowISO(), soc:currentSoc()});
+function addAssetCycleScan(){
+  clearTimeout(assetCycleScanTimer);
+  const el=document.getElementById('cc-asset-scan');
+  const value=(el?el.value:'').trim();
+  if(!value){ toast('Scan or enter an asset tag first.'); return; }
+  if(assetCycleScanned.some(code=>code.toUpperCase()===value.toUpperCase())){ toast('That asset tag has already been scanned in this count.'); if(el){el.value='';el.focus();} return; }
+  assetCycleScanned.push(value);
+  if(el){el.value='';el.focus();}
+  refreshAssetCycleCountView();
+}
+function removeAssetCycleScan(index){ assetCycleScanned.splice(index,1); refreshAssetCycleCountView(); }
+function refreshAssetCycleCountView(){
+  const dashboardEl=document.getElementById('cc-asset-summary');
+  const detailEl=document.getElementById('cc-asset-detail-report');
+  if(!dashboardEl||!detailEl) return;
+  const expected=assetCycleExpectedItems();
+  const expectedByCode=new Map(expected.map(item=>[item.code.toUpperCase(),item]));
+  const matchedItems=assetCycleScanned.map((code,index)=>({code,index,item:expectedByCode.get(code.toUpperCase())})).filter(row=>row.item);
+  const matched=assetCycleScanned.filter(code=>expectedByCode.has(code.toUpperCase()));
+  const unexpected=assetCycleScanned.filter(code=>!expectedByCode.has(code.toUpperCase()));
+  const scanned=new Set(assetCycleScanned.map(code=>code.toUpperCase()));
+  const missing=expected.filter(item=>!scanned.has(item.code.toUpperCase()));
+  const foundCodes=new Set(matched.map(code=>code.toUpperCase()));
+  const foundPercent=expected.length?Math.round(matched.length/expected.length*1000)/10:0;
+  const byDeptItem=new Map();
+  expected.forEach(item=>{
+    const department=item.status==='issued'?(item.department||'Unassigned'):'On hand (Supplies)';
+    const key=department.toUpperCase()+'::'+item.sku.toUpperCase();
+    if(!byDeptItem.has(key)) byDeptItem.set(key,{department,sku:item.sku,item:item.description||item.sku,qty:0,found:0,missing:0});
+    const row=byDeptItem.get(key);
+    row.qty++;
+    if(foundCodes.has(item.code.toUpperCase())) row.found++; else row.missing++;
+  });
+  const deptItemRows=[...byDeptItem.values()].sort((a,b)=>a.department.localeCompare(b.department)||a.item.localeCompare(b.item));
+  dashboardEl.innerHTML=`<div class="card">
+    <h3>Asset cycle count dashboard</h3>
+    <div style="display:flex;flex-wrap:nowrap;gap:12px;margin-bottom:14px;overflow-x:auto;">
+      <div class="metric" style="flex:1 0 180px;"><div class="lbl">For cycle count</div><div class="val">${expected.length}</div><div class="sub">issued or on hand</div></div>
+      <div class="metric success" style="flex:1 0 180px;"><div class="lbl">Found</div><div class="val">${matched.length}</div><div class="sub">expected tags scanned</div></div>
+      <div class="metric ${missing.length?'danger':''}" style="flex:1 0 180px;"><div class="lbl">Missing</div><div class="val">${missing.length}</div><div class="sub">not scanned yet</div></div>
+      <div class="metric" style="flex:1 0 180px;"><div class="lbl">Found progress</div><div class="val">${foundPercent.toFixed(1)}%</div><div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${foundPercent}" style="height:8px;background:var(--border);border-radius:99px;overflow:hidden;margin:8px 0;"><div style="height:100%;width:${foundPercent}%;background:var(--success);border-radius:99px;"></div></div><div class="sub">${matched.length} of ${expected.length} assets</div></div>
+    </div>
+  </div>`;
+  detailEl.innerHTML=`<div class="card">
+    <div class="section-title">Assets by department and item</div>
+    ${deptItemRows.length===0?'<div class="empty"><div class="ic">&#9673;</div>No assets are recorded for cycle count.</div>':'<div class="tbl-wrap"><table><tr><th>Department</th><th>SKU</th><th>Item</th><th>Qty</th><th>Found</th><th>Missing</th></tr>'+deptItemRows.map(row=>`<tr><td>${esc(row.department)}</td><td class="mono">${esc(row.sku)}</td><td>${esc(row.item)}</td><td>${row.qty}</td><td>${row.found}</td><td>${row.missing}</td></tr>`).join('')+'</table></div>'}
+    <div class="section-title">Found (${matchedItems.length})</div>
+    ${matchedItems.length===0?'<div class="empty"><div class="ic">&#128247;</div>No expected asset tags found yet.</div>':'<div class="tbl-wrap" style="max-height:220px;overflow-y:auto;"><table><tr><th>Asset Tag</th><th>Item</th><th>Location status</th><th>Department</th><th></th></tr>'+matchedItems.map(row=>{const item=row.item;return `<tr><td class="mono">${esc(row.code)}</td><td>${esc(item.description||'—')}</td><td>${item.status==='issued'?'Issued':'On hand'}</td><td>${esc(item.department||'—')}</td><td><button class="icon-btn" onclick="removeAssetCycleScan(${row.index})" title="Remove">&times;</button></td></tr>`;}).join('')+'</table></div>'}
+    ${missing.length?'<div class="section-title">Missing ('+missing.length+') — expected but not scanned</div><div class="tbl-wrap" style="max-height:220px;overflow-y:auto;"><table><tr><th>Asset Tag</th><th>Item</th><th>Location status</th><th>Department</th><th>Accountable person</th></tr>'+missing.map(item=>`<tr><td class="mono">${esc(item.code)}</td><td>${esc(item.description||'—')}</td><td>${item.status==='issued'?'Issued':'On hand'}</td><td>${esc(item.department||'—')}</td><td>${esc(item.accountable||'—')}</td></tr>`).join('')+'</table></div>':''}
+    ${unexpected.length?'<div class="section-title">Unexpected scans ('+unexpected.length+')</div><div class="tbl-wrap"><table><tr><th>Asset Tag</th><th>Action</th></tr>'+unexpected.map(code=>{const i=assetCycleScanned.findIndex(v=>v.toUpperCase()===code.toUpperCase());return `<tr><td class="mono">${esc(code)}</td><td><button class="icon-btn" onclick="removeAssetCycleScan(${i})" title="Remove">&times;</button></td></tr>`;}).join('')+'</table></div>':''}
+  </div>`;
+}
+async function saveAssetCycleCount(){
+  const expected=assetCycleExpectedItems();
+  const expectedByCode=new Map(expected.map(item=>[item.code.toUpperCase(),item]));
+  const matched=assetCycleScanned.filter(code=>expectedByCode.has(code.toUpperCase()));
+  const unexpected=assetCycleScanned.filter(code=>!expectedByCode.has(code.toUpperCase()));
+  const scanned=new Set(assetCycleScanned.map(code=>code.toUpperCase()));
+  const missing=expected.filter(item=>!scanned.has(item.code.toUpperCase()));
+  if(!expected.length&&!assetCycleScanned.length){toast('Nothing to count — there are no issued or on-hand asset tags for this site.');return;}
+  const byEl=document.getElementById('cc-asset-by');
+  const countedBy=(byEl&&byEl.value.trim())||session.fullName;
+  DB.cycleCountAsset.push({id:nextCode('CC','ccasset'),expectedCount:expected.length,scannedCount:assetCycleScanned.length,matchedCount:matched.length,
+    expected:expected.map(item=>({code:item.code,sku:item.sku,description:item.description,status:item.status,department:item.department,accountable:item.accountable})),
+    scanned:assetCycleScanned.slice(),missing:missing.map(item=>item.code),unexpected:unexpected.slice(),countedBy,date:nowISO(),soc:currentSoc()});
+  assetCycleScanned=[];
   await saveDB();
-  toast('Count saved for '+tag+'.');
-  renderCycleCount();
+  toast('Asset cycle count saved — '+matched.length+' matched, '+missing.length+' missing, '+unexpected.length+' unexpected.');
+  refreshAssetCycleCountView();
+  const hist=document.getElementById('cc-asset-history');
+  if(hist) hist.innerHTML=assetCycleCountHistoryHtml();
+}
+function assetCycleCountHistoryHtml(){
+  const rows=socFilter(DB.cycleCountAsset).slice().reverse().slice(0,15);
+  if(!rows.length) return '<div class="empty"><div class="ic">&#8635;</div>No counts recorded yet.</div>';
+  return '<div class="tbl-wrap"><table><tr><th>Date</th><th>Expected</th><th>Scanned</th><th>Matched</th><th>Missing</th><th>Unexpected</th><th>Counted by</th></tr>'+rows.map(r=>{
+    const isScan=Array.isArray(r.scanned), missing=isScan?(r.missing||[]):[], unexpected=isScan?(r.unexpected||[]):[];
+    return `<tr><td>${fmtDateTime(r.date)}</td><td>${isScan?(r.expectedCount||0):(r.qtyIssued||'—')}</td><td>${isScan?(r.scannedCount||0):(r.countedQty||'—')}</td><td>${isScan?(r.matchedCount||0):'—'}</td><td>${missing.length?'<span class="tag tag-pending">'+missing.length+'</span>':'0'}</td><td>${unexpected.length?'<span class="tag tag-rejected">'+unexpected.length+'</span>':'0'}</td><td>${esc(r.countedBy||'—')}</td></tr>`;
+  }).join('')+'</table></div>';
+}
+function exportCycleCountAsset(){
+  const rows=socFilter(DB.cycleCountAsset).map(r=>Array.isArray(r.scanned)
+    ? [fmtDateTime(r.date),r.soc||'',r.expectedCount,r.scannedCount,r.matchedCount,(r.missing||[]).join('; '),(r.unexpected||[]).join('; '),r.countedBy]
+    : [fmtDate(r.date),r.soc||'',r.qtyIssued||'',r.countedQty||'', '', '', '',r.countedBy||'']);
+  downloadCSV('cycle-count-asset.csv',['Date','SOC','Expected','Scanned','Matched','Missing Asset Tags','Unexpected Asset Tags','Counted By'],rows);
 }
 
 /* ============================= REPAIR & MAINTENANCE MODULE ============================= */
