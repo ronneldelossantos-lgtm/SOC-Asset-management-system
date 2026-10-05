@@ -2181,6 +2181,7 @@ function userHasProcess(u, key){
   return u.processAccess.includes(key);
 }
 function sessionHasProcess(key){ return userHasProcess(session, key); }
+function canViewCageMasterlist(){ return !!session && session.role!=='hub'; }
 // ------------------------- SOC (site) data segmentation -------------------------
 // Every transactional record carries a `soc` field — the site (from DB.warehouses,
 // e.g. SOC5/SOC6/...) it belongs to. Admins always see everything. Staff/Hub logins
@@ -2340,7 +2341,7 @@ const NAV = [
       {id:'cageloading', sub:'new', label:'Cage Issuance'},
       {id:'cageloading', sub:'receive', label:'Receive Cage'},
       {id:'cageloading', sub:'list', label:'Cage Log'},
-      {id:'cageloading', sub:'masterlist', label:'Cage Masterlist'},
+      {id:'cageloading', sub:'masterlist', label:'Cage Masterlist', socOnly:true},
       {id:'cageloading', sub:'cyclecount', label:'Cycle Count'}
     ]},
     {type:'dropdown', id:'proc-parcelretrieval', processKey:'parcelretrieval', label:'Parcel Retrieval', ic:'&#128233;', children:[
@@ -2397,13 +2398,14 @@ function navChildHtml(it, ch){
 function navItemHtml(it){
   if(it.type==='dropdown'){
     const isOpen = !!navGroupOpen[it.id];
-    const hasActive = it.children.some(ch=>ch.id===route);
+    const children=it.children.filter(ch=>!ch.socOnly || canViewCageMasterlist());
+    const hasActive = children.some(ch=>ch.id===route);
     return '<div class="nav-group">'
       + '<div class="nav-item nav-parent'+(isOpen?' open':'')+(hasActive?' has-active':'')+'" onclick="toggleNavGroup(\''+it.id+'\')">'
         + '<span class="ic">'+it.ic+'</span><span class="nav-label">'+it.label+'</span><span class="nav-chevron">&#9662;</span>'
       + '</div>'
       + '<div class="nav-children" style="'+(isOpen?'':'display:none;')+'">'
-        + it.children.map(ch=>navChildHtml(it,ch)).join('')
+        + children.map(ch=>navChildHtml(it,ch)).join('')
       + '</div>'
     + '</div>';
   }
@@ -2419,7 +2421,7 @@ function renderShell(){
     });
   });
   const navHtml = navArr.map(g=>{
-    const items = g.items.filter(it=> !it.adminOnly || session.role==='admin').filter(it=> !it.approverOnly || isDeptApprover()).filter(it=> !it.processKey || sessionHasProcess(it.processKey));
+    const items = g.items.filter(it=> !it.adminOnly || session.role==='admin').filter(it=> !it.approverOnly || isDeptApprover()).filter(it=> !it.socOnly || canViewCageMasterlist()).filter(it=> !it.processKey || sessionHasProcess(it.processKey));
     if(items.length===0) return '';
     return '<div class="nav-group-label">'+g.group+'</div>' + items.map(navItemHtml).join('');
   }).join('');
@@ -2438,6 +2440,10 @@ function toggleNavGroup(id){
 }
 
 async function navigate(r, sub){
+  if(r==='cageloading' && sub==='masterlist' && !canViewCageMasterlist()){
+    toast('Cage Masterlist is available to SOC users only.');
+    r='cageloading';sub='receive';
+  }
   if(portalMode!=='department' && ROUTE_PROCESS[r] && !sessionHasProcess(ROUTE_PROCESS[r])){
     toast('You don\'t have access to '+processLabel(ROUTE_PROCESS[r])+'.');
     r = 'dashboard'; sub = '';
@@ -6866,7 +6872,7 @@ function renderCageLoading(){
       <div class="tab ${tab==='new'?'active':''}" onclick="navigate('cageloading','new')">Cage Issuance</div>
       <div class="tab ${tab==='receive'?'active':''}" onclick="navigate('cageloading','receive')">Receive Cage (${cagePendingList().length})</div>
       <div class="tab ${tab==='list'?'active':''}" onclick="navigate('cageloading','list')">Cage Log (${socFilter(DB.cages).length})</div>
-      <div class="tab ${tab==='masterlist'?'active':''}" onclick="navigate('cageloading','masterlist')">Cage Masterlist (${socFilter(DB.cageMasterlist).length})</div>
+      ${canViewCageMasterlist()?`<div class="tab ${tab==='masterlist'?'active':''}" onclick="navigate('cageloading','masterlist')">Cage Masterlist (${socFilter(DB.cageMasterlist).length})</div>`:''}
       <div class="tab ${tab==='cyclecount'?'active':''}" onclick="navigate('cageloading','cyclecount')">Cycle Count</div>
     </div>
     <div id="cage-body"></div>
@@ -6971,7 +6977,7 @@ function cageLoadingFormHtml(){
   <div class="card">
     <h3>AMS asset tags loaded in the cage</h3>
     <div class="card-sub">The next available cage in the Cage Masterlist will be assigned when you issue. Scan each AMS tag — it drops into the batch automatically as soon as it's scanned, no need to press Enter.</div>
-    ${available.length===0?'<div class="hint">No available cages. Add cage inventory in the Cage Masterlist before issuing. <button class="btn btn-sm" onclick="navigate(\'cageloading\',\'masterlist\')">Open Cage Masterlist</button></div>':''}
+    ${available.length===0?`<div class="hint">No available cages.${canViewCageMasterlist()?` Add inventory in the Cage Masterlist before issuing. <button class="btn btn-sm" onclick="navigate('cageloading','masterlist')">Open Cage Masterlist</button>`:' Contact your SOC to add cage inventory to the Cage Masterlist.'}</div>`:''}
     <div class="form-row">
       <div class="field"><label>AMS Tag</label><input id="cage-ams-scan" placeholder="Scan AMS tag" oninput="onCageAmsScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();addAmsTagToBatch();}"></div>
     </div>
@@ -7140,7 +7146,7 @@ async function receiveScannedCage(cageId){
     if(!current){outcome='missing';return;}
     if(current.status==='Received'){outcome='received';return;}
     outcome='pending';
-    const receivedHubName=currentSoc()||current.hubName||'';
+    const receivedHubName=current.hubName||currentSoc()||'';
     current.status='Received';current.receivedBy=session.fullName;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=receivedHubName;
     returnCageToMasterlist(current,receivedHubName,now);
     receipt={cageAssetTag:current.cageAssetTag||current.cageId,lhTripNumber:current.lhTripNumber||'',plateNumber:current.plateNumber||'',hubName:current.hubName||'',receivedAt:now};
@@ -7191,18 +7197,26 @@ function cageMasterlistHtml(){
 function cageInventoryShipment(cage){
   return cage && cage.currentShipmentId ? DB.cages.find(cg=>cg.id===cage.currentShipmentId && cg.status!=='Received')||null : null;
 }
+function cageInventoryLatestReceipt(cage){
+  if(!cage) return null;
+  const tag=cageAssetTagKey(cage.assetTag);
+  return (DB.cages||[]).filter(cg=>cg.status==='Received'&&((cg.cageAssetId&&cg.cageAssetId===cage.id)||(tag&&cageAssetTagKey(cg.cageAssetTag||cg.cageId)===tag))).slice().sort((a,b)=>new Date(b.receivedAt||0)-new Date(a.receivedAt||0))[0]||null;
+}
 function cageMasterlistRowsHtml(query){
   const q=String(query||'').trim().toLowerCase();
   const rows=socFilter(DB.cageMasterlist).slice().sort((a,b)=>String(a.assetTag||'').localeCompare(String(b.assetTag||''))).filter(c=>{
     if(!q) return true;
     const shipment=cageInventoryShipment(c);
-    return [c.assetTag,c.soc,c.status,c.location,shipment&&shipment.lhTripNumber,shipment&&shipment.hubName].some(v=>String(v||'').toLowerCase().includes(q));
+    const lastReceipt=cageInventoryLatestReceipt(c);
+    return [c.assetTag,c.soc,c.status,c.location,shipment&&shipment.lhTripNumber,shipment&&shipment.hubName,lastReceipt&&lastReceipt.lhTripNumber,lastReceipt&&lastReceipt.hubName,lastReceipt&&lastReceipt.receivedHubName].some(v=>String(v||'').toLowerCase().includes(q));
   });
   if(!rows.length) return '<div class="empty"><div class="ic">&#128230;</div>No cages in the masterlist match your search.</div>';
   return '<div class="tbl-wrap"><table><tr><th>Asset tag</th><th>SOC</th><th>Status</th><th>Current location / destination</th><th>Last received</th><th>Added</th><th></th></tr>'+rows.map(c=>{
     const shipment=cageInventoryShipment(c);
+    const lastReceipt=cageInventoryLatestReceipt(c);
     const status=c.status==='Available'?'<span class="tag tag-ok">Available</span>':'<span class="tag tag-pending">In Transit</span>';
-    const location=shipment?'To '+(shipment.hubName||'—'):(c.location||c.soc||'—');
+    const receivedLocation=lastReceipt&&(lastReceipt.hubName||lastReceipt.receivedHubName);
+    const location=shipment?'To '+(shipment.hubName||'—'):(receivedLocation?'At '+receivedLocation:(c.lastReceivedAt&&c.location?'At '+c.location:(c.location||c.soc||'—')));
     return `<tr><td class="mono">${esc(c.assetTag)}</td><td>${esc(c.soc||'—')}</td><td>${status}</td><td>${esc(location)}${shipment?`<div class="small-note">Trip ${esc(shipment.lhTripNumber||'—')}</div>`:''}</td><td>${c.lastReceivedAt?fmtDateTime(c.lastReceivedAt):'<span class="small-note">—</span>'}</td><td>${c.addedAt?fmtDateTime(c.addedAt):'<span class="small-note">—</span>'}</td><td>${c.status==='Available'?`<button class="btn btn-sm" onclick="openEditCageMasterlistTag('${esc(c.id)}')">Edit tag</button>`:'<span class="small-note">Away</span>'}</td></tr>`;
   }).join('')+'</table></div>';
 }
