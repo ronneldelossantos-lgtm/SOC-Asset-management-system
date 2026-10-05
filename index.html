@@ -3778,20 +3778,20 @@ function receivingFormHtml(){
   return `
   <div class="card">
     <h3>Receive incoming supplies</h3>
-    <div class="card-sub">Assets are added to the batch when their AMS tags are entered. Consumables are added to the batch after quantity is entered. Enter the supplier and attach the transmittal before receiving the batch.</div>
+    <div class="card-sub">Asset tags are generated from the selected SOC and item description. Enter the quantity and AMS tag(s). Consumables are added after quantity is entered. Enter the supplier and attach the transmittal before receiving the batch.</div>
     <div class="section-title">Add item</div>
     <div class="form-row" id="recv-sku-row" style="grid-template-columns:repeat(2,minmax(0,1fr));">
       <div class="field" style="position:relative;"><label>Item description</label><input id="recv-desc" placeholder="Type to search item description…" autocomplete="off" oninput="recvDescInput();scheduleRecvAutoAdd();" onfocus="recvDescInput()" onblur="recvDescBlur()"><div id="recv-desc-suggest" class="suggest-dropdown"></div></div>
       <div class="field"><label>SKU code</label><input id="recv-sku" class="autofill" disabled placeholder="Auto-filled from item description"></div>
     </div>
     <div class="form-row" id="recv-ams-row" style="display:none;grid-template-columns:repeat(2,minmax(0,1fr));">
-      <div class="field" id="recv-asset-code-field"><label>Asset Tag(s)</label><textarea id="recv-asset-code" oninput="scheduleRecvAutoAdd()" placeholder="Scan or enter asset tags; one tag per line"></textarea></div>
-      <div class="field" id="recv-ams-tagging-field"><label>AMS Asset Tagging</label><input id="recv-ams-tagging" oninput="scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}" placeholder="Scan or type AMS tag(s); separate multiple tags with commas"></div>
+      <div class="field" id="recv-asset-code-field"><label>Generated Asset Tag(s)</label><textarea id="recv-asset-code" class="autofill" readonly placeholder="Enter quantity to preview generated tags"></textarea><div id="recv-tag-hint" class="hint">Format: SPX + SOC initials + item initials + sequence number.</div></div>
+      <div class="field" id="recv-ams-tagging-field"><label>AMS Asset Tagging</label><input id="recv-ams-tagging" oninput="scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}" placeholder="Enter AMS tag(s); separate multiple tags with commas"></div>
     </div>
     <div class="form-row3" id="recv-meta-row">
       <div class="field"><label>Type of supply</label><input id="recv-type" class="autofill" disabled></div>
       <div class="field"><label>UOM</label><input id="recv-uom" class="autofill" disabled></div>
-      <div class="field" id="recv-qty-field"><label>Quantity received</label><input id="recv-qty" type="number" min="1" placeholder="0" oninput="scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem(true);}"></div>
+      <div class="field" id="recv-qty-field"><label>Quantity received</label><input id="recv-qty" type="number" min="1" step="1" placeholder="0" oninput="recvRefreshAssetTagPreview();scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem(true);}"></div>
     </div>
     <div id="recv-sku-hint" class="hint"></div>
 
@@ -3807,7 +3807,7 @@ function receivingFormHtml(){
       </div>
     </div>
     <div class="footer-actions" id="recv-batch-actions" style="display:none;">
-      <button class="btn" onclick="recvDraftItems=[];refreshRecvItemsTable();">Clear batch</button>
+      <button class="btn" onclick="recvDraftItems=[];recvRefreshAssetTagPreview();refreshRecvItemsTable();">Clear batch</button>
       <button class="btn btn-primary" onclick="submitReceiving()">Receive batch</button>
     </div>
   </div>`;
@@ -3826,12 +3826,13 @@ function recvApplySkuInfo(info, updateDescription){
   document.getElementById('recv-uom').value = info?info.uom:'';
   const isAsset = !!info && info.type==='Asset';
   document.getElementById('recv-ams-row').style.display = isAsset ? '' : 'none';
-  document.getElementById('recv-qty-field').style.display = isAsset ? 'none' : '';
-  document.getElementById('recv-meta-row').style.gridTemplateColumns = isAsset ? 'repeat(2,minmax(0,1fr))' : 'repeat(3,minmax(0,1fr))';
+  document.getElementById('recv-qty-field').style.display = '';
+  document.getElementById('recv-meta-row').style.gridTemplateColumns = 'repeat(3,minmax(0,1fr))';
   if(!isAsset){
     document.getElementById('recv-asset-code').value = '';
     document.getElementById('recv-ams-tagging').value = '';
   }
+  recvRefreshAssetTagPreview();
 }
 function recvDescMatches(q){
   q = String(q||'').trim().toLowerCase();
@@ -3892,15 +3893,51 @@ function recvAssetCodesOf(r){
   const arrayCodes = Array.isArray(r.assetCodes) ? r.assetCodes : [];
   return recvAssetCodes(arrayCodes.concat([r.assetCode||'']).join('\n'));
 }
+function recvAssetTagPrefix(soc, description){
+  const socCode = String(soc||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const itemCode = String(description||'').toUpperCase().replace(/[^A-Z]/g,'');
+  if(!socCode || !itemCode) return '';
+  return 'SPX'+socCode[0]+socCode[socCode.length-1]+'-'+itemCode[0]+itemCode[itemCode.length-1];
+}
+function recvGeneratedAssetTags(soc, description, qty){
+  const prefix = recvAssetTagPrefix(soc, description);
+  const count = Math.floor(Number(qty)||0);
+  if(!prefix || count<1) return [];
+  let maxSequence = 0;
+  const inspect = code=>{
+    const value = String(code||'').trim().toUpperCase();
+    if(!value.startsWith(prefix)) return;
+    const suffix = value.slice(prefix.length);
+    if(/^\d+$/.test(suffix)) maxSequence = Math.max(maxSequence,Number(suffix)||0);
+  };
+  (DB.receiving||[]).forEach(record=>recvAssetCodesOf(record).forEach(inspect));
+  (recvDraftItems||[]).forEach(item=>(item.assetCodes||[]).forEach(inspect));
+  return Array.from({length:count},(_,index)=>prefix+String(maxSequence+index+1).padStart(3,'0'));
+}
+function recvRefreshAssetTagPreview(){
+  const field = document.getElementById('recv-asset-code');
+  if(!field) return;
+  const info = skuInfo((document.getElementById('recv-sku')?.value||'').trim());
+  const hint = document.getElementById('recv-tag-hint');
+  field.value = '';
+  if(!info || info.type!=='Asset') return;
+  const soc = currentSoc();
+  if(!soc){ if(hint) hint.textContent='Select an SOC in the site selector before receiving assets.'; return; }
+  const qty = Number(document.getElementById('recv-qty')?.value);
+  if(!Number.isInteger(qty) || qty<1){ if(hint) hint.textContent='Enter the quantity to preview the generated asset tags.'; return; }
+  const tags = recvGeneratedAssetTags(soc,info.description,qty);
+  field.value = tags.join('\n');
+  if(hint) hint.textContent=tags.length?'Tags are generated for '+soc+' and this item.':'Could not generate tags; check the SOC and item description.';
+}
 function scheduleRecvAutoAdd(){
   clearTimeout(recvAutoAddTimer);
   recvAutoAddTimer = setTimeout(()=>{
     const info = skuInfo((document.getElementById('recv-sku')?.value||'').trim());
     if(!info) return;
     if(info.type==='Asset'){
-      const assetCodes = recvAssetCodes(document.getElementById('recv-asset-code').value);
+      const qty = Number(document.getElementById('recv-qty').value);
       const amsTags = document.getElementById('recv-ams-tagging').value.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean);
-      if(assetCodes.length && amsTags.length) addRecvItem(true);
+      if(Number.isInteger(qty) && qty>0 && amsTags.length) addRecvItem(true);
     } else if(Number(document.getElementById('recv-qty').value)>0){
       addRecvItem(true);
     }
@@ -3910,26 +3947,34 @@ function addRecvItem(automatic=false){
   const sku = document.getElementById('recv-sku').value.trim();
   const info = skuInfo(sku);
   if(!info){ if(!automatic) toast('Select an item description from the matching items.'); return; }
-  const assetCodes = info.type==='Asset' ? recvAssetCodes(document.getElementById('recv-asset-code').value) : [];
-  const qty = info.type==='Asset' ? assetCodes.length : Number(document.getElementById('recv-qty').value);
-  if(info.type==='Asset' && assetCodes.length===0){ if(!automatic) toast('Enter at least one Asset Tag.'); return; }
+  const qty = Number(document.getElementById('recv-qty').value);
+  if(info.type==='Asset' && (!Number.isInteger(qty) || qty<1)){ if(!automatic) toast('Enter a whole number quantity greater than 0.'); return; }
   if(!qty || qty<=0){ if(!automatic) toast('Enter a quantity greater than 0.'); return; }
-  const assetCode = info.type==='Asset' ? document.getElementById('recv-asset-code').value.trim() : '';
+  const itemSoc = currentSoc();
+  if(info.type==='Asset' && !itemSoc){
+    const hint=document.getElementById('recv-tag-hint'); if(hint) hint.textContent='Select an SOC in the site selector before receiving assets.';
+    if(!automatic) toast('Select an SOC in the site selector before receiving assets.');
+    return;
+  }
+  const assetCodes = info.type==='Asset' ? recvGeneratedAssetTags(itemSoc,info.description,qty) : [];
+  if(info.type==='Asset' && assetCodes.length!==qty){ if(!automatic) toast('Could not generate asset tags for this item.'); return; }
+  const assetCode = info.type==='Asset' ? assetCodes.join(', ') : '';
   const amsTags = info.type==='Asset' ? document.getElementById('recv-ams-tagging').value.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean) : [];
   if(info.type==='Asset' && amsTags.length===0){ if(!automatic) toast('Enter an AMS Asset Tag.'); return; }
   clearTimeout(recvAutoAddTimer);
   recvAutoAddTimer = null;
-  recvDraftItems.push({sku:info.sku, description:info.description, type:info.type, uom:info.uom, qty, assetCode, assetCodes, amsTags});
+  recvDraftItems.push({sku:info.sku, description:info.description, type:info.type, uom:info.uom, qty, assetCode, assetCodes, amsTags, soc:itemSoc});
   document.getElementById('recv-sku').value=''; document.getElementById('recv-desc').value=''; document.getElementById('recv-type').value=''; document.getElementById('recv-uom').value=''; document.getElementById('recv-qty').value='';
   document.getElementById('recv-asset-code').value=''; document.getElementById('recv-ams-tagging').value='';
   recvHideDescSuggestions();
   recvSkuLookup();
   const hintEl = document.getElementById('recv-sku-hint'); if(hintEl) hintEl.innerHTML='';
+  recvRefreshAssetTagPreview();
   refreshRecvItemsTable();
   const descEl = document.getElementById('recv-desc'); if(descEl) descEl.focus();
-  if(automatic) toast(info.type==='Asset'?'Tagged asset added to delivery batch.':'Consumable added to delivery batch.');
+  if(automatic) toast(info.type==='Asset'?'Asset with generated tags added to delivery batch.':'Consumable added to delivery batch.');
 }
-function removeRecvItem(i){ recvDraftItems.splice(i,1); refreshRecvItemsTable(); }
+function removeRecvItem(i){ recvDraftItems.splice(i,1); recvRefreshAssetTagPreview(); refreshRecvItemsTable(); }
 function refreshRecvItemsTable(){
   const el = document.getElementById('recv-items-table');
   if(!el) return;
@@ -3965,11 +4010,16 @@ async function submitReceiving(){
   const date = nowISO();
   const ids = [];
   const soc = currentSoc();
+  if(recvDraftItems.some(it=>it.type==='Asset' && (!soc || socKey(it.soc)!==socKey(soc)))){
+    toast('The selected SOC changed after asset tags were generated. Select the SOC used for those tags, or remove and re-add the asset lines.');
+    return;
+  }
   recvDraftItems.forEach(it=>{
     const id = nextCode('RCV','recv');
     ids.push(id);
-    DB.receiving.push({id, sku:it.sku, assetCode:it.assetCode||'', assetCodes:it.assetCodes||[], amsTags:it.amsTags||[], description:it.description, type:it.type, uom:it.uom, from, qty:it.qty, date, receivedBy:session.fullName, transmittal:file?file.name:'', transmittalFile, soc});
-    addStock(it.sku, it.qty, soc);
+    const itemSoc = it.type==='Asset' ? it.soc : soc;
+    DB.receiving.push({id, sku:it.sku, assetCode:it.assetCode||'', assetCodes:it.assetCodes||[], amsTags:it.amsTags||[], description:it.description, type:it.type, uom:it.uom, from, qty:it.qty, date, receivedBy:session.fullName, transmittal:file?file.name:'', transmittalFile, soc:itemSoc});
+    addStock(it.sku, it.qty, itemSoc);
   });
   syncOpenRequestAssetCodes();
   recvDraftItems = [];
