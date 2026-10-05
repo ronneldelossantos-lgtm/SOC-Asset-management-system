@@ -686,15 +686,33 @@ if(!window.storage){
          writes that could partially fail. entries: [{key, value,
          expectedPrevious}]. Returns {conflict:true, conflicts:{key:
          currentValue}} listing every mismatched section, not just the
-         first, so the caller can refresh all of them at once. */
+         first, so the caller can refresh all of them at once.
+
+         Firestore also caps a single commit at ~10MiB total regardless of
+         how many documents it touches. A save that happens to change many
+         large records at once (e.g. a cascading asset-code reallocation
+         across every open request — see syncOpenRequestAssetCodes) can
+         exceed that and fail outright with no way to retry around it, since
+         it's bigger than any one commit could ever be. commitInGroups()
+         below keeps the same per-item compare-and-swap and write logic, but
+         runs it across however many sequentially-committed transactions are
+         needed to stay under a safe per-commit size, instead of always
+         exactly one. Splitting does give up strict all-or-nothing across a
+         save this large, but only in the same way an ordinary conflict
+         already does: a group that fails to commit (whether from a real
+         conflict or a dropped connection) leaves lastKnownSnapshot stale
+         for just that group, which the existing compare-and-swap/retry path
+         (see saveDBWithRetry) already detects and repairs on the next save
+         attempt — this never silently double-applies or drops a change. */
       async setMulti(entries, shared, recordEntries){
-        try{
+        const MAX_GROUP_BYTES = 8*1024*1024; // safe margin under Firestore's ~10MiB per-commit cap
+        const records = recordEntries || [];
+        async function commitGroup(groupEntries, groupRecords){
           let conflicts = null, recordConflicts = null;
-          const records = recordEntries || [];
           await fsDB.runTransaction(async tx=>{
-            const refs = entries.map(e=>docRef(e.key, shared));
+            const refs = groupEntries.map(e=>docRef(e.key, shared));
             const snaps = await Promise.all(refs.map(r=>tx.get(r)));
-            const recordRefs = records.map(e=>recordRef(e.section,e.id));
+            const recordRefs = groupRecords.map(e=>recordRef(e.section,e.id));
             const recordSnaps = await Promise.all(recordRefs.map(r=>tx.get(r)));
             /* Every read must happen before any write in a Firestore
                transaction.  Read the old chunks now so the compare-and-swap
@@ -702,36 +720,36 @@ if(!window.storage){
             const oldChunkSnaps = await Promise.all(snaps.map((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const count = data && data.chunked ? data.chunks : 0;
-              if(!Number.isInteger(count) || count < 0) throw new Error('Invalid Firestore chunk manifest for '+entries[i].key+'.');
-              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(docRef(chunkKey(entries[i].key, n), shared))));
+              if(!Number.isInteger(count) || count < 0) throw new Error('Invalid Firestore chunk manifest for '+groupEntries[i].key+'.');
+              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(docRef(chunkKey(groupEntries[i].key, n), shared))));
             }));
             const oldRecordChunkSnaps = await Promise.all(recordSnaps.map((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const count = data && data.chunked ? data.chunks : 0;
-              if(!Number.isInteger(count) || count<0) throw new Error('Invalid '+records[i].section+' record chunk manifest for '+records[i].id+'.');
-              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(recordChunkRef(records[i].section,records[i].id,n))));
+              if(!Number.isInteger(count) || count<0) throw new Error('Invalid '+groupRecords[i].section+' record chunk manifest for '+groupRecords[i].id+'.');
+              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(recordChunkRef(groupRecords[i].section,groupRecords[i].id,n))));
             }));
             const localConflicts = {};
             snaps.forEach((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const cur = !snap.exists ? null : (data.chunked
                 ? oldChunkSnaps[i].map(part=>{
-                    if(!part.exists || typeof part.data().value !== 'string') throw new Error('Incomplete Firestore chunks for '+entries[i].key+'.');
+                    if(!part.exists || typeof part.data().value !== 'string') throw new Error('Incomplete Firestore chunks for '+groupEntries[i].key+'.');
                     return part.data().value;
                   }).join('')
                 : data.value);
-              if(cur !== entries[i].expectedPrevious) localConflicts[entries[i].key] = cur;
+              if(cur !== groupEntries[i].expectedPrevious) localConflicts[groupEntries[i].key] = cur;
             });
             const localRecordConflicts = {};
             recordSnaps.forEach((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const cur = !snap.exists ? null : (data.chunked
                 ? oldRecordChunkSnaps[i].map(part=>{
-                    if(!part.exists || typeof part.data().value!=='string') throw new Error('Incomplete '+records[i].section+' record chunks for '+records[i].id+'.');
+                    if(!part.exists || typeof part.data().value!=='string') throw new Error('Incomplete '+groupRecords[i].section+' record chunks for '+groupRecords[i].id+'.');
                     return part.data().value;
                   }).join('')
                 : data.value);
-              if(cur !== records[i].expectedPrevious) localRecordConflicts[records[i].section+'__'+records[i].id] = cur;
+              if(cur !== groupRecords[i].expectedPrevious) localRecordConflicts[groupRecords[i].section+'__'+groupRecords[i].id] = cur;
             });
             if(Object.keys(localConflicts).length || Object.keys(localRecordConflicts).length){
               conflicts = localConflicts;
@@ -739,7 +757,7 @@ if(!window.storage){
               return;
             }
             const updatedAt = Date.now();
-            entries.forEach((entry, i)=>{
+            groupEntries.forEach((entry, i)=>{
               const chunks = splitValue(entry.value);
               if(chunks.length === 1){
                 tx.set(refs[i], {value: entry.value, updatedAt});
@@ -750,7 +768,7 @@ if(!window.storage){
                 oldChunkSnaps[i].slice(chunks.length).forEach((part, n)=>tx.delete(docRef(chunkKey(entry.key, chunks.length+n), shared)));
               }
             });
-            records.forEach((entry, i)=>{
+            groupRecords.forEach((entry, i)=>{
               if(entry.value===null){
                 tx.delete(recordRefs[i]);
                 oldRecordChunkSnaps[i].forEach((part, n)=>tx.delete(recordChunkRef(entry.section,entry.id,n)));
@@ -773,9 +791,40 @@ if(!window.storage){
               }
             });
           });
-          if(conflicts || recordConflicts) return {conflict:true, conflicts:conflicts||{}, recordConflicts:recordConflicts||{}};
-          const now = Date.now();
-          return {ok:true, updatedAt: now};
+          return {conflicts, recordConflicts};
+        }
+        try{
+          /* Group whole entries/records together (never split one record's
+             own chunks across groups) so each group's estimated total stays
+             under MAX_GROUP_BYTES. The vast majority of saves are far under
+             this already and end up as a single group — identical to the
+             one-transaction behavior this replaces. */
+          const groups = [];
+          let current = {entries:[], records:[], bytes:0};
+          function pushCurrent(){ if(current.entries.length||current.records.length) groups.push(current); current={entries:[],records:[],bytes:0}; }
+          entries.forEach(entry=>{
+            const size = utf8Bytes(entry.value);
+            if(current.bytes && current.bytes+size>MAX_GROUP_BYTES) pushCurrent();
+            current.entries.push(entry); current.bytes += size;
+          });
+          records.forEach(entry=>{
+            const size = entry.value===null ? 0 : utf8Bytes(entry.value);
+            if(current.bytes && current.bytes+size>MAX_GROUP_BYTES) pushCurrent();
+            current.records.push(entry); current.bytes += size;
+          });
+          pushCurrent();
+          if(!groups.length) return {ok:true, updatedAt: Date.now()};
+
+          const conflicts = {}, recordConflicts = {};
+          for(const group of groups){
+            const result = await commitGroup(group.entries, group.records);
+            if(result.conflicts) Object.assign(conflicts, result.conflicts);
+            if(result.recordConflicts) Object.assign(recordConflicts, result.recordConflicts);
+          }
+          if(Object.keys(conflicts).length || Object.keys(recordConflicts).length){
+            return {conflict:true, conflicts, recordConflicts};
+          }
+          return {ok:true, updatedAt: Date.now()};
         }catch(e){ console.error('storage.setMulti failed:', e); throw e; }
       },
       async delete(key, shared){
