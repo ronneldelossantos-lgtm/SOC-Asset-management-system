@@ -2046,10 +2046,33 @@ function availableAssetCodes(sku, soc){
 }
 /* Open requests reserve assets in filing order. Rebuilding these reservations
    after each relevant change makes returned/newly received codes flow to the
-   earliest waiting request and prevents two requests claiming the same code. */
-function syncOpenRequestAssetCodes(){
+   earliest waiting request and prevents two requests claiming the same code.
+
+   This used to unconditionally recompute every open request's every item on
+   every call, re-scanning the full receiving/issuance/returns/repairs
+   history per item (availableAssetCodes) regardless of what actually
+   changed. At real data volumes that was both slow (the full history scan
+   happening dozens of times per action) and a growing Firestore cost (every
+   open request's full record, attachments included, re-saved on every
+   cascade) - see setMulti()'s per-commit size comment above.
+
+   syncOpenRequestAssetCodes() now only re-evaluates the specific (sku, site)
+   pools actually touched by whatever changed in this action, via
+   syncOpenRequestAssetCodesScoped(). This is safe because
+   availableAssetCodes(sku, site) already filters strictly to that sku and
+   site before returning candidates - an item for one sku/site can never
+   compete for, or be affected by, a code belonging to a different sku/site -
+   so leaving untouched pools completely alone changes nothing about the
+   (unchanged, still sequential-by-filing-order) result for the pools that
+   did change. Verified against real production data and hand-built scarcity/
+   contention scenarios in scripts/test-allocator/ before this replaced the
+   unconditional full recompute - see that directory for how to re-verify
+   after changing this function. */
+function skuSiteKey(sku, site){ return String(sku||'').trim().toUpperCase()+'||'+socKey(site); }
+function syncOpenRequestAssetCodesScoped(affectedSkuSites){
+  const inScope = (sku, site) => affectedSkuSites===null || affectedSkuSites.has(skuSiteKey(sku, site));
   (DB.requests||[]).filter(r=>r.status==='Rejected').forEach(r=>(r.items||[]).forEach(it=>{
-    if(it.type==='Asset' && Array.isArray(it.assetCodes)){ it.assetCodes=[]; it.assetTagging=''; }
+    if(it.type==='Asset' && Array.isArray(it.assetCodes) && inScope(it.sku, requestSoc(r))){ it.assetCodes=[]; it.assetTagging=''; }
   }));
   const active = (DB.requests||[]).map((r,index)=>({r,index}))
     .filter(x=>!['Rejected','Issued','Received'].includes(x.r.status))
@@ -2063,13 +2086,14 @@ function syncOpenRequestAssetCodes(){
   const approved = active.filter(({r})=>['Preparing','Ready for Pull-out','Approved'].includes(r.status));
   // Pending requests do not reserve inventory before Supplies approval.
   active.filter(({r})=>!['Preparing','Ready for Pull-out','Approved'].includes(r.status)).forEach(({r})=>{
-    (r.items||[]).filter(it=>it.type==='Asset').forEach(it=>{it.assetCodes=[];it.assetTagging='';});
+    (r.items||[]).filter(it=>it.type==='Asset' && inScope(it.sku, requestSoc(r))).forEach(it=>{it.assetCodes=[];it.assetTagging='';});
   });
   // Preserve valid assignments before filling gaps, so later approvals cannot steal tags.
   approved.forEach(({r})=>{
     (r.items||[]).forEach(it=>{
       if(it.type!=='Asset') return;
       const site=requestSoc(r);
+      if(!inScope(it.sku, site)) return;
       const available=site===null?[]:availableAssetCodes(it.sku,site||'');
       const canonical=new Map(available.map(code=>[code.toUpperCase(),code]));
       const qty=Math.max(0,Math.floor(approvedQtyOf(it)||0));
@@ -2086,8 +2110,9 @@ function syncOpenRequestAssetCodes(){
   approved.forEach(({r})=>{
     (r.items||[]).forEach(it=>{
       if(it.type!=='Asset') return;
-      const qty = Math.max(0,Math.floor(approvedQtyOf(it)||0));
       const requestSite = requestSoc(r);
+      if(!inScope(it.sku, requestSite)) return;
+      const qty = Math.max(0,Math.floor(approvedQtyOf(it)||0));
       const candidates = requestSite===null ? [] : availableAssetCodes(it.sku,requestSite||'').filter(code=>!reserved.has(code.toUpperCase()));
       const allocatedTags = candidates.slice(0,Math.max(0,qty-it.assetCodes.length));
       it.assetCodes = it.assetCodes.concat(allocatedTags);
@@ -2095,6 +2120,39 @@ function syncOpenRequestAssetCodes(){
       allocatedTags.forEach(code=>reserved.add(code.toUpperCase()));
     });
   });
+}
+/* Figures out which (sku, site) pools could need re-evaluation from
+   whatever has changed in DB so far in the current action, reusing the same
+   diffing saveDB() already relies on to know what to write: recordChanges()
+   (against recordSnapshots) for the record-collection sections, and a plain
+   id-keyed diff against lastKnownSnapshot for the two that are still a
+   single blob document (receiving, repairs). Falls back to "everything" -
+   the old, safe, unconditional behavior - if record mode isn't active (e.g.
+   the localStorage-only fallback) or the relevant snapshots aren't
+   available yet, rather than risk under-scoping against an unknown state. */
+function computePendingAssetCodeScope(){
+  if(!recordModeActive) return null;
+  const keys = new Set();
+  const addRequest = r=>{ if(!r) return; const site=requestSoc(r); (r.items||[]).forEach(it=>{ if(it.type==='Asset') keys.add(skuSiteKey(it.sku,site)); }); };
+  const addDirect = rec=>{ if(rec) keys.add(skuSiteKey(rec.sku, rec.soc)); };
+  const parseOrNull = v => v==null ? null : JSON.parse(v);
+  recordChanges('requests').forEach(c=>{ addRequest(parseOrNull(c.expectedPrevious)); addRequest(parseOrNull(c.value)); });
+  recordChanges('returns').forEach(c=>{ addDirect(parseOrNull(c.expectedPrevious)); addDirect(parseOrNull(c.value)); });
+  recordChanges('issuance').forEach(c=>{ addDirect(parseOrNull(c.expectedPrevious)); addDirect(parseOrNull(c.value)); });
+  ['receiving','repairs'].forEach(key=>{
+    if(!lastKnownSnapshot || lastKnownSnapshot[key]===undefined) return;
+    const before = new Map((JSON.parse(lastKnownSnapshot[key]||'[]')||[]).map(rec=>[rec.id,rec]));
+    const after = new Map((DB[key]||[]).map(rec=>[rec.id,rec]));
+    const ids = new Set([...before.keys(), ...after.keys()]);
+    ids.forEach(id=>{
+      const b = before.get(id), a = after.get(id);
+      if(JSON.stringify(b)!==JSON.stringify(a)){ addDirect(b); addDirect(a); }
+    });
+  });
+  return keys;
+}
+function syncOpenRequestAssetCodes(){
+  syncOpenRequestAssetCodesScoped(computePendingAssetCodeScope());
 }
 /* Issuance records can represent a batch of several individually-tagged
    units under one line (assetTagging is a comma-joined list). Looking up
