@@ -8,7 +8,7 @@
 const PROJECT_ID = 'spx-soc-asset-management';
 const COLLECTION = 'sms_erp_storage';
 const STORAGE_VERSION = 'pilot_v2';
-const RECORD_SECTIONS = new Set(['requests', 'returns', 'issuance']);
+const RECORD_SECTIONS = new Set(['requests', 'returns', 'issuance', 'receiving', 'repairs']);
 const sectionDocId = key => `shared__${STORAGE_VERSION}__${key}`;
 const recordCollection = section => `${STORAGE_VERSION}_${section}`;
 

@@ -1021,16 +1021,27 @@ function defaultDB(){
    here becomes its own Firestore document ('section__'+key) — see the
    setMulti() comment above for why the app moved off one giant document. */
 const SECTION_KEYS = Object.keys(defaultDB());
-const RECORD_SECTION_KEYS = ['requests','returns','issuance'];
+/* receiving and repairs joined requests/returns/issuance here for the same
+   reason those three did: each was a single blob document (one Firestore
+   doc, chunked past 1MiB), and receiving independently grew past Firestore's
+   ~10MiB per-commit limit (unlike requests' limit, which only ever showed up
+   when many records changed in one save, receiving hit it on an ORDINARY
+   single-entry save, because the ENTIRE blob - all 100+ receiving entries,
+   attachments included - had to be rewritten every time, see setMulti()'s
+   comment above). Each receiving/repair entry is now its own small document,
+   so there's no longer any ceiling tied to how much history has
+   accumulated - see scripts/migrate-receiving-repairs.js for the one-time
+   migration that moved existing data over. */
+const RECORD_SECTION_KEYS = ['requests','returns','issuance','receiving','repairs'];
 const CORE_SECTION_KEYS = ['users','notifications','counters','issuanceMetrics'];
 const ROUTE_SECTIONS = {
-  dashboard: ['sku','stock','reorderPoint','repairs'],
+  dashboard: ['sku','stock','reorderPoint'],
   request: ['sku','departments','accountability','stock','users'],
-  receiving: ['sku','stock','suppliers','receiving'],
-  issuance: ['sku','stock','repairs'],
-  returns: ['sku','stock','repairs','deptIssuance'],
+  receiving: ['sku','stock','suppliers'],
+  issuance: ['sku','stock'],
+  returns: ['sku','stock','deptIssuance'],
   cyclecount: ['sku','stock','cycleCountConsumable','cycleCountAsset'],
-  repair: ['sku','stock','repairs','pmChecklists','pmCounts','pmInspections'],
+  repair: ['sku','stock','pmChecklists','pmCounts','pmInspections'],
   cageloading: ['cages','cageMasterlist','cageCycleCounts','warehouses','counters'],
   itassets: ['pdas','pdaLogs','itAssetIssuances','itAssetReturns','pdaCycleCounts','itAssetCycleCounts','pdaAllocations','pdaAllocationsBySoc','pdaDeptBuckets','employees','departments','accountability'],
   parcelretrieval: ['parcels','sortingStations','handOverTo','counters'],
@@ -1040,22 +1051,22 @@ const ROUTE_SECTIONS = {
   drequest: ['sku','departments','accountability','stock','users'],
   dreceiving: ['sku','stock','deptIssuance'],
   dissuance: ['sku','employees','deptIssuance'],
-  dreturn: ['sku','stock','repairs','deptIssuance']
+  dreturn: ['sku','stock','deptIssuance']
 };
 const ROUTE_RECORD_SECTIONS = {
-  dashboard: ['requests','returns','issuance'],
+  dashboard: ['requests','returns','issuance','repairs'],
   request: ['requests','issuance'],
-  receiving: ['requests','issuance'],
-  issuance: ['requests','issuance'],
-  returns: ['returns','issuance'],
+  receiving: ['requests','issuance','receiving'],
+  issuance: ['requests','issuance','repairs'],
+  returns: ['returns','issuance','repairs'],
   cyclecount: ['issuance'],
-  repair: ['returns','issuance'],
+  repair: ['returns','issuance','repairs'],
   ddashboard: ['requests','returns','issuance'],
   dapprovals: ['requests'],
   drequest: ['requests','issuance'],
   dreceiving: ['requests','issuance'],
   dissuance: ['issuance'],
-  dreturn: ['returns','issuance']
+  dreturn: ['returns','issuance','repairs']
 };
 const ARCHIVE_RECORD_SECTIONS = {
   issuance: ['issuance'],
@@ -1078,6 +1089,11 @@ function recordIsArchived(section, record){
   if(section==='requests') return ['Rejected','Received'].includes(record.status);
   if(section==='returns') return ['Received','Asset Received'].includes(record.status);
   if(section==='issuance') return record.deptReceived===true;
+  // receiving and repairs are append-only logs, not a pending->closed
+  // workflow like the three above - there's no "done with this one" state to
+  // split on, and availableAssetCodes() already needs the complete history
+  // of both every time it runs. Always "active" just means always loaded,
+  // identical to how they behaved as a single always-fully-loaded blob.
   return false;
 }
 function recordSnapshot(records){

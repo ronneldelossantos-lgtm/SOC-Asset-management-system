@@ -30,5 +30,15 @@ service cloud.firestore {
     match /pilot_v2_issuance/{document=**} {
       allow read, write: if true;
     }
+    // receiving and repairs moved off the single-blob section documents
+    // (sms_erp_storage) onto per-record collections too, for the same
+    // reason requests/returns/issuance did - see RECORD_SECTION_KEYS in
+    // index.html.
+    match /pilot_v2_receiving/{document=**} {
+      allow read, write: if true;
+    }
+    match /pilot_v2_repairs/{document=**} {
+      allow read, write: if true;
+    }
   }
 }
