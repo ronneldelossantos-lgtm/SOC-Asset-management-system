@@ -689,30 +689,45 @@ if(!window.storage){
          first, so the caller can refresh all of them at once.
 
          Firestore also caps a single commit at ~10MiB total regardless of
-         how many documents it touches. A save that happens to change many
-         large records at once (e.g. a cascading asset-code reallocation
-         across every open request — see syncOpenRequestAssetCodes) can
-         exceed that and fail outright with no way to retry around it, since
-         it's bigger than any one commit could ever be. commitInGroups()
-         below keeps the same per-item compare-and-swap and write logic, but
-         runs it across however many sequentially-committed transactions are
-         needed to stay under a safe per-commit size, instead of always
-         exactly one. Splitting does give up strict all-or-nothing across a
-         save this large, but only in the same way an ordinary conflict
-         already does: a group that fails to commit (whether from a real
-         conflict or a dropped connection) leaves lastKnownSnapshot stale
-         for just that group, which the existing compare-and-swap/retry path
-         (see saveDBWithRetry) already detects and repairs on the next save
-         attempt — this never silently double-applies or drops a change. */
+         how many documents it touches — and that cap applies per COMMIT, not
+         per logical entry/record. Grouping whole entries/records into
+         several sequentially-committed transactions (so a save touching many
+         separate large records doesn't exceed one commit) was the first fix
+         here, but it can't help a single legacy blob-document section
+         (receiving/repairs are still one JSON value chunked across
+         sub-documents, unlike requests/returns/issuance's per-record
+         storage) that has independently grown past ~10MiB on its own — one
+         entry's own chunk writes still had to land in one commit. That's
+         exactly what broke staff logging a new receiving entry: `receiving`
+         alone had grown to ~11.5MB.
+
+         The write phase now spends a fixed per-commit byte budget across
+         ALL pending writes (every entry's manifest + as many of its chunks
+         as fit, every record's manifest + chunks, in whatever order they're
+         queued) rather than keeping one logical entry's writes together.
+         Each entry/record's small manifest doc ({chunked,chunks,updatedAt})
+         is always written in the FIRST transaction — that's what makes
+         splitting the remaining chunk writes into follow-up batches safe:
+         the manifest is the value a concurrent writer's own compare-and-swap
+         check reads, so once it's committed here, nothing can race past this
+         update undetected even though its own chunk writes haven't all
+         landed yet. A reader who happens to fetch mid-way between the
+         manifest commit and the last follow-up batch sees the same
+         "Incomplete Firestore chunks" condition the code already handles
+         (loadDB's retry-with-backoff) — not a new failure mode, the same one
+         a dropped connection mid-save would already produce. */
       async setMulti(entries, shared, recordEntries){
         const MAX_GROUP_BYTES = 8*1024*1024; // safe margin under Firestore's ~10MiB per-commit cap
         const records = recordEntries || [];
-        async function commitGroup(groupEntries, groupRecords){
+        try{
           let conflicts = null, recordConflicts = null;
+          const pendingWrites = []; // {ref, data, size} that didn't fit in the transaction
+          const pendingDeletes = []; // refs that didn't fit in the transaction
+
           await fsDB.runTransaction(async tx=>{
-            const refs = groupEntries.map(e=>docRef(e.key, shared));
+            const refs = entries.map(e=>docRef(e.key, shared));
             const snaps = await Promise.all(refs.map(r=>tx.get(r)));
-            const recordRefs = groupRecords.map(e=>recordRef(e.section,e.id));
+            const recordRefs = records.map(e=>recordRef(e.section,e.id));
             const recordSnaps = await Promise.all(recordRefs.map(r=>tx.get(r)));
             /* Every read must happen before any write in a Firestore
                transaction.  Read the old chunks now so the compare-and-swap
@@ -720,36 +735,36 @@ if(!window.storage){
             const oldChunkSnaps = await Promise.all(snaps.map((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const count = data && data.chunked ? data.chunks : 0;
-              if(!Number.isInteger(count) || count < 0) throw new Error('Invalid Firestore chunk manifest for '+groupEntries[i].key+'.');
-              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(docRef(chunkKey(groupEntries[i].key, n), shared))));
+              if(!Number.isInteger(count) || count < 0) throw new Error('Invalid Firestore chunk manifest for '+entries[i].key+'.');
+              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(docRef(chunkKey(entries[i].key, n), shared))));
             }));
             const oldRecordChunkSnaps = await Promise.all(recordSnaps.map((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const count = data && data.chunked ? data.chunks : 0;
-              if(!Number.isInteger(count) || count<0) throw new Error('Invalid '+groupRecords[i].section+' record chunk manifest for '+groupRecords[i].id+'.');
-              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(recordChunkRef(groupRecords[i].section,groupRecords[i].id,n))));
+              if(!Number.isInteger(count) || count<0) throw new Error('Invalid '+records[i].section+' record chunk manifest for '+records[i].id+'.');
+              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(recordChunkRef(records[i].section,records[i].id,n))));
             }));
             const localConflicts = {};
             snaps.forEach((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const cur = !snap.exists ? null : (data.chunked
                 ? oldChunkSnaps[i].map(part=>{
-                    if(!part.exists || typeof part.data().value !== 'string') throw new Error('Incomplete Firestore chunks for '+groupEntries[i].key+'.');
+                    if(!part.exists || typeof part.data().value !== 'string') throw new Error('Incomplete Firestore chunks for '+entries[i].key+'.');
                     return part.data().value;
                   }).join('')
                 : data.value);
-              if(cur !== groupEntries[i].expectedPrevious) localConflicts[groupEntries[i].key] = cur;
+              if(cur !== entries[i].expectedPrevious) localConflicts[entries[i].key] = cur;
             });
             const localRecordConflicts = {};
             recordSnaps.forEach((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const cur = !snap.exists ? null : (data.chunked
                 ? oldRecordChunkSnaps[i].map(part=>{
-                    if(!part.exists || typeof part.data().value!=='string') throw new Error('Incomplete '+groupRecords[i].section+' record chunks for '+groupRecords[i].id+'.');
+                    if(!part.exists || typeof part.data().value!=='string') throw new Error('Incomplete '+records[i].section+' record chunks for '+records[i].id+'.');
                     return part.data().value;
                   }).join('')
                 : data.value);
-              if(cur !== groupRecords[i].expectedPrevious) localRecordConflicts[groupRecords[i].section+'__'+groupRecords[i].id] = cur;
+              if(cur !== records[i].expectedPrevious) localRecordConflicts[records[i].section+'__'+records[i].id] = cur;
             });
             if(Object.keys(localConflicts).length || Object.keys(localRecordConflicts).length){
               conflicts = localConflicts;
@@ -757,21 +772,34 @@ if(!window.storage){
               return;
             }
             const updatedAt = Date.now();
-            groupEntries.forEach((entry, i)=>{
+            let budget = MAX_GROUP_BYTES;
+            // Every individual write here (a whole unchunked entry/record's
+            // value, or one chunk) is by construction <= CHUNK_BYTES
+            // (240KB, see splitValue), so it always fits in a fresh budget -
+            // no need to special-case "doesn't fit even alone".
+            const spend = (ref, data, size)=>{
+              if(size<=budget){ tx.set(ref, data); budget -= size; }
+              else pendingWrites.push({ref, data, size});
+            };
+            const spendDelete = ref=>{
+              if(budget>0){ tx.delete(ref); budget -= 1; }
+              else pendingDeletes.push(ref);
+            };
+            entries.forEach((entry, i)=>{
               const chunks = splitValue(entry.value);
               if(chunks.length === 1){
-                tx.set(refs[i], {value: entry.value, updatedAt});
-                oldChunkSnaps[i].forEach((part, n)=>tx.delete(docRef(chunkKey(entry.key, n), shared)));
+                spend(refs[i], {value: entry.value, updatedAt}, utf8Bytes(entry.value));
+                oldChunkSnaps[i].forEach((part, n)=>spendDelete(docRef(chunkKey(entry.key, n), shared)));
               }else{
-                tx.set(refs[i], {chunked:true, chunks:chunks.length, updatedAt});
-                chunks.forEach((value, n)=>tx.set(docRef(chunkKey(entry.key, n), shared), {value, updatedAt}));
-                oldChunkSnaps[i].slice(chunks.length).forEach((part, n)=>tx.delete(docRef(chunkKey(entry.key, chunks.length+n), shared)));
+                tx.set(refs[i], {chunked:true, chunks:chunks.length, updatedAt}); // manifest: always transactional, claims this update
+                chunks.forEach((value, n)=>spend(docRef(chunkKey(entry.key, n), shared), {value, updatedAt}, utf8Bytes(value)));
+                oldChunkSnaps[i].slice(chunks.length).forEach((part, n)=>spendDelete(docRef(chunkKey(entry.key, chunks.length+n), shared)));
               }
             });
-            groupRecords.forEach((entry, i)=>{
+            records.forEach((entry, i)=>{
               if(entry.value===null){
                 tx.delete(recordRefs[i]);
-                oldRecordChunkSnaps[i].forEach((part, n)=>tx.delete(recordChunkRef(entry.section,entry.id,n)));
+                oldRecordChunkSnaps[i].forEach((part, n)=>spendDelete(recordChunkRef(entry.section,entry.id,n)));
                 return;
               }
               const record = JSON.parse(entry.value);
@@ -782,47 +810,40 @@ if(!window.storage){
                 updatedAt
               };
               if(chunks.length===1){
-                tx.set(recordRefs[i], {...data, value:entry.value});
-                oldRecordChunkSnaps[i].forEach((part,n)=>tx.delete(recordChunkRef(entry.section,entry.id,n)));
+                spend(recordRefs[i], {...data, value:entry.value}, utf8Bytes(entry.value));
+                oldRecordChunkSnaps[i].forEach((part,n)=>spendDelete(recordChunkRef(entry.section,entry.id,n)));
               }else{
-                tx.set(recordRefs[i], {...data, chunked:true, chunks:chunks.length});
-                chunks.forEach((value,n)=>tx.set(recordChunkRef(entry.section,entry.id,n), {value,updatedAt}));
-                oldRecordChunkSnaps[i].slice(chunks.length).forEach((part,n)=>tx.delete(recordChunkRef(entry.section,entry.id,chunks.length+n)));
+                tx.set(recordRefs[i], {...data, chunked:true, chunks:chunks.length}); // manifest: always transactional, claims this update
+                chunks.forEach((value,n)=>spend(recordChunkRef(entry.section,entry.id,n), {value,updatedAt}, utf8Bytes(value)));
+                oldRecordChunkSnaps[i].slice(chunks.length).forEach((part,n)=>spendDelete(recordChunkRef(entry.section,entry.id,chunks.length+n)));
               }
             });
           });
-          return {conflicts, recordConflicts};
-        }
-        try{
-          /* Group whole entries/records together (never split one record's
-             own chunks across groups) so each group's estimated total stays
-             under MAX_GROUP_BYTES. The vast majority of saves are far under
-             this already and end up as a single group — identical to the
-             one-transaction behavior this replaces. */
-          const groups = [];
-          let current = {entries:[], records:[], bytes:0};
-          function pushCurrent(){ if(current.entries.length||current.records.length) groups.push(current); current={entries:[],records:[],bytes:0}; }
-          entries.forEach(entry=>{
-            const size = utf8Bytes(entry.value);
-            if(current.bytes && current.bytes+size>MAX_GROUP_BYTES) pushCurrent();
-            current.entries.push(entry); current.bytes += size;
-          });
-          records.forEach(entry=>{
-            const size = entry.value===null ? 0 : utf8Bytes(entry.value);
-            if(current.bytes && current.bytes+size>MAX_GROUP_BYTES) pushCurrent();
-            current.records.push(entry); current.bytes += size;
-          });
-          pushCurrent();
-          if(!groups.length) return {ok:true, updatedAt: Date.now()};
+          if(conflicts || recordConflicts) return {conflict:true, conflicts:conflicts||{}, recordConflicts:recordConflicts||{}};
 
-          const conflicts = {}, recordConflicts = {};
-          for(const group of groups){
-            const result = await commitGroup(group.entries, group.records);
-            if(result.conflicts) Object.assign(conflicts, result.conflicts);
-            if(result.recordConflicts) Object.assign(recordConflicts, result.recordConflicts);
-          }
-          if(Object.keys(conflicts).length || Object.keys(recordConflicts).length){
-            return {conflict:true, conflicts, recordConflicts};
+          /* Flush whatever didn't fit in the transaction above via follow-up
+             batches, each under the same byte budget. Safe without a fresh
+             conflict check: every chunked entry/record's manifest already
+             committed transactionally above, so a concurrent writer's own
+             transaction would already see the new manifest and correctly
+             conflict against it, rather than racing past this update. */
+          const ops = [...pendingWrites.map(w=>({type:'set', ref:w.ref, data:w.data, size:w.size})), ...pendingDeletes.map(ref=>({type:'delete', ref, size:1}))];
+          let offset = 0;
+          while(offset<ops.length){
+            const batch = fsDB.batch();
+            let batchBudget = MAX_GROUP_BYTES;
+            let committedAny = false;
+            while(offset<ops.length && ops[offset].size<=batchBudget){
+              const op = ops[offset];
+              if(op.type==='set') batch.set(op.ref, op.data); else batch.delete(op.ref);
+              batchBudget -= op.size; committedAny = true; offset++;
+            }
+            if(!committedAny){ // defensive: shouldn't happen since every op is <=240KB, but never spin forever
+              const op = ops[offset];
+              if(op.type==='set') batch.set(op.ref, op.data); else batch.delete(op.ref);
+              offset++;
+            }
+            await batch.commit();
           }
           return {ok:true, updatedAt: Date.now()};
         }catch(e){ console.error('storage.setMulti failed:', e); throw e; }
