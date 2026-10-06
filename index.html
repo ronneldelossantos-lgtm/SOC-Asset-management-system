@@ -1826,9 +1826,55 @@ async function logAudit(action, detail){
 }
 
 /* ============================= FOCUSED REFRESH ============================= */
-function startAutoRefresh(){}
-function stopAutoRefresh(){}
-function syncLiveListenersForVisibility(){}
+let cageStatusAutoRefreshTimer=null;
+let cageStatusRefreshInFlight=false;
+function startAutoRefresh(){
+  if(cageStatusAutoRefreshTimer||!session) return;
+  cageStatusAutoRefreshTimer=setInterval(refreshCageLoadingStatus,4000);
+}
+function stopAutoRefresh(){
+  if(cageStatusAutoRefreshTimer){clearInterval(cageStatusAutoRefreshTimer);cageStatusAutoRefreshTimer=null;}
+}
+function syncLiveListenersForVisibility(){
+  if(!session||document.hidden) stopAutoRefresh();
+  else startAutoRefresh();
+}
+async function refreshCageLoadingStatus(){
+  if(!session||document.hidden||route!=='cageloading'||actionInFlight||cageStatusRefreshInFlight) return;
+  const tab=subroute||'dashboard';
+  if(!['dashboard','list','masterlist','receive','cyclecount'].includes(tab)) return;
+  cageStatusRefreshInFlight=true;
+  try{
+    const keys=['cages','cageMasterlist','cageCycleCounts'];
+    const sections=await loadSections(keys);
+    let changed=false;
+    keys.forEach(key=>{
+      if(sections.data[key]===null||sections.snap[key]===lastKnownSnapshot[key]) return;
+      DB[key]=sections.data[key];
+      lastKnownSnapshot[key]=sections.snap[key];
+      changed=true;
+    });
+    if(!changed) return;
+    migrateDB();
+    if(tab==='cyclecount'){
+      refreshCageCycleCountView();
+      refreshCageAmsCycleCountView();
+      return;
+    }
+    const scan=document.getElementById('receive-cage-asset-scan');
+    const scanValue=tab==='receive'&&scan?scan.value:'';
+    const restoreFocus=tab==='receive'&&scan&&document.activeElement===scan;
+    renderCageLoading();
+    if(tab==='receive'){
+      const refreshedScan=document.getElementById('receive-cage-asset-scan');
+      if(refreshedScan){refreshedScan.value=scanValue;if(restoreFocus)refreshedScan.focus();}
+    }
+  }catch(e){
+    console.error('Cage status auto-refresh failed:',e);
+  }finally{
+    cageStatusRefreshInFlight=false;
+  }
+}
 function isFormScreenActive(){
   if(route==='settings') return true;
   if(route==='cyclecount') return true;
@@ -2516,7 +2562,7 @@ const NAV = [
     ]}
   ]},
   {group:'Administration', items:[
-    {id:'settings', label:'Settings', ic:'&#9881;'}
+    {id:'settings', label:'Settings', ic:'&#9881;', hideForHub:true}
   ]}
 ];
 const TITLES = {
@@ -2587,7 +2633,7 @@ function renderShell(){
     });
   });
   const navHtml = navArr.map(g=>{
-    const items = g.items.filter(it=> !it.adminOnly || session.role==='admin').filter(it=> !it.approverOnly || isDeptApprover()).filter(it=> !it.socOnly || canViewCageMasterlist()).filter(it=> !it.processKey || sessionHasProcess(it.processKey));
+    const items = g.items.filter(it=> !it.adminOnly || session.role==='admin').filter(it=> !it.hideForHub || session.role!=='hub').filter(it=> !it.approverOnly || isDeptApprover()).filter(it=> !it.socOnly || canViewCageMasterlist()).filter(it=> !it.processKey || sessionHasProcess(it.processKey));
     if(items.length===0) return '';
     return '<div class="nav-group-label">'+g.group+'</div>' + items.map(navItemHtml).join('');
   }).join('');
@@ -2606,6 +2652,12 @@ function toggleNavGroup(id){
 }
 
 async function navigate(r, sub){
+  if(r==='settings' && session.role==='hub'){
+    toast('Settings is not available in the HUB portal.');
+    const landing=defaultLandingRoute();
+    r=landing.route==='settings'?'dashboard':landing.route;
+    sub=landing.route==='settings'?'asset':landing.sub;
+  }
   if(r==='cageloading' && sub==='masterlist' && !canViewCageMasterlist()){
     toast('Cage Masterlist is available to SOC users only.');
     r='cageloading';sub='receive';
@@ -7422,7 +7474,7 @@ function returnCageToMasterlist(shipment,receivedHubName,receivedAt){
   if(!item) return;
   const ownerSoc=item.soc||shipment.soc||'';
   if(!item.soc&&ownerSoc) item.soc=ownerSoc;
-  item.status=cageAssetTagKey(receivedHubName)===cageAssetTagKey(ownerSoc)?'Available':'At HUB';
+  item.status=session.role==='hub'||cageAssetTagKey(receivedHubName)!==cageAssetTagKey(ownerSoc)?'At HUB':'Available';
   item.currentShipmentId='';
   item.lastReceivedAt=receivedAt;
   item.location=receivedHubName||ownerSoc||item.location||'';
@@ -7441,7 +7493,7 @@ async function receiveScannedCageBatch(cageIds){
     if(selected.some(cage=>cage.status==='Received')){outcome='received';return;}
     selected.forEach(current=>{
       const receivedHubName=current.hubName||currentSoc()||'';
-      current.status='Received';current.receivedBy=session.fullName;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=receivedHubName;
+      current.status='Received';current.receivedBy=session.fullName;current.receivedByRole=session.role;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=receivedHubName;
       returnCageToMasterlist(current,receivedHubName,now);
       receipts.push({cageAssetTag:current.cageAssetTag||current.cageId,lhTripNumber:current.lhTripNumber||'',plateNumber:current.plateNumber||'',hubName:current.hubName||'',receivedAt:now});
     });
@@ -7552,6 +7604,7 @@ function cageInventoryEffectiveStatus(cage){
     const receivedAt=Date.parse(receipt.receivedAt||'')||0;
     const issuedAt=Date.parse(cage.lastIssuedAt||'')||0;
     if(receivedAt>=issuedAt){
+      if(receipt.receivedByRole==='hub') return 'At HUB';
       const destination=receipt.receivedHubName||receipt.hubName||'';
       return cageAssetTagKey(destination)===cageAssetTagKey(cage.soc)?'Available':'At HUB';
     }
@@ -10319,6 +10372,7 @@ function exportParcelShiftReport(){
 }
 
 /* ============================= INIT ============================= */
+document.addEventListener('visibilitychange',syncLiveListenersForVisibility);
 (async function init(){
   await loadDB();
   if(lastKnownSnapshot && loadedSections.has('stock') && loadedRecordSections.has('requests') && loadedRecordSections.has('issuance')){
