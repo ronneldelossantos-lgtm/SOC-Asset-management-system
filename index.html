@@ -7079,7 +7079,7 @@ function cageBatchSummaries(){
 function cageBatchProgressHtml(){
   const batches=cageBatchSummaries();
   if(!batches.length) return '';
-  return '<div class="card"><h3>Batch receipt progress</h3><div class="card-sub">Cages with the same LH trip, HUB, plate number, and dispatch date are one batch. Each cage is received separately; a batch is complete only after every cage is scanned.</div><div class="tbl-wrap"><table><tr><th>LH Trip #</th><th>HUB</th><th>Plate #</th><th>Cages</th><th>Received</th><th>Remaining</th><th>Batch status</th></tr>'+batches.map(batch=>{
+  return '<div class="card"><h3>Batch receipt progress</h3><div class="card-sub">Cages with the same LH trip, HUB, plate number, and dispatch date are one batch. No cage in a batch is recorded as received until every cage tag in that batch has been scanned.</div><div class="tbl-wrap"><table><tr><th>LH Trip #</th><th>HUB</th><th>Plate #</th><th>Cages</th><th>Received</th><th>Remaining</th><th>Batch status</th></tr>'+batches.map(batch=>{
     const first=batch.members[0];
     const status=batch.complete?'<span class="tag tag-ok">Received</span>':batch.received?'<span class="tag tag-pending">Receiving</span>':'<span class="tag tag-pending">In Transit</span>';
     return `<tr><td class="mono">${esc(first.lhTripNumber||'—')}</td><td>${esc(first.hubName||'—')}</td><td class="mono">${esc(first.plateNumber||'—')}</td><td>${batch.total}</td><td>${batch.received}/${batch.total}</td><td>${batch.remaining}</td><td>${status}</td></tr>`;
@@ -7091,6 +7091,7 @@ let cageAmsScanTimer = null; // debounce for auto-add on the Cage Issuance scan 
 let cageReceiveScanTimer = null; // debounce for auto-add on the Receive Cage scan field
 let cageReceiveLastSubmittedKey = '';
 let cageReceiveLastSubmittedAt = 0;
+let cageReceiveStagedBatch = {key:'',cageIds:[]};
 function renderCageLoading(){
   const c = document.getElementById('content');
   const requestedTab = subroute || 'dashboard';
@@ -7307,7 +7308,8 @@ function cageReceiveHtml(){
   const pending = cagePendingList();
   return `<div class="card">
     <h3>Receive one cage at a time</h3>
-    <div class="card-sub">Scan one physical cage asset tag to receive that cage immediately. Its LH Trip # and plate number from issuance will display below. The current login is recorded as receiver.</div>
+    <div class="card-sub">Scan every physical cage asset tag in the batch. Scans are staged first; no cage is recorded as received until all tags in that batch have been scanned. The current login is recorded as receiver.</div>
+    <div id="cage-receive-staged-progress">${cageReceiveStagedProgressHtml()}</div>
     <div id="cage-receive-result">${cageReceiveResultHtml()}</div>
     <div class="form-row">
       <div class="field"><label>Cage asset tag</label><input id="receive-cage-asset-scan" placeholder="Scan cage asset tag" oninput="onCageReceiveScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();scanCageAssetTagToReceive();}"></div>
@@ -7320,7 +7322,7 @@ function cageReceiveHtml(){
       '<div class="tbl-wrap"><table><tr><th>Cage asset tag</th><th>Loaded AMS tags</th><th>LH Trip #</th><th>Hub</th><th>Plate #</th><th>Status</th><th>Issued</th></tr>' +
       pending.slice().reverse().map(cg=>`<tr>
         <td class="mono">${esc(cg.cageAssetTag||cg.cageId)}</td><td>${amsTagsSummary(cg)} <button class="btn btn-sm" onclick="viewAmsTags('${esc(cg.id)}')">View</button></td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cg.hubName||'—')}</td><td class="mono">${esc(cg.plateNumber||'—')}</td>
-        <td>${cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td>
+        <td>${cageReceiveStagedBatch.cageIds.includes(cg.id)?'<span class="tag tag-pending">Scanned — not received</span>':cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td>
       </tr>`).join('') + '</table></div>'}
   </div>`;
 }
@@ -7329,7 +7331,14 @@ function cageReceiveResultHtml(){
   if(!item) return '';
   return `<div class="hint" style="margin:12px 0;"><strong>Received cage ${esc(item.cageAssetTag||'—')}</strong><br>LH Trip #: <span class="mono">${esc(item.lhTripNumber||'—')}</span> &middot; Plate #: <span class="mono">${esc(item.plateNumber||'—')}</span>${item.batchCageCount>1?`<br>Batch receipt: ${item.batchReceivedCount}/${item.batchCageCount} cages received — ${item.batchComplete?'batch complete':'waiting for the remaining cages'}`:''}</div>`;
 }
-// Wait briefly for a scanner burst, then receive that single cage.
+function cageReceiveStagedProgressHtml(){
+  const ids=cageReceiveStagedBatch.cageIds||[];
+  if(!ids.length) return '';
+  const first=(DB.cages||[]).find(cage=>cage.id===ids[0]);
+  const members=first?cageBatchRecords(first).filter(cage=>cage.status!=='Received'):[];
+  return `<div class="hint" style="margin:12px 0;">Scanned for receipt: <strong>${ids.length}/${members.length}</strong>. No records are marked received until all tags are scanned.${first?`<br>LH Trip #: <span class="mono">${esc(first.lhTripNumber||'—')}</span> &middot; HUB: ${esc(first.hubName||'—')} &middot; Plate #: <span class="mono">${esc(first.plateNumber||'—')}</span>`:''}</div>`;
+}
+// Wait briefly for a scanner burst, then stage the scanned tag for its batch.
 function onCageReceiveScanInput(){
   const el = document.getElementById('receive-cage-asset-scan');
   if(!el) return;
@@ -7377,8 +7386,30 @@ async function scanCageAssetTagToReceive(){
   cageReceiveLastSubmittedKey=key;
   cageReceiveLastSubmittedAt=now;
   if(el) el.value='';
+  const members=cageBatchRecords(cg).filter(cage=>cage.status!=='Received');
+  const batchKey=cg.batchId||cageBatchSignature(cg);
+  if(cageReceiveStagedBatch.cageIds.length&&cageReceiveStagedBatch.key!==batchKey){
+    toast('Finish scanning all tags for the current batch before starting another batch.');
+    if(el) el.focus();
+    return;
+  }
+  if(cageReceiveStagedBatch.cageIds.includes(cg.id)){
+    toast('This cage tag is already scanned for the current batch. Scan the remaining cage tags.');
+    if(el) el.focus();
+    return;
+  }
+  if(!cageReceiveStagedBatch.cageIds.length) cageReceiveStagedBatch={key:batchKey,cageIds:[]};
+  cageReceiveStagedBatch.cageIds.push(cg.id);
+  if(cageReceiveStagedBatch.cageIds.length<members.length){
+    const progress=document.getElementById('cage-receive-staged-progress');
+    if(progress) progress.innerHTML=cageReceiveStagedProgressHtml();
+    toast('Cage tag staged ('+cageReceiveStagedBatch.cageIds.length+'/'+members.length+'). Scan the remaining tags; no receipt has been recorded yet.');
+    if(el) el.focus();
+    return;
+  }
   if(el) el.disabled=true;
-  await receiveScannedCage(cg.id);
+  const completeBatchIds=cageReceiveStagedBatch.cageIds.slice();
+  await receiveScannedCageBatch(completeBatchIds);
 }
 function returnCageToMasterlist(shipment,receivedHubName,receivedAt){
   const assetTag=shipment.cageAssetTag||shipment.cageId||'';
@@ -7396,29 +7427,37 @@ function returnCageToMasterlist(shipment,receivedHubName,receivedAt){
   item.lastReceivedAt=receivedAt;
   item.location=receivedHubName||ownerSoc||item.location||'';
 }
-async function receiveScannedCage(cageId){
+async function receiveScannedCageBatch(cageIds){
   const now=nowISO();
-  let receipt=null;
+  let receipts=[];
   let outcome='pending';
   const applyReceive=()=>{
-    receipt=null;
-    const current=DB.cages.find(cg=>cg.id===cageId);
-    if(!current){outcome='missing';return;}
-    if(current.status==='Received'){outcome='received';return;}
-    outcome='pending';
-    const receivedHubName=current.hubName||currentSoc()||'';
-    current.status='Received';current.receivedBy=session.fullName;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=receivedHubName;
-    returnCageToMasterlist(current,receivedHubName,now);
-    const batchProgress=updateCageBatchReceiptProgress(current);
-    receipt={cageAssetTag:current.cageAssetTag||current.cageId,lhTripNumber:current.lhTripNumber||'',plateNumber:current.plateNumber||'',hubName:current.hubName||'',receivedAt:now,batchReceivedCount:batchProgress.received,batchCageCount:batchProgress.total,batchComplete:batchProgress.complete};
+    receipts=[];
+    const selected=(cageIds||[]).map(id=>DB.cages.find(cg=>cg.id===id));
+    if(selected.some(cage=>!cage)){outcome='missing';return;}
+    const first=selected[0];
+    const members=cageBatchRecords(first).filter(cage=>cage.status!=='Received');
+    if(selected.some(cage=>(cage.batchId||cageBatchSignature(cage))!==(first.batchId||cageBatchSignature(first)))||members.length!==selected.length||members.some(member=>!cageIds.includes(member.id))){outcome='incomplete';return;}
+    if(selected.some(cage=>cage.status==='Received')){outcome='received';return;}
+    selected.forEach(current=>{
+      const receivedHubName=current.hubName||currentSoc()||'';
+      current.status='Received';current.receivedBy=session.fullName;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=receivedHubName;
+      returnCageToMasterlist(current,receivedHubName,now);
+      receipts.push({cageAssetTag:current.cageAssetTag||current.cageId,lhTripNumber:current.lhTripNumber||'',plateNumber:current.plateNumber||'',hubName:current.hubName||'',receivedAt:now});
+    });
+    const batchProgress=updateCageBatchReceiptProgress(first);
+    receipts=receipts.map(receipt=>({...receipt,batchReceivedCount:batchProgress.received,batchCageCount:batchProgress.total,batchComplete:batchProgress.complete}));
+    outcome='received';
   };
-  applyReceive();
   const saved=await saveDBWithRetry(applyReceive);
-  if(!saved){restoreCageSectionsAfterFailedSave();navigate('cageloading','receive');return;}
-  if(outcome==='missing'){toast('This cage record no longer exists. Refreshing the list.');navigate('cageloading','receive');return;}
-  if(!receipt){toast('This cage was already received. Refreshing the list.');navigate('cageloading','receive');return;}
-  cageReceiveLastReceipt=receipt;
-  toast(receipt.batchCageCount>1?(receipt.batchComplete?'Batch receipt complete — all '+receipt.batchCageCount+' cages received.':'Cage '+receipt.cageAssetTag+' received ('+receipt.batchReceivedCount+'/'+receipt.batchCageCount+'). Batch remains open until all cages are scanned.'):'Cage '+receipt.cageAssetTag+' received. LH Trip '+(receipt.lhTripNumber||'—')+' · Plate '+(receipt.plateNumber||'—')+'.');
+  if(!saved){restoreCageSectionsAfterFailedSave();cageReceiveStagedBatch={key:'',cageIds:[]};navigate('cageloading','receive');return;}
+  if(outcome==='missing'){cageReceiveStagedBatch={key:'',cageIds:[]};toast('A cage record no longer exists. Refreshing the list.');navigate('cageloading','receive');return;}
+  if(outcome==='incomplete'){cageReceiveStagedBatch={key:'',cageIds:[]};toast('Batch receipt was not saved. Scan every cage tag in the batch before receiving.');navigate('cageloading','receive');return;}
+  if(outcome==='received'&&!receipts.length){cageReceiveStagedBatch={key:'',cageIds:[]};toast('This batch was already received. Refreshing the list.');navigate('cageloading','receive');return;}
+  const receipt=receipts[receipts.length-1];
+  cageReceiveLastReceipt={...receipt,receivedTags:receipts.map(item=>item.cageAssetTag)};
+  cageReceiveStagedBatch={key:'',cageIds:[]};
+  toast(receipt.batchCageCount>1?'Batch receipt complete — all '+receipt.batchCageCount+' cage tags scanned and received.':'Cage '+receipt.cageAssetTag+' received. LH Trip '+(receipt.lhTripNumber||'—')+' · Plate '+(receipt.plateNumber||'—')+'.');
   navigate('cageloading','receive');
   const input=document.getElementById('receive-cage-asset-scan');
   if(input)input.focus();
