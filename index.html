@@ -2318,7 +2318,7 @@ async function doLogin(){
   }
   portalMode = found.portal; // derived from the account itself — no separate portal picker
   adminViewSoc = '';
-  session = {id:found.id, username:found.username, fullName:found.fullName, role:found.role, portal:found.portal, department:found.department||null, departmentSoc:found.departmentSoc||null, site:found.site||null, processAccess:found.processAccess||null};
+  session = {id:found.id, username:found.username, fullName:found.fullName, role:found.role, portal:found.portal, department:found.department||null, departmentSoc:found.departmentSoc||null, site:found.site||null, hubName:found.hubName||null, processAccess:found.processAccess||null};
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
   if(portalMode==='department'){
@@ -6596,8 +6596,8 @@ function filterSystemUsers(value){
 function settingsAccessHtml(){
   const matchCount=DB.users.filter(systemUserMatches).length;
   return `<div class="card">
-    <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department/hub), Password, Site/SOC (if role=admin/staff/hub), Department (if role=department), Department SOC (optional — only needed to disambiguate if that department name exists under more than one SOC), Process Access (staff/hub only — semicolon-separated: supplies;itassets;cageloading;reusablesacks;parcelretrieval — blank = all), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
-    <div class="card-sub">Every login signs in with just a username and password — no portal or site picker. Set the role (and, for Staff/Hub/Admin, which SOC they work out of; for Department, which department) right here when creating the login. <b>Site is required for Staff and Hub</b> — their dashboard and inventory are scoped to that one SOC only. Admin is the only role that can leave it blank, to view all SOCs combined.</div>
+    <div class="list-head"><h3>Add a login</h3>${importBtn('importUserCsv', 'Full Name, Username, Role (admin/staff/department/hub), Password, Site/SOC (if role=admin/staff/hub), HUB Name (required for hub), Department (if role=department), Department SOC (optional — only needed to disambiguate if that department name exists under more than one SOC), Process Access (staff/hub only — semicolon-separated: supplies;itassets;cageloading;reusablesacks;parcelretrieval — blank = all), SKU Scope, Department Scope, Accountability Scope (scopes are optional, semicolon-separated, staff only)')}</div>
+    <div class="card-sub">Every login signs in with just a username and password — no portal or site picker. Staff accounts use a source SOC; HUB accounts also need an assigned HUB name so their Cage Log and receiving screens show only their destination.</div>
     <div class="form-row3">
       <div class="field"><label>Full name</label><input id="new-user-name" placeholder="Full name"></div>
       <div class="field"><label>Username</label><input id="new-user-username" placeholder="username"></div>
@@ -6612,6 +6612,7 @@ function settingsAccessHtml(){
       <div class="field"><label>Site (SOC)<span id="new-user-site-required" style="color:var(--danger);"></span></label><select id="new-user-site"></select></div>
       <div class="field" id="new-user-pass-wrap"><label>Password</label><input id="new-user-pass" type="text" placeholder="Set a password"></div>
     </div>
+    <div class="field" id="new-user-hub-wrap" style="display:none;"><label>Assigned HUB name <span style="color:var(--danger);">*</span></label><input id="new-user-hub-name" list="new-user-hub-options" placeholder="Enter the HUB name used as a cage destination"><datalist id="new-user-hub-options">${hubDatalistOptions()}</datalist><div class="card-sub">HUB accounts see only cage transactions addressed to this destination.</div></div>
     <div id="new-user-process-wrap" style="display:none;">
       <div class="section-title">Process access</div>
       <div class="card-sub" style="margin-bottom:10px;">Which of the 5 processes can this login use? Untick any this person shouldn't have access to — its dropdown won't appear in their sidebar.</div>
@@ -6704,6 +6705,8 @@ function toggleNewUserDept(){
   if(procWrap) procWrap.style.display = (isStaff || isHub) ? 'block' : 'none';
   const scopeWrap = document.getElementById('new-user-staff-scope-wrap');
   if(scopeWrap) scopeWrap.style.display = isStaff ? 'block' : 'none';
+  const hubWrap=document.getElementById('new-user-hub-wrap');
+  if(hubWrap) hubWrap.style.display=isHub?'block':'none';
   if(isDept) refreshNewUserApproverOptions();
   // Site (SOC): required for Staff/Hub — their whole dashboard and inventory
   // are scoped to it, so no "Not site-specific" escape hatch for them. Admin
@@ -6728,8 +6731,10 @@ async function addUser(){
   const pass = isDept ? document.getElementById('new-user-pass-dept').value : document.getElementById('new-user-pass').value;
   const deptSel = isDept ? parseDeptKey(document.getElementById('new-user-dept').value) : undefined;
   const site = !isDept ? document.getElementById('new-user-site').value : undefined;
+  const hubName = isHub ? document.getElementById('new-user-hub-name').value.trim() : '';
   if(!fullName||!username||!pass){ toast('Fill out all fields.'); return; }
   if((isStaff||isHub) && !site){ toast('Pick a Site (SOC) for this Staff/Hub login — required so their dashboard and inventory are scoped to that one SOC.'); return; }
+  if(isHub&&!hubName){toast('Assign a HUB name so the portal can show only its destination cage transactions.');return;}
   if(isDept && !deptSel.name){ toast('Add a department in Settings first.'); return; }
   if(DB.users.find(u=>u.username.toLowerCase()===username.toLowerCase())){ toast('That username is taken.'); return; }
   const id = Math.max(0,...DB.users.map(u=>u.id))+1;
@@ -6742,6 +6747,7 @@ async function addUser(){
     if(approverUsername) newUser.approverUsername = approverUsername;
   }
   if(site) newUser.site = site;
+  if(hubName) newUser.hubName = hubName;
   if(isStaff || isHub){
     newUser.processAccess = readProcessAccessCheckboxes('new-user-proc');
   }
@@ -6773,6 +6779,7 @@ function openEditUser(id){
       ${DB.warehouses.map(w=>`<option value="${esc(w)}" ${w===u.site?'selected':''}>${esc(w)}</option>`).join('')}
     </select>${siteRequired ? '<div class="card-sub" style="margin-top:4px;">Required — Staff/Hub dashboards and inventory are scoped to this one SOC.</div>' : ''}</div>
   `;
+  const hubFieldsHtml=isHub?`<div class="field"><label>Assigned HUB name <span style="color:var(--danger);">*</span></label><input id="edit-user-hub-name" list="edit-user-hub-options" value="${esc(u.hubName||'')}" placeholder="Enter the HUB name used as a cage destination"><datalist id="edit-user-hub-options">${hubDatalistOptions()}</datalist><div class="card-sub" style="margin-top:4px;">The Cage Log and Receive Cage screens are filtered to this destination.</div></div>`:'';
   const processHtml = (isStaff || isHub) ? `
     <div class="section-title">Process access</div>
     <div class="card-sub" style="margin-bottom:10px;">Which of the 5 processes can this login use? Untick any this person shouldn't have access to.</div>
@@ -6798,6 +6805,7 @@ function openEditUser(id){
       ${deptFieldsHtml}
       <div class="field"><label>New password (optional)</label><input id="edit-user-pass" type="text" placeholder="Leave blank to keep current"></div>
     </div>
+    ${hubFieldsHtml}
     ${processHtml}
     ${scopeHtml}
     <div class="footer-actions">
@@ -6834,7 +6842,9 @@ async function saveUserEdit(id){
   const deptSel = role==='department' ? parseDeptKey(document.getElementById('edit-user-dept').value) : null;
   const approverUsername = role==='department' ? document.getElementById('edit-user-approver').value : null;
   const site = role!=='department' ? document.getElementById('edit-user-site').value : null;
+  const hubName = role==='hub' ? document.getElementById('edit-user-hub-name').value.trim() : '';
   if((role==='staff'||role==='hub') && !site){ toast('Pick a Site (SOC) for this Staff/Hub login — required so their dashboard and inventory are scoped to that one SOC.'); return; }
+  if(role==='hub'&&!hubName){toast('Assign a HUB name so the portal can show only its destination cage transactions.');return;}
   const processAccess = (role==='staff'||role==='hub') ? readProcessAccessCheckboxes('edit-user-proc') : null;
   const skuScope = role==='staff' ? Array.from(document.getElementById('edit-user-sku-scope').selectedOptions).map(o=>o.value) : null;
   const departmentScope = role==='staff' ? Array.from(document.getElementById('edit-user-dept-scope').selectedOptions).map(o=>o.value) : null;
@@ -6855,6 +6865,7 @@ async function saveUserEdit(id){
       if(approverUsername) x.approverUsername = approverUsername; else delete x.approverUsername;
     } else {
       if(site) x.site = site; else delete x.site;
+      if(role==='hub') x.hubName=hubName; else delete x.hubName;
       if(role==='staff' || role==='hub') x.processAccess = processAccess;
       if(role==='staff'){
         x.skuScope = skuScope;
@@ -7004,6 +7015,7 @@ async function importUserCsv(inputEl){
     const deptRaw = csvField(row, ['Department','Dept']).trim();
     const deptSocRaw = csvField(row, ['Department SOC','Dept SOC']).trim();
     const siteRaw = csvField(row, ['Site','SOC','Warehouse']).trim();
+    const hubNameRaw = csvField(row, ['HUB Name','Hub Name','Destination HUB']).trim();
     if(!fullName || !username || !password){
       problems.push('Row '+rowNum+': missing full name, username, or password.');
       return;
@@ -7012,6 +7024,7 @@ async function importUserCsv(inputEl){
       problems.push('Row '+rowNum+': role "'+(roleRaw||'(blank)')+'" isn\'t recognized — use admin, staff, hub, or department.');
       return;
     }
+    if(role==='hub'&&!hubNameRaw){problems.push('Row '+rowNum+': HUB Name is required for a Hub login.');return;}
     if(DB.users.find(u=>u.username.toLowerCase()===username.toLowerCase())){
       problems.push('Row '+rowNum+': username "'+username+'" already exists.');
       return;
@@ -7035,6 +7048,7 @@ async function importUserCsv(inputEl){
       const site = DB.warehouses.find(w=>w.toLowerCase()===siteRaw.toLowerCase());
       if(site) newUser.site = site;
     }
+    if(role==='hub') newUser.hubName=hubNameRaw;
     if(role==='staff' || role==='hub'){
       const processRaw = csvField(row, ['Process Access','Process','Processes']);
       if(processRaw.trim()) newUser.processAccess = parseProcessAccessField(processRaw);
@@ -7078,16 +7092,41 @@ async function importUserCsv(inputEl){
 }
 
 /* ============================= CAGE LOADING MODULE ============================= */
-// Receiving happens at the destination, so pending loads must be scannable
-// there even though their log record remains assigned to the issuing SOC.
-function cagePendingList(){ return (DB.cages||[]).filter(cg=>cg.status!=='Received'); }
+// Destination portals see only loads addressed to their assigned HUB/SOC.
+function cageDestinationType(cage){ return String(cage&&cage.destinationType||((cage&&cage.hubName)?'HUB':'SOC')).trim().toUpperCase(); }
+function cageDestinationName(cage){ return String(cage&&(cage.destinationName||cage.hubName||cage.receivedHubName||cage.soc)||'').trim(); }
+function cageDestinationLabel(cage){ const name=cageDestinationName(cage);return name?name+' ('+cageDestinationType(cage)+')':'—'; }
+function cageLogRouteLabel(cage){
+  const destination=cageDestinationLabel(cage);
+  return String(cage&&cage.sourceType||'').toUpperCase()==='HUB'?cageDestinationName({destinationName:cage.sourceName, destinationType:'HUB'})+' (HUB) → '+destination:destination;
+}
+function cageCurrentDestinationName(){
+  if(!session) return currentSoc();
+  if(session.role!=='hub') return currentSoc();
+  const account=(DB.users||[]).find(user=>String(user.id)===String(session.id)||String(user.username||'').toLowerCase()===String(session.username||'').toLowerCase());
+  return String(session.hubName||(account&&account.hubName)||currentSoc()||'').trim();
+}
+function cageMatchesCurrentDestination(cage){
+  if(!session||session.role==='admin') return true;
+  const assignedDestination=session.role==='hub'?cageCurrentDestinationName():currentSoc();
+  return cageDestinationType(cage)===String(session.role==='hub'?'HUB':'SOC')&&cageAssetTagKey(cageDestinationName(cage))===cageAssetTagKey(assignedDestination);
+}
+function cageMatchesCurrentHubSource(cage){
+  return !!(session&&session.role==='hub'&&cage&&String(cage.sourceType||'').toUpperCase()==='HUB'&&cageAssetTagKey(cage.sourceName)===cageAssetTagKey(cageCurrentDestinationName()));
+}
+function cageLogVisibleRows(){
+  if(session&&session.role==='hub') return (DB.cages||[]).filter(cage=>cageMatchesCurrentDestination(cage)||cageMatchesCurrentHubSource(cage));
+  return socFilter(DB.cages);
+}
+function cagePendingList(){ return (DB.cages||[]).filter(cg=>cg.status!=='Received'&&cageMatchesCurrentDestination(cg)); }
 function cageBatchSignature(cage){
   const trip=String(cage&&cage.lhTripNumber||'').trim();
-  const hub=String(cage&&cage.hubName||'').trim();
+  const destinationType=cageDestinationType(cage);
+  const destination=cageDestinationName(cage);
   const plate=String(cage&&cage.plateNumber||'').trim();
   const date=Date.parse(cage&&cage.dispatchedAt||'');
-  if(!trip||!hub||!plate||!Number.isFinite(date)) return 'record:'+String(cage&&cage.id||'');
-  return [trip,hub,plate,new Date(date).toISOString().slice(0,10)].map(cageAssetTagKey).join('|');
+  if(!trip||!destination||!plate||!Number.isFinite(date)) return 'record:'+String(cage&&cage.id||'');
+  return [trip,destinationType,destination,plate,new Date(date).toISOString().slice(0,10)].map(cageAssetTagKey).join('|');
 }
 function cageBatchRecords(cage){
   if(!cage) return [];
@@ -7118,7 +7157,7 @@ function updateCageBatchReceiptProgress(cage){
 }
 function cageBatchSummaries(){
   const groups=new Map();
-  (DB.cages||[]).forEach(cage=>{
+  cageLogVisibleRows().forEach(cage=>{
     const key=cage.batchId?'batch:'+cage.batchId:'signature:'+cageBatchSignature(cage);
     if(!groups.has(key)) groups.set(key,[]);
     groups.get(key).push(cage);
@@ -7131,19 +7170,20 @@ function cageBatchSummaries(){
 function cageBatchProgressHtml(){
   const batches=cageBatchSummaries();
   if(!batches.length) return '';
-  return '<div class="card"><h3>Batch receipt progress</h3><div class="card-sub">Cages with the same LH trip, HUB, plate number, and dispatch date are one batch. No cage in a batch is recorded as received until every cage tag in that batch has been scanned.</div><div class="tbl-wrap"><table><tr><th>LH Trip #</th><th>HUB</th><th>Plate #</th><th>Cages</th><th>Received</th><th>Remaining</th><th>Batch status</th></tr>'+batches.map(batch=>{
+  return '<div class="card"><h3>Batch receipt progress</h3><div class="card-sub">Cages issued on the same LH trip, truck, and destination are grouped together. Each scanned cage is recorded as received; the batch is complete after every tag is received.</div><div class="tbl-wrap"><table><tr><th>LH Trip #</th><th>Destination</th><th>Plate #</th><th>Cages</th><th>Received</th><th>Remaining</th><th>Batch status</th></tr>'+batches.map(batch=>{
     const first=batch.members[0];
     const status=batch.complete?'<span class="tag tag-ok">Received</span>':batch.received?'<span class="tag tag-pending">Receiving</span>':'<span class="tag tag-pending">In Transit</span>';
-    return `<tr><td class="mono">${esc(first.lhTripNumber||'—')}</td><td>${esc(first.hubName||'—')}</td><td class="mono">${esc(first.plateNumber||'—')}</td><td>${batch.total}</td><td>${batch.received}/${batch.total}</td><td>${batch.remaining}</td><td>${status}</td></tr>`;
+    return `<tr><td class="mono">${esc(first.lhTripNumber||'—')}</td><td>${esc(cageLogRouteLabel(first))}</td><td class="mono">${esc(first.plateNumber||'—')}</td><td>${batch.total}</td><td>${batch.received}/${batch.total}</td><td>${batch.remaining}</td><td>${status}</td></tr>`;
   }).join('')+'</table></div></div>';
 }
-let cageAmsBatch = [];
+let cageIssueBatch = [];
+let cageReturnBatch = [];
 let cageReceiveLastReceipt = null;
-let cageAmsScanTimer = null; // debounce for auto-add on the Cage Issuance scan field
+let cageIssueScanTimer = null; // debounce for physical cage-tag scans during issuance
+let cageReturnScanTimer = null;
 let cageReceiveScanTimer = null; // debounce for auto-add on the Receive Cage scan field
 let cageReceiveLastSubmittedKey = '';
 let cageReceiveLastSubmittedAt = 0;
-let cageReceiveStagedBatch = {key:'',cageIds:[]};
 function renderCageLoading(){
   const c = document.getElementById('content');
   const requestedTab = subroute || 'dashboard';
@@ -7152,9 +7192,9 @@ function renderCageLoading(){
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='dashboard'?'active':''}" onclick="navigate('cageloading','dashboard')">Dashboard</div>
-      <div class="tab ${tab==='new'?'active':''}" onclick="navigate('cageloading','new')">Cage Issuance</div>
+      <div class="tab ${tab==='new'?'active':''}" onclick="navigate('cageloading','new')">${session.role==='hub'?'Return to SOC':'Cage Issuance'}</div>
       <div class="tab ${tab==='receive'?'active':''}" onclick="navigate('cageloading','receive')">Receive Cage (${cagePendingList().length})</div>
-      <div class="tab ${tab==='list'?'active':''}" onclick="navigate('cageloading','list')">Cage Log (${socFilter(DB.cages).length})</div>
+      <div class="tab ${tab==='list'?'active':''}" onclick="navigate('cageloading','list')">Cage Log (${cageLogVisibleRows().length})</div>
       ${canViewCageMasterlist()?`<div class="tab ${tab==='masterlist'?'active':''}" onclick="navigate('cageloading','masterlist')">Cage Masterlist (${cageMasterlistVisibleRows().length})</div>`:''}
       <div class="tab ${tab==='cyclecount'?'active':''}" onclick="navigate('cageloading','cyclecount')">Cycle Count</div>
     </div>
@@ -7166,7 +7206,8 @@ function renderCageLoading(){
   else if(tab==='list') body.innerHTML = cageLoadingListHtml();
   else if(tab==='masterlist') body.innerHTML = cageMasterlistHtml();
   else if(tab==='cyclecount'){ cageCycleScanned = []; cageAmsCycleScanned = []; body.innerHTML = cageCycleCountHtml(); refreshCageCycleCountView(); refreshCageAmsCycleCountView(); }
-  else { body.innerHTML = cageLoadingFormHtml(); refreshAmsBatchTable(); }
+  else if(tab==='new'&&session.role==='hub'){ body.innerHTML = cageReturnToSocFormHtml(); refreshCageReturnBatchTable(); }
+  else { body.innerHTML = cageLoadingFormHtml(); refreshCageIssueBatchTable(); }
 }
 function cageStatusTag(cg){
   if(cg.status==='Received') return '<span class="tag tag-ok">Received</span>';
@@ -7196,7 +7237,7 @@ function viewAmsTags(id){
   `);
 }
 function cageDashboardHtml(){
-  const rows = socFilter(DB.cages);
+  const rows = cageLogVisibleRows();
   const pending = rows.filter(cg=>cg.status!=='Received');
   const received = rows.filter(cg=>cg.status==='Received');
   const recent = rows.slice().reverse().slice(0,8);
@@ -7209,7 +7250,7 @@ function cageDashboardHtml(){
       }).join('')||'<tr><td colspan="4"><div class="empty">No SOCs configured.</div></td></tr>'}
     </table></div>
   </div>
-  <div class="card"><h3>Received cages by hub</h3>
+  <div class="card"><h3>Received cages by destination</h3>
     ${received.length===0?'<div class="empty"><div class="ic">&#128666;</div>No received cages yet.</div>':(()=>{
       const grouped={};
       received.forEach(cg=>{
@@ -7218,7 +7259,7 @@ function cageDashboardHtml(){
         if(!grouped[key]) grouped[key]={soc:cg.soc||'',hub,count:0};
         grouped[key].count++;
       });
-      return '<div class="tbl-wrap"><table><tr><th>SOC</th><th>Received hub</th><th style="text-align:right;">Cages received</th></tr>'+Object.values(grouped).sort((a,b)=>a.soc.localeCompare(b.soc)||a.hub.localeCompare(b.hub)).map(x=>`<tr><td>${esc(x.soc||'Shared / unassigned')}</td><td>${esc(x.hub)}</td><td style="text-align:right;font-weight:700;">${x.count}</td></tr>`).join('')+'</table></div>';
+      return '<div class="tbl-wrap"><table><tr><th>SOC</th><th>Received destination</th><th style="text-align:right;">Cages received</th></tr>'+Object.values(grouped).sort((a,b)=>a.soc.localeCompare(b.soc)||a.hub.localeCompare(b.hub)).map(x=>`<tr><td>${esc(x.soc||'Shared / unassigned')}</td><td>${esc(x.hub)}</td><td style="text-align:right;font-weight:700;">${x.count}</td></tr>`).join('')+'</table></div>';
     })()}
   </div>` : '';
   const showSoc = isAdminAllSocView();
@@ -7235,124 +7276,193 @@ function cageDashboardHtml(){
   <div class="card">
     <div class="list-head"><h3>Recent cages</h3></div>
     ${recent.length===0 ? '<div class="empty"><div class="ic">&#128666;</div>No cages logged yet.</div>' :
-      '<div class="tbl-wrap"><table><tr><th>Cage asset tag</th>'+(showSoc?'<th>Issuing SOC</th>':'')+'<th>Loaded AMS Tags</th><th>LH Trip #</th><th>Hub</th><th>Plate #</th><th>Status</th><th>Issued</th></tr>' +
-      recent.map(cg=>`<tr><td class="mono">${esc(cg.cageAssetTag||cg.cageId)}</td>${showSoc?`<td>${esc(cg.soc||'Shared / unassigned')}</td>`:''}<td>${cageCargoAmsTagsOf(cg).length}</td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cg.hubName||'—')}</td><td class="mono">${esc(cg.plateNumber||'—')}</td><td>${cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td></tr>`).join('') +
+      '<div class="tbl-wrap"><table><tr><th>Cage asset tag</th>'+(showSoc?'<th>Issuing SOC</th>':'')+'<th>LH Trip #</th><th>Route</th><th>Plate #</th><th>Status</th><th>Issued</th></tr>' +
+      recent.map(cg=>`<tr><td class="mono">${esc(cg.cageAssetTag||cg.cageId)}</td>${showSoc?`<td>${esc(cg.soc||'Shared / unassigned')}</td>`:''}<td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cageLogRouteLabel(cg))}</td><td class="mono">${esc(cg.plateNumber||'—')}</td><td>${cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td></tr>`).join('') +
       '</table></div>'}
   </div>`;
 }
-/* ---------- Cage Issuance: scan multiple AMS tags into a batch first ---------- */
+/* ---------- Cage Issuance: scan multiple physical cages into one trip ---------- */
 function hubDatalistOptions(){
   return (DB.warehouses||[]).map(w=>`<option value="${esc(w)}"></option>`).join('');
 }
 function cageAvailableInventory(){
-  return socFilter(DB.cageMasterlist).filter(c=>c.status==='Available');
-}
-function nextAvailableCageInventory(){
-  return cageAvailableInventory().slice().sort((a,b)=>{
-    const addedA=Date.parse(a.addedAt||'')||0;
-    const addedB=Date.parse(b.addedAt||'')||0;
-    return addedA-addedB||String(a.assetTag||'').localeCompare(String(b.assetTag||''));
-  })[0]||null;
+  return socFilter(DB.cageMasterlist).filter(c=>cageInventoryEffectiveStatus(c)==='Available');
 }
 function cageLoadingFormHtml(){
   const available=cageAvailableInventory();
   return `
   <div class="card">
-    <h3>AMS asset tags loaded in the cage</h3>
-    <div class="card-sub">The next available cage in the Cage Masterlist will be assigned when you issue. Scan each AMS tag — it drops into the batch automatically as soon as it's scanned, no need to press Enter.</div>
+    <h3>Scan cages for this trip</h3>
+    <div class="card-sub">Scan each physical cage asset tag to add that cage to this trip. Multiple cages can be loaded under one LH trip and truck. Every tag must be available in the source SOC masterlist.</div>
     ${available.length===0?`<div class="hint">No available cages.${canViewCageMasterlist()?` Add inventory in the Cage Masterlist before issuing. <button class="btn btn-sm" onclick="navigate('cageloading','masterlist')">Open Cage Masterlist</button>`:' Contact your SOC to add cage inventory to the Cage Masterlist.'}</div>`:''}
     <div class="form-row">
-      <div class="field"><label>AMS Tag</label><input id="cage-ams-scan" placeholder="Scan AMS tag" oninput="onCageAmsScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();addAmsTagToBatch();}"></div>
+      <div class="field"><label>Cage asset tag</label><input id="cage-asset-scan" placeholder="Scan cage asset tag" oninput="onCageIssueScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();addCageToIssueBatch();}"></div>
     </div>
-    <div class="section-title">Batch (<span id="cage-batch-count">${cageAmsBatch.length}</span>)</div>
-    <div id="cage-batch-table"></div>
+    <div class="section-title">Cages in this trip (<span id="cage-issue-count">${cageIssueBatch.length}</span>)</div>
+    <div id="cage-issue-batch-table"></div>
   </div>
   <div class="card">
-    <h3>LH trip &amp; vehicle</h3>
-    <div class="card-sub">This submission assigns one cage. Cages issued with the same LH Trip #, HUB, plate number, and dispatch date are grouped for batch receipt tracking.</div>
-    <div class="form-row" style="grid-template-columns:1fr 1fr 1fr;">
+    <h3>Trip, truck &amp; destination</h3>
+    <div class="card-sub">All scanned cages will be issued together using these trip and destination details.</div>
+    <div class="form-row" style="grid-template-columns:1fr 1fr 1fr 1fr;">
       <div class="field"><label>LH Trip #</label><input id="cage-lhtrip" placeholder="Scan or type LH trip number"></div>
       <div class="field"><label>Plate Number</label><input id="cage-plate" placeholder="e.g. NGP-1234" style="text-transform:uppercase;"></div>
-      <div class="field"><label>Hub Name</label><input id="cage-hub" list="cage-hub-options" placeholder="Type to search hubs…" autocomplete="off"><datalist id="cage-hub-options">${hubDatalistOptions()}</datalist></div>
+      <div class="field"><label>Destination type</label><select id="cage-destination-type"><option value="HUB">HUB</option><option value="SOC">SOC</option></select></div>
+      <div class="field"><label>Destination name</label><input id="cage-destination-name" list="cage-destination-options" placeholder="Choose or type destination" autocomplete="off"><datalist id="cage-destination-options">${hubDatalistOptions()}</datalist></div>
     </div>
     <div class="footer-actions">
-      <button class="btn" onclick="cageAmsBatch=[];refreshAmsBatchTable();">Clear batch</button>
-      <button class="btn btn-primary" onclick="submitCageIssuance()">Issue Cage</button>
+      <button class="btn" onclick="cageIssueBatch=[];refreshCageIssueBatchTable();">Clear scanned cages</button>
+      <button class="btn btn-primary" onclick="submitCageIssuance()">Issue scanned cages</button>
     </div>
   </div>`;
 }
-// Fires on every keystroke in the AMS tag field. A scanner types the whole
-// code in one burst; once input goes quiet for a moment we treat that as "a
-// tag has been scanned" and add it automatically — no Enter, no button, and
-// this repeats for every scan (not just the first one or two), since the
-// timer is reset and reused each time rather than only firing once.
-function onCageAmsScanInput(){
-  const el = document.getElementById('cage-ams-scan');
+function cageReturnToSocFormHtml(){
+  const hub=cageCurrentDestinationName();
+  const available=(DB.cageMasterlist||[]).filter(cage=>cageInventoryEffectiveStatus(cage)==='At HUB'&&cageAssetTagKey(cageInventoryCurrentLocation(cage))===cageAssetTagKey(hub));
+  return `<div class="card">
+    <h3>Return cages from ${esc(hub||'this HUB')} to their source SOC</h3>
+    <div class="card-sub">Only cages already received at this HUB can be returned. Scan each cage to add it to a return trip; it will be sent to the SOC that owns it and become available after SOC receives it.</div>
+    ${available.length===0?'<div class="hint">No cages are currently received at this HUB. Complete Cage Received first, then return cages to their source SOC.</div>':''}
+    <div class="field"><label>Cage asset tag</label><input id="cage-return-scan" placeholder="Scan a cage received at this HUB" oninput="onCageReturnScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();addCageToReturnBatch();}"></div>
+    <div class="section-title">Cages in this return trip (<span id="cage-return-count">${cageReturnBatch.length}</span>)</div>
+    <div id="cage-return-batch-table"></div>
+  </div>
+  <div class="card">
+    <h3>Return trip &amp; truck</h3>
+    <div class="form-row"><div class="field"><label>LH Trip #</label><input id="cage-return-lhtrip" placeholder="Scan or type LH trip number"></div><div class="field"><label>Plate Number</label><input id="cage-return-plate" placeholder="e.g. NGP-1234" style="text-transform:uppercase;"></div></div>
+    <div class="card-sub">Each cage will return to the source SOC recorded on its masterlist.</div>
+    <div class="footer-actions"><button class="btn" onclick="cageReturnBatch=[];refreshCageReturnBatchTable();">Clear scanned cages</button><button class="btn btn-primary" onclick="submitCageReturnToSoc()">Send cages to SOC</button></div>
+  </div>`;
+}
+function onCageReturnScanInput(){
+  const el=document.getElementById('cage-return-scan');if(!el)return;
+  clearTimeout(cageReturnScanTimer);const value=el.value.trim();if(!value)return;
+  cageReturnScanTimer=setTimeout(()=>{const current=document.getElementById('cage-return-scan');if(current&&current.value.trim()===value)addCageToReturnBatch();},150);
+}
+function addCageToReturnBatch(){
+  if(!session||session.role!=='hub'){toast('Only a HUB account can start a return-to-SOC trip.');return;}
+  clearTimeout(cageReturnScanTimer);const el=document.getElementById('cage-return-scan');const value=(el?el.value:'').trim();
+  if(!value){toast('Scan a cage asset tag first.');return;}
+  const key=cageAssetTagKey(value);const cage=(DB.cageMasterlist||[]).find(item=>cageAssetTagKey(item.assetTag)===key);
+  if(!cage){toast('Cage '+value+' is not on the source SOC masterlist.');if(el){el.value='';el.focus();}return;}
+  if(cageInventoryEffectiveStatus(cage)!=='At HUB'||cageAssetTagKey(cageInventoryCurrentLocation(cage))!==cageAssetTagKey(cageCurrentDestinationName())){
+    toast(cageInventoryEffectiveStatus(cage)==='In Transit'?'Cage '+value+' must be received at this HUB before it can be returned.':'Cage '+value+' is not currently at this HUB.');
+    if(el){el.value='';el.focus();}return;
+  }
+  if(cageReturnBatch.includes(cage.id)){toast('That cage is already in this return trip.');if(el){el.value='';el.focus();}return;}
+  cageReturnBatch.push(cage.id);if(el){el.value='';el.focus();}refreshCageReturnBatchTable();
+}
+function removeCageFromReturnBatch(index){cageReturnBatch.splice(index,1);refreshCageReturnBatchTable();}
+function refreshCageReturnBatchTable(){
+  const el=document.getElementById('cage-return-batch-table');const count=document.getElementById('cage-return-count');if(count)count.textContent=cageReturnBatch.length;if(!el)return;
+  if(!cageReturnBatch.length){el.innerHTML='<div class="empty"><div class="ic">&#128230;</div>No cages scanned yet.</div>';return;}
+  el.innerHTML='<div class="tbl-wrap"><table><tr><th>#</th><th>Cage asset tag</th><th>Return to SOC</th><th></th></tr>'+cageReturnBatch.map((id,index)=>{const cage=(DB.cageMasterlist||[]).find(item=>item.id===id);return `<tr><td>${index+1}</td><td class="mono">${esc(cage&&cage.assetTag||'Missing cage')}</td><td>${esc(cage&&cage.soc||'—')}</td><td><button class="icon-btn" title="Remove" onclick="removeCageFromReturnBatch(${index})">&times;</button></td></tr>`;}).reverse().join('')+'</table></div>';
+}
+async function submitCageReturnToSoc(){
+  if(!session||session.role!=='hub'){toast('Only a HUB account can start a return-to-SOC trip.');return;}
+  const lhTripNumber=(document.getElementById('cage-return-lhtrip')||{}).value?.trim()||'';
+  const plateNumber=(document.getElementById('cage-return-plate')||{}).value?.trim()||'';
+  if(!cageReturnBatch.length){toast('Scan at least one cage received at this HUB.');return;}
+  if(!lhTripNumber){toast('Enter the LH trip number.');return;}
+  if(!plateNumber){toast('Enter the vehicle plate number.');return;}
+  const cageIds=cageReturnBatch.slice();let unavailable=false;let issued=0;
+  const applyReturn=()=>{
+    unavailable=false;issued=0;
+    const items=cageIds.map(id=>(DB.cageMasterlist||[]).find(cage=>cage.id===id));
+    unavailable=items.some(item=>!item||cageInventoryEffectiveStatus(item)!=='At HUB'||cageAssetTagKey(cageInventoryCurrentLocation(item))!==cageAssetTagKey(cageCurrentDestinationName())||!item.soc);
+    if(unavailable)return;
+    const dispatchedAt=nowISO();let batchByDestination={};
+    items.forEach(item=>{
+      const id=nextCode('CG','cg');const destinationName=item.soc;
+      item.status='In Transit';item.currentShipmentId=id;item.lastIssuedAt=dispatchedAt;item.location=destinationName;
+      const shipment={id,cageId:item.assetTag,cageAssetId:item.id,cageAssetTag:item.assetTag,amsTags:[],lhTripNumber,destinationType:'SOC',destinationName,hubName:'',sourceType:'HUB',sourceName:cageCurrentDestinationName(),plateNumber,issuedBy:session.fullName,status:'In Transit',dispatchedAt,receivedBy:null,receivedAt:null,soc:item.soc||'',returnToSourceSoc:true};
+      DB.cages.push(shipment);
+      const destinationKey=cageAssetTagKey(destinationName);
+      if(!batchByDestination[destinationKey])batchByDestination[destinationKey]=cageBatchIdForIssue(shipment);
+      shipment.batchId=batchByDestination[destinationKey];updateCageBatchReceiptProgress(shipment);issued++;
+    });
+  };
+  const saved=await saveDBWithRetry(applyReturn);
+  if(!saved){restoreCageSectionsAfterFailedSave();return;}
+  if(unavailable){toast('One or more cages are no longer received at this HUB. Refresh the list and scan again.');navigate('cageloading','new');return;}
+  cageReturnBatch=[];toast(issued+' cage'+(issued===1?'':'s')+' sent from '+cageCurrentDestinationName()+' to the owning SOC.');navigate('cageloading','list');
+}
+function onCageIssueScanInput(){
+  const el = document.getElementById('cage-asset-scan');
   if(!el) return;
-  clearTimeout(cageAmsScanTimer);
+  clearTimeout(cageIssueScanTimer);
   const v = el.value.trim();
   if(!v) return;
-  cageAmsScanTimer = setTimeout(()=>{
-    const cur = document.getElementById('cage-ams-scan');
-    if(cur && cur.value.trim()===v) addAmsTagToBatch();
+  cageIssueScanTimer = setTimeout(()=>{
+    const cur = document.getElementById('cage-asset-scan');
+    if(cur && cur.value.trim()===v) addCageToIssueBatch();
   }, 150);
 }
-function addAmsTagToBatch(){
-  clearTimeout(cageAmsScanTimer);
-  const el = document.getElementById('cage-ams-scan');
+function addCageToIssueBatch(){
+  clearTimeout(cageIssueScanTimer);
+  const el = document.getElementById('cage-asset-scan');
   const v = (el?el.value:'').trim();
-  if(!v){ toast('Scan or enter an AMS tag first.'); return; }
-  if(cageAmsBatch.some(t=>t.toLowerCase()===v.toLowerCase())){ toast('That AMS tag is already in this batch.'); if(el){ el.value=''; el.focus(); } return; }
-  cageAmsBatch.push(v);
+  if(!v){ toast('Scan a cage asset tag first.'); return; }
+  const key=cageAssetTagKey(v);
+  const cage=(DB.cageMasterlist||[]).find(item=>cageAssetTagKey(item.assetTag)===key);
+  if(!cage){toast('Cage '+v+' is not in the source SOC masterlist.');if(el){el.value='';el.focus();}return;}
+  if(!socVisible(cage.soc)){toast('This cage belongs to a different SOC.');if(el){el.value='';el.focus();}return;}
+  if(cageInventoryEffectiveStatus(cage)!=='Available'){toast('Cage '+v+' is not available at its source SOC.');if(el){el.value='';el.focus();}return;}
+  if(cageIssueBatch.includes(cage.id)){ toast('That cage is already in this trip batch.'); if(el){ el.value=''; el.focus(); } return; }
+  cageIssueBatch.push(cage.id);
   if(el){ el.value=''; el.focus(); }
-  refreshAmsBatchTable();
+  refreshCageIssueBatchTable();
 }
-function removeAmsTagFromBatch(i){ cageAmsBatch.splice(i,1); refreshAmsBatchTable(); }
-function refreshAmsBatchTable(){
-  const el = document.getElementById('cage-batch-table');
-  const countEl = document.getElementById('cage-batch-count');
-  if(countEl) countEl.textContent = cageAmsBatch.length;
+function removeCageFromIssueBatch(i){ cageIssueBatch.splice(i,1); refreshCageIssueBatchTable(); }
+function refreshCageIssueBatchTable(){
+  const el = document.getElementById('cage-issue-batch-table');
+  const countEl = document.getElementById('cage-issue-count');
+  if(countEl) countEl.textContent = cageIssueBatch.length;
   if(!el) return;
-  if(cageAmsBatch.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#128230;</div>No AMS tags scanned yet.</div>'; return; }
-  const rowsHtml = cageAmsBatch.map((t,i)=>`<tr><td class="mono small-note">${i+1}</td><td class="mono">${esc(t)}</td><td style="text-align:right;"><button class="icon-btn" onclick="removeAmsTagFromBatch(${i})" title="Remove">&times;</button></td></tr>`).reverse().join('');
-  el.innerHTML = '<div class="tbl-wrap" style="max-height:320px;overflow-y:auto;"><table><tr><th>#</th><th>AMS Tag</th><th></th></tr>' + rowsHtml + '</table></div>';
+  if(cageIssueBatch.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#128230;</div>No cages scanned yet.</div>'; return; }
+  const rowsHtml = cageIssueBatch.map((id,i)=>{const cage=DB.cageMasterlist.find(item=>item.id===id);return `<tr><td class="mono small-note">${i+1}</td><td class="mono">${esc(cage&&cage.assetTag||'Missing cage')}</td><td>${esc(cage&&cage.soc||'—')}</td><td style="text-align:right;"><button class="icon-btn" onclick="removeCageFromIssueBatch(${i})" title="Remove">&times;</button></td></tr>`;}).reverse().join('');
+  el.innerHTML = '<div class="tbl-wrap" style="max-height:320px;overflow-y:auto;"><table><tr><th>#</th><th>Cage asset tag</th><th>Source SOC</th><th></th></tr>' + rowsHtml + '</table></div>';
 }
 async function submitCageIssuance(){
   const lhTripNumber = document.getElementById('cage-lhtrip').value.trim();
-  const hubName = document.getElementById('cage-hub').value.trim();
+  const destinationType = document.getElementById('cage-destination-type').value;
+  const destinationName = document.getElementById('cage-destination-name').value.trim();
   const plateNumber = document.getElementById('cage-plate').value.trim();
-  if(cageAmsBatch.length===0){ toast('Scan at least one AMS tag first.'); return; }
+  if(cageIssueBatch.length===0){ toast('Scan at least one cage asset tag first.'); return; }
   if(!lhTripNumber){ toast('Enter the LH trip number.'); return; }
-  if(!hubName){ toast('Choose or type a hub name.'); return; }
+  if(!['HUB','SOC'].includes(destinationType)){toast('Choose HUB or SOC as the destination type.');return;}
+  if(!destinationName){ toast('Choose or enter the destination name.'); return; }
   if(!plateNumber){ toast('Enter the vehicle plate number.'); return; }
-  const amsTags = cageAmsBatch.slice();
-  let issuedAssetTag='';
-  let cageUnavailable=false;
+  const cageIds = cageIssueBatch.slice();
+  let unavailableTags=[];
+  let issuedCount=0;
   const applyIssue=()=>{
-    cageUnavailable=false;
-    const inventory=nextAvailableCageInventory();
-    if(!inventory){
-      cageUnavailable=true;
+    unavailableTags=[];
+    const inventory=cageIds.map(id=>DB.cageMasterlist.find(cage=>cage.id===id));
+    unavailableTags=cageIds.map((id,i)=>!inventory[i]||cageInventoryEffectiveStatus(inventory[i])!=='Available'?id:null).filter(Boolean);
+    if(unavailableTags.length){
+      issuedCount=0;
       return;
     }
-    const id=nextCode('CG','cg');
     const dispatchedAt=nowISO();
-    inventory.status='In Transit';
-    inventory.currentShipmentId=id;
-    inventory.lastIssuedAt=dispatchedAt;
-    const cageSoc=inventory.soc||currentSoc();
-    inventory.location=hubName;
-    const shipment={id, cageId:inventory.assetTag, cageAssetId:inventory.id, cageAssetTag:inventory.assetTag, amsTags, lhTripNumber, hubName, plateNumber, issuedBy:session.fullName, status:'In Transit', dispatchedAt, receivedBy:null, receivedAt:null, soc:cageSoc};
-    shipment.batchId=cageBatchIdForIssue(shipment);
-    DB.cages.push(shipment);
-    updateCageBatchReceiptProgress(shipment);
-    issuedAssetTag=inventory.assetTag;
+    let batchId='';
+    issuedCount=0;
+    inventory.forEach((item,index)=>{
+      const id=nextCode('CG','cg');
+      item.status='In Transit';item.currentShipmentId=id;item.lastIssuedAt=dispatchedAt;item.location=destinationName;
+      const shipment={id,cageId:item.assetTag,cageAssetId:item.id,cageAssetTag:item.assetTag,amsTags:[],lhTripNumber,destinationType,destinationName,hubName:destinationType==='HUB'?destinationName:'',plateNumber,issuedBy:session.fullName,status:'In Transit',dispatchedAt,receivedBy:null,receivedAt:null,soc:item.soc||currentSoc()};
+      DB.cages.push(shipment);
+      if(index===0) batchId=cageBatchIdForIssue(shipment);
+      shipment.batchId=batchId;
+      updateCageBatchReceiptProgress(shipment);
+      issuedCount++;
+    });
   };
   const saved=await saveDBWithRetry(applyIssue);
   if(!saved){ restoreCageSectionsAfterFailedSave(); return; }
-  if(cageUnavailable){ toast('No available cage remains in the Cage Masterlist for this SOC view.'); navigate('cageloading','new'); return; }
-  cageAmsBatch = [];
-  toast('Cage '+issuedAssetTag+' auto-assigned from the Cage Masterlist and issued with '+amsTags.length+' AMS asset tag(s) — now in transit.');
+  if(unavailableTags.length){toast('One or more scanned cages are no longer available. Remove them and scan again.');navigate('cageloading','new');return;}
+  cageIssueBatch = [];
+  toast(issuedCount+' cage'+(issuedCount===1?'':'s')+' issued for LH Trip '+lhTripNumber+' to '+destinationName+' ('+destinationType+').');
   navigate('cageloading','list');
 }
 /* ---------- Receive Cage: scan and receive one cage at a time ---------- */
@@ -7360,8 +7470,7 @@ function cageReceiveHtml(){
   const pending = cagePendingList();
   return `<div class="card">
     <h3>Receive one cage at a time</h3>
-    <div class="card-sub">Scan every physical cage asset tag in the batch. Scans are staged first; no cage is recorded as received until all tags in that batch have been scanned. The current login is recorded as receiver.</div>
-    <div id="cage-receive-staged-progress">${cageReceiveStagedProgressHtml()}</div>
+    <div class="card-sub">Scan each cage asset tag separately. Each scanned cage is recorded as received immediately, and the trip batch is complete when every cage in it has been received.</div>
     <div id="cage-receive-result">${cageReceiveResultHtml()}</div>
     <div class="form-row">
       <div class="field"><label>Cage asset tag</label><input id="receive-cage-asset-scan" placeholder="Scan cage asset tag" oninput="onCageReceiveScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();scanCageAssetTagToReceive();}"></div>
@@ -7371,10 +7480,10 @@ function cageReceiveHtml(){
   <div class="card">
     <div class="list-head"><h3>Awaiting receipt (${pending.length})</h3></div>
     ${pending.length===0 ? '<div class="empty"><div class="ic">&#128666;</div>No cages currently awaiting receipt.</div>' :
-      '<div class="tbl-wrap"><table><tr><th>Cage asset tag</th><th>Loaded AMS tags</th><th>LH Trip #</th><th>Hub</th><th>Plate #</th><th>Status</th><th>Issued</th></tr>' +
+      '<div class="tbl-wrap"><table><tr><th>Cage asset tag</th><th>LH Trip #</th><th>Destination</th><th>Plate #</th><th>Status</th><th>Issued</th></tr>' +
       pending.slice().reverse().map(cg=>`<tr>
-        <td class="mono">${esc(cg.cageAssetTag||cg.cageId)}</td><td>${amsTagsSummary(cg)} <button class="btn btn-sm" onclick="viewAmsTags('${esc(cg.id)}')">View</button></td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cg.hubName||'—')}</td><td class="mono">${esc(cg.plateNumber||'—')}</td>
-        <td>${cageReceiveStagedBatch.cageIds.includes(cg.id)?'<span class="tag tag-pending">Scanned — not received</span>':cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td>
+        <td class="mono">${esc(cg.cageAssetTag||cg.cageId)}</td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cageDestinationLabel(cg))}</td><td class="mono">${esc(cg.plateNumber||'—')}</td>
+        <td>${cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td>
       </tr>`).join('') + '</table></div>'}
   </div>`;
 }
@@ -7383,14 +7492,7 @@ function cageReceiveResultHtml(){
   if(!item) return '';
   return `<div class="hint" style="margin:12px 0;"><strong>Received cage ${esc(item.cageAssetTag||'—')}</strong><br>LH Trip #: <span class="mono">${esc(item.lhTripNumber||'—')}</span> &middot; Plate #: <span class="mono">${esc(item.plateNumber||'—')}</span>${item.batchCageCount>1?`<br>Batch receipt: ${item.batchReceivedCount}/${item.batchCageCount} cages received — ${item.batchComplete?'batch complete':'waiting for the remaining cages'}`:''}</div>`;
 }
-function cageReceiveStagedProgressHtml(){
-  const ids=cageReceiveStagedBatch.cageIds||[];
-  if(!ids.length) return '';
-  const first=(DB.cages||[]).find(cage=>cage.id===ids[0]);
-  const members=first?cageBatchRecords(first).filter(cage=>cage.status!=='Received'):[];
-  return `<div class="hint" style="margin:12px 0;">Scanned for receipt: <strong>${ids.length}/${members.length}</strong>. No records are marked received until all tags are scanned.${first?`<br>LH Trip #: <span class="mono">${esc(first.lhTripNumber||'—')}</span> &middot; HUB: ${esc(first.hubName||'—')} &middot; Plate #: <span class="mono">${esc(first.plateNumber||'—')}</span>`:''}</div>`;
-}
-// Wait briefly for a scanner burst, then stage the scanned tag for its batch.
+// Wait briefly for a scanner burst, then receive that physical cage.
 function onCageReceiveScanInput(){
   const el = document.getElementById('receive-cage-asset-scan');
   if(!el) return;
@@ -7438,90 +7540,62 @@ async function scanCageAssetTagToReceive(){
   cageReceiveLastSubmittedKey=key;
   cageReceiveLastSubmittedAt=now;
   if(el) el.value='';
-  const members=cageBatchRecords(cg).filter(cage=>cage.status!=='Received');
-  const batchKey=cg.batchId||cageBatchSignature(cg);
-  if(cageReceiveStagedBatch.cageIds.length&&cageReceiveStagedBatch.key!==batchKey){
-    toast('Finish scanning all tags for the current batch before starting another batch.');
-    if(el) el.focus();
-    return;
-  }
-  if(cageReceiveStagedBatch.cageIds.includes(cg.id)){
-    toast('This cage tag is already scanned for the current batch. Scan the remaining cage tags.');
-    if(el) el.focus();
-    return;
-  }
-  if(!cageReceiveStagedBatch.cageIds.length) cageReceiveStagedBatch={key:batchKey,cageIds:[]};
-  cageReceiveStagedBatch.cageIds.push(cg.id);
-  if(cageReceiveStagedBatch.cageIds.length<members.length){
-    const progress=document.getElementById('cage-receive-staged-progress');
-    if(progress) progress.innerHTML=cageReceiveStagedProgressHtml();
-    toast('Cage tag staged ('+cageReceiveStagedBatch.cageIds.length+'/'+members.length+'). Scan the remaining tags; no receipt has been recorded yet.');
-    if(el) el.focus();
-    return;
-  }
   if(el) el.disabled=true;
-  const completeBatchIds=cageReceiveStagedBatch.cageIds.slice();
-  await receiveScannedCageBatch(completeBatchIds);
+  await receiveScannedCage(cg.id);
 }
-function returnCageToMasterlist(shipment,receivedHubName,receivedAt){
+function returnCageToMasterlist(shipment,receivedLocation,receivedAt){
   const assetTag=shipment.cageAssetTag||shipment.cageId||'';
   let item=(DB.cageMasterlist||[]).find(c=>c.id===shipment.cageAssetId);
   if(!item && assetTag) item=(DB.cageMasterlist||[]).find(c=>cageAssetTagKey(c.assetTag)===cageAssetTagKey(assetTag));
   if(!item && assetTag){
-    item={id:nextCode('CGA','cga'),assetTag,soc:shipment.soc||'',status:'Available',addedAt:receivedAt,addedBy:'Received cage',currentShipmentId:'',location:receivedHubName||shipment.soc||'',lastReceivedAt:receivedAt,lastIssuedAt:''};
+    item={id:nextCode('CGA','cga'),assetTag,soc:shipment.soc||'',status:'Available',addedAt:receivedAt,addedBy:'Received cage',currentShipmentId:'',location:receivedLocation||shipment.soc||'',lastReceivedAt:receivedAt,lastIssuedAt:''};
     DB.cageMasterlist.push(item);
   }
   if(!item) return;
   const ownerSoc=item.soc||shipment.soc||'';
   if(!item.soc&&ownerSoc) item.soc=ownerSoc;
-  item.status=session.role==='hub'||cageAssetTagKey(receivedHubName)!==cageAssetTagKey(ownerSoc)?'At HUB':'Available';
+  const destinationType=cageDestinationType(shipment);
+  const destinationName=receivedLocation||cageDestinationName(shipment)||ownerSoc;
+  item.status=destinationType==='HUB'?'At HUB':(cageAssetTagKey(destinationName)===cageAssetTagKey(ownerSoc)?'Available':'At SOC');
   item.currentShipmentId='';
   item.lastReceivedAt=receivedAt;
-  item.location=receivedHubName||ownerSoc||item.location||'';
+  item.location=destinationName||ownerSoc||item.location||'';
 }
-async function receiveScannedCageBatch(cageIds){
+async function receiveScannedCage(cageId){
   const now=nowISO();
-  let receipts=[];
+  let receipt=null;
   let outcome='pending';
   const applyReceive=()=>{
-    receipts=[];
-    const selected=(cageIds||[]).map(id=>DB.cages.find(cg=>cg.id===id));
-    if(selected.some(cage=>!cage)){outcome='missing';return;}
-    const first=selected[0];
-    const members=cageBatchRecords(first).filter(cage=>cage.status!=='Received');
-    if(selected.some(cage=>(cage.batchId||cageBatchSignature(cage))!==(first.batchId||cageBatchSignature(first)))||members.length!==selected.length||members.some(member=>!cageIds.includes(member.id))){outcome='incomplete';return;}
-    if(selected.some(cage=>cage.status==='Received')){outcome='received';return;}
-    selected.forEach(current=>{
-      const receivedHubName=current.hubName||currentSoc()||'';
-      current.status='Received';current.receivedBy=session.fullName;current.receivedByRole=session.role;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=receivedHubName;
-      returnCageToMasterlist(current,receivedHubName,now);
-      receipts.push({cageAssetTag:current.cageAssetTag||current.cageId,lhTripNumber:current.lhTripNumber||'',plateNumber:current.plateNumber||'',hubName:current.hubName||'',receivedAt:now});
-    });
-    const batchProgress=updateCageBatchReceiptProgress(first);
-    receipts=receipts.map(receipt=>({...receipt,batchReceivedCount:batchProgress.received,batchCageCount:batchProgress.total,batchComplete:batchProgress.complete}));
-    outcome='received';
+    receipt=null;
+    const current=DB.cages.find(cg=>cg.id===cageId);
+    if(!current){outcome='missing';return;}
+    if(current.status==='Received'){outcome='received';return;}
+    if(!cageMatchesCurrentDestination(current)){outcome='notAllowed';return;}
+    const destinationName=cageDestinationName(current)||currentSoc()||'';
+    current.status='Received';current.receivedBy=session.fullName;current.receivedByRole=session.role;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=destinationName;
+    returnCageToMasterlist(current,destinationName,now);
+    const progress=updateCageBatchReceiptProgress(current);
+    receipt={cageAssetTag:current.cageAssetTag||current.cageId,lhTripNumber:current.lhTripNumber||'',plateNumber:current.plateNumber||'',destinationName,receivedAt:now,batchReceivedCount:progress.received,batchCageCount:progress.total,batchComplete:progress.complete};
   };
   const saved=await saveDBWithRetry(applyReceive);
-  if(!saved){restoreCageSectionsAfterFailedSave();cageReceiveStagedBatch={key:'',cageIds:[]};navigate('cageloading','receive');return;}
-  if(outcome==='missing'){cageReceiveStagedBatch={key:'',cageIds:[]};toast('A cage record no longer exists. Refreshing the list.');navigate('cageloading','receive');return;}
-  if(outcome==='incomplete'){cageReceiveStagedBatch={key:'',cageIds:[]};toast('Batch receipt was not saved. Scan every cage tag in the batch before receiving.');navigate('cageloading','receive');return;}
-  if(outcome==='received'&&!receipts.length){cageReceiveStagedBatch={key:'',cageIds:[]};toast('This batch was already received. Refreshing the list.');navigate('cageloading','receive');return;}
-  const receipt=receipts[receipts.length-1];
-  cageReceiveLastReceipt={...receipt,receivedTags:receipts.map(item=>item.cageAssetTag)};
-  cageReceiveStagedBatch={key:'',cageIds:[]};
-  toast(receipt.batchCageCount>1?'Batch receipt complete — all '+receipt.batchCageCount+' cage tags scanned and received.':'Cage '+receipt.cageAssetTag+' received. LH Trip '+(receipt.lhTripNumber||'—')+' · Plate '+(receipt.plateNumber||'—')+'.');
+  if(!saved){restoreCageSectionsAfterFailedSave();navigate('cageloading','receive');return;}
+  if(outcome==='missing'){toast('This cage record no longer exists. Refreshing the list.');navigate('cageloading','receive');return;}
+  if(outcome==='notAllowed'){toast('This cage is assigned to a different destination.');navigate('cageloading','receive');return;}
+  if(!receipt){toast('This cage was already received. Refreshing the list.');navigate('cageloading','receive');return;}
+  cageReceiveLastReceipt=receipt;
+  toast(receipt.batchCageCount>1?(receipt.batchComplete?'Batch receipt complete — all '+receipt.batchCageCount+' cages received.':'Cage '+receipt.cageAssetTag+' received ('+receipt.batchReceivedCount+'/'+receipt.batchCageCount+'). Batch is still awaiting '+(receipt.batchCageCount-receipt.batchReceivedCount)+' cage(s).'):'Cage '+receipt.cageAssetTag+' received. LH Trip '+(receipt.lhTripNumber||'—')+' · Destination '+(receipt.destinationName||'—')+'.');
   navigate('cageloading','receive');
   const input=document.getElementById('receive-cage-asset-scan');
   if(input)input.focus();
 }
 function cageLoadingListHtml(){
-  const rows = socFilter(DB.cages);
+  const rows = cageLogVisibleRows();
   const header = `<div class="list-head"><h3>Cage log (${rows.length})</h3>${dlBtn('exportCages')}</div>`;
   if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#128230;</div>No cages issued yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
-    '<tr><th>Cage asset tag</th><th>Load Ref</th><th>Loaded AMS Tags</th><th>LH Trip #</th><th>Hub</th><th>Plate #</th><th>Issued By</th><th>Status</th><th>Issued</th><th>Received</th>'+(session.role==='admin'?'<th></th>':'')+'</tr>' +
+    '<tr><th>Cage asset tag</th><th>Load Ref</th><th>LH Trip #</th><th>Route</th><th>Plate #</th><th>Issued By</th><th>Status</th><th>Issued</th><th>Received</th>'+(session.role==='admin'?'<th></th>':'')+'</tr>' +
     rows.slice().reverse().map(cg=>`<tr>
-      <td class="mono">${esc(cg.cageAssetTag||cg.cageId)}</td><td class="mono">${esc(cg.id)}</td><td>${amsTagsSummary(cg)} <button class="btn btn-sm" onclick="viewAmsTags('${esc(cg.id)}')">View</button></td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cg.hubName||'—')}</td><td class="mono">${esc(cg.plateNumber||'—')}</td>
+      <td class="mono">${esc(cg.cageAssetTag||cg.cageId)}</td><td class="mono">${esc(cg.id)}</td><td class="mono">${esc(cg.lhTripNumber||'—')}</td><td>${esc(cageLogRouteLabel(cg))}</td><td class="mono">${esc(cg.plateNumber||'—')}</td>
       <td>${esc(cg.issuedBy||'—')}</td><td>${cageStatusTag(cg)}</td><td>${fmtDateTime(cg.dispatchedAt)}</td>
       <td>${cg.receivedAt ? fmtDateTime(cg.receivedAt)+(cg.receivedBy?' &middot; '+esc(cg.receivedBy):'')+(cg.receivedLhTripNumber||cg.receivedHubName?'<div class="small-note">LH Trip '+esc(cg.receivedLhTripNumber||'—')+' &middot; '+esc(cg.receivedHubName||'—')+'</div>':'') : '<span class="small-note">—</span>'}</td>${session.role==='admin'?`<td><button class="icon-btn" title="Delete cage log" aria-label="Delete cage log ${esc(cg.id)}" onclick="deleteCageLog('${esc(cg.id)}')">&times;</button></td>`:''}
     </tr>`).join('') + '</table></div></div>';
@@ -7532,7 +7606,7 @@ function deleteCageLog(id){
   if(!record) return;
   const warning=record.status==='Received'
     ? `Delete cage log ${id} for ${record.cageAssetTag||record.cageId}? The masterlist asset will remain. This cannot be undone.`
-    : `Delete in-transit cage log ${id} for ${record.cageAssetTag||record.cageId}? The cage will remain on the masterlist as At HUB at ${record.hubName||'its destination'}, and this log cannot be restored.`;
+    : `Delete in-transit cage log ${id} for ${record.cageAssetTag||record.cageId}? The cage will remain on the masterlist at ${cageDestinationName(record)||'its destination'}, and this log cannot be restored.`;
   confirmAction(warning,async()=>{
     let missing=false;
     const saved=await saveDBWithRetry(()=>{
@@ -7543,8 +7617,8 @@ function deleteCageLog(id){
       if(inventory&&inventory.currentShipmentId===id){
         inventory.currentShipmentId='';
         if(current.status!=='Received'){
-          inventory.status='At HUB';
-          inventory.location=current.hubName||inventory.location||inventory.soc||'';
+          inventory.status=cageDestinationType(current)==='HUB'?'At HUB':'At SOC';
+          inventory.location=cageDestinationName(current)||inventory.location||inventory.soc||'';
         }
       }
       DB.cages=DB.cages.filter(cage=>cage.id!==id);
@@ -7593,9 +7667,9 @@ function cageInventoryShipment(cage){
 }
 function cageInventoryCurrentLocation(cage){
   const shipment=cageInventoryShipment(cage);
-  if(shipment) return shipment.hubName||cage.location||cage.soc||'';
+  if(shipment) return cageDestinationName(shipment)||cage.location||cage.soc||'';
   const receipt=cageInventoryLatestReceipt(cage);
-  return receipt?(receipt.receivedHubName||receipt.hubName||cage.location||cage.soc||''):(cage.location||cage.soc||'');
+  return receipt?(receipt.receivedHubName||cageDestinationName(receipt)||cage.location||cage.soc||''):(cage.location||cage.soc||'');
 }
 function cageInventoryEffectiveStatus(cage){
   if(cageInventoryShipment(cage)) return 'In Transit';
@@ -7605,8 +7679,9 @@ function cageInventoryEffectiveStatus(cage){
     const issuedAt=Date.parse(cage.lastIssuedAt||'')||0;
     if(receivedAt>=issuedAt){
       if(receipt.receivedByRole==='hub') return 'At HUB';
-      const destination=receipt.receivedHubName||receipt.hubName||'';
-      return cageAssetTagKey(destination)===cageAssetTagKey(cage.soc)?'Available':'At HUB';
+      const destination=receipt.receivedHubName||cageDestinationName(receipt)||'';
+      if(cageDestinationType(receipt)==='HUB') return 'At HUB';
+      return cageAssetTagKey(destination)===cageAssetTagKey(cage.soc)?'Available':'At SOC';
     }
   }
   return cage.status||'Available';
@@ -7615,6 +7690,7 @@ function cageInventoryStatusTag(cage){
   const status=cageInventoryEffectiveStatus(cage);
   if(status==='Available') return '<span class="tag tag-ok">Available at SOC</span>';
   if(status==='In Transit') return '<span class="tag tag-pending">In Transit</span>';
+  if(status==='At SOC') return '<span class="tag tag-approved">At destination SOC</span>';
   return '<span class="tag tag-approved">At HUB</span>';
 }
 function cageInventoryLatestReceipt(cage){
@@ -7636,9 +7712,9 @@ function cageMasterlistRowsHtml(query){
     const lastReceipt=cageInventoryLatestReceipt(c);
     const status=cageInventoryStatusTag(c);
     const receivedLocation=lastReceipt&&(lastReceipt.hubName||lastReceipt.receivedHubName);
-    const location=shipment?'To '+(shipment.hubName||'—'):(c.location?'At '+c.location:(receivedLocation?'At '+receivedLocation:(c.soc||'—')));
+    const location=shipment?'To '+cageDestinationLabel(shipment):(c.location?'At '+c.location:(receivedLocation?'At '+receivedLocation:(c.soc||'—')));
     const effectiveStatus=cageInventoryEffectiveStatus(c);
-    const action=!canManageCageMasterlistItem(c)?'<span class="small-note">View only</span>':effectiveStatus==='Available'?`<button class="btn btn-sm" onclick="openEditCageMasterlistTag('${esc(c.id)}')">Edit tag</button>`:effectiveStatus==='At HUB'?`<button class="btn btn-sm" onclick="openReturnCageToSourceSoc('${esc(c.id)}')">Return to SOC</button>`:'<span class="small-note">Away</span>';
+    const action=!canManageCageMasterlistItem(c)?'<span class="small-note">View only</span>':effectiveStatus==='Available'?`<button class="btn btn-sm" onclick="openEditCageMasterlistTag('${esc(c.id)}')">Edit tag</button>`:(effectiveStatus==='At HUB'||effectiveStatus==='At SOC')?`<button class="btn btn-sm" onclick="openReturnCageToSourceSoc('${esc(c.id)}')">Return to source SOC</button>`:'<span class="small-note">Away</span>';
     const deleteAction=session.role==='admin'?` <button class="icon-btn" title="Delete cage from masterlist" aria-label="Delete cage ${esc(c.assetTag)} from masterlist" ${effectiveStatus!=='Available'?'disabled':''} onclick="deleteCageMasterlistItem('${esc(c.id)}')">&times;</button>`:'';
     const lastMovedAt=c.lastReturnedAt||c.lastReceivedAt;
     return `<tr><td class="mono">${esc(c.assetTag)}</td><td>${esc(c.soc||'—')}</td><td>${status}</td><td>${esc(location)}${shipment?`<div class="small-note">Trip ${esc(shipment.lhTripNumber||'—')}</div>`:''}</td><td>${lastMovedAt?fmtDateTime(lastMovedAt):'<span class="small-note">—</span>'}</td><td>${c.addedAt?fmtDateTime(c.addedAt):'<span class="small-note">—</span>'}</td><td>${action}${deleteAction}</td></tr>`;
@@ -7672,7 +7748,7 @@ function deleteCageMasterlistItem(id){
 }
 function openReturnCageToSourceSoc(id){
   const cage=(DB.cageMasterlist||[]).find(item=>item.id===id);
-  if(!cage||!canManageCageMasterlistItem(cage)||cageInventoryEffectiveStatus(cage)!=='At HUB'){toast('Only the source SOC can confirm a cage return from a HUB.');return;}
+  if(!cage||!canManageCageMasterlistItem(cage)||!['At HUB','At SOC'].includes(cageInventoryEffectiveStatus(cage))){toast('Only the source SOC can confirm a cage return from its destination.');return;}
   showModal(`<h3>Return cage to ${esc(cage.soc||'source SOC')}</h3><div class="card-sub">Scan the cage asset tag after it physically arrives back at its original SOC.</div><div class="field" style="margin-top:14px;"><label>Cage asset tag</label><input id="return-cage-to-soc-tag" placeholder="Scan ${esc(cage.assetTag)}"></div><div class="footer-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="confirmReturnCageToSourceSoc('${esc(cage.id)}')">Confirm return</button></div>`);
   const input=document.getElementById('return-cage-to-soc-tag');
   if(input) input.focus();
@@ -7686,7 +7762,7 @@ async function confirmReturnCageToSourceSoc(id){
   const applyReturn=()=>{
     unavailable=false;tagMismatch=false;
     const cage=(DB.cageMasterlist||[]).find(item=>item.id===id);
-    if(!cage||!canManageCageMasterlistItem(cage)||cageInventoryEffectiveStatus(cage)!=='At HUB'){unavailable=true;return;}
+    if(!cage||!canManageCageMasterlistItem(cage)||!['At HUB','At SOC'].includes(cageInventoryEffectiveStatus(cage))){unavailable=true;return;}
     if(cageAssetTagKey(scannedTag)!==cageAssetTagKey(cage.assetTag)){tagMismatch=true;return;}
     cage.status='Available';
     cage.currentShipmentId='';
@@ -7765,8 +7841,8 @@ async function saveCageMasterlistTag(id){
   closeModal();toast('Cage asset tag updated.');navigate('cageloading','masterlist');
 }
 function exportCages(){
-  const rows = socFilter(DB.cages).map(cg=>[cg.cageAssetTag||cg.cageId,cg.id,cageCargoAmsTagsOf(cg).join('; '),cg.lhTripNumber||'',cg.hubName||'',cg.plateNumber||'',cg.issuedBy||'',cg.status||'In Transit',fmtDateTime(cg.dispatchedAt),cg.receivedAt?fmtDateTime(cg.receivedAt):'',cg.receivedBy||'',cg.receivedLhTripNumber||'',cg.receivedHubName||'']);
-  downloadCSV('cage-loading-log.csv', ['Cage Asset Tag','Load Ref','Loaded AMS Tags','LH Trip #','Hub','Plate #','Issued By','Status','Issued','Received At','Received By','Received LH Trip #','Received SOC/Hub'], rows);
+  const rows = cageLogVisibleRows().map(cg=>[cg.cageAssetTag||cg.cageId,cg.id,cg.lhTripNumber||'',cageDestinationType(cg),cageDestinationName(cg),cg.plateNumber||'',cg.issuedBy||'',cg.status||'In Transit',fmtDateTime(cg.dispatchedAt),cg.receivedAt?fmtDateTime(cg.receivedAt):'',cg.receivedBy||'',cg.receivedLhTripNumber||'',cg.receivedHubName||'']);
+  downloadCSV('cage-loading-log.csv', ['Cage Asset Tag','Load Ref','LH Trip #','Destination Type','Destination','Plate #','Issued By','Status','Issued','Received At','Received By','Received LH Trip #','Received Location'], rows);
 }
 /* ---------- Cage Cycle Count: count physical cage assets at their current
    SOC or HUB location. The masterlist remains owned by its source SOC while
@@ -7776,14 +7852,14 @@ let cageCycleScanTimer = null;
 let cageAmsCycleScanned = []; // loaded AMS tags scanned so far this count session
 let cageAmsCycleScanTimer = null;
 function cageCycleCountInventory(){
-  const scope=currentSoc();
+  const scope=session&&session.role==='hub'?cageCurrentDestinationName():currentSoc();
   return (DB.cageMasterlist||[]).filter(cage=>{
     const location=cageInventoryCurrentLocation(cage);
     return !scope||cageAssetTagKey(location)===cageAssetTagKey(scope);
   }).filter(cage=>String(cage.assetTag||'').trim()).slice().sort((a,b)=>String(a.assetTag||'').localeCompare(String(b.assetTag||'')));
 }
 function cageCycleCountHtml(){
-  const locationLabel=currentSoc()||'all SOC and HUB locations';
+  const locationLabel=(session&&session.role==='hub'?cageCurrentDestinationName():currentSoc())||'all SOC and HUB locations';
   const expected=cageCycleCountInventory();
   return `<div class="card">
     <h3>Scan cage asset tags on hand</h3>
@@ -7867,7 +7943,7 @@ async function saveCageAmsCycleCount(){
   if(cageAmsCycleScanned.length===0&&expected.length===0){toast('Nothing to check — no AMS tags are loaded in cages still in transit.');return;}
   const byEl=document.getElementById('cage-ams-cyclecount-by');
   const countedBy=(byEl&&byEl.value.trim())||session.fullName;
-  const countLocation=currentSoc();
+  const countLocation=session&&session.role==='hub'?cageCurrentDestinationName():currentSoc();
   DB.cageCycleCounts.push({id:nextCode('CC','ccage'),countType:'amsTags',soc:countLocation,countLocation:countLocation||'All source SOCs',expectedCount:expected.length,scannedCount:cageAmsCycleScanned.length,matchedCount:matched.length,expectedAmsTags:expected,missing,unexpected,countedBy,date:nowISO()});
   cageAmsCycleScanned=[];
   await saveDB();
@@ -7937,7 +8013,7 @@ async function saveCageCycleCount(){
   if(cageCycleScanned.length===0 && expectedCages.length===0){ toast('Nothing to count — no cages are currently at this SOC or HUB.'); return; }
   const byEl = document.getElementById('cage-cyclecount-by');
   const countedBy = (byEl && byEl.value.trim()) || session.fullName;
-  const countLocation=currentSoc();
+  const countLocation=session&&session.role==='hub'?cageCurrentDestinationName():currentSoc();
   const expectedSnapshot=expectedCages.map(c=>({assetTag:c.assetTag,soc:c.soc||'',location:cageInventoryCurrentLocation(c),status:c.status||'Available'}));
   DB.cageCycleCounts.push({id: nextCode('CC','ccage'), countType:'cages', soc: countLocation, countLocation:countLocation||'All locations', expectedCount: expectedCages.length, scannedCount: cageCycleScanned.length, matchedCount: matched.length, expectedCages:expectedSnapshot, missing, unexpected, countedBy, date: nowISO()});
   cageCycleScanned = [];
@@ -10386,7 +10462,7 @@ document.addEventListener('visibilitychange',syncLiveListenersForVisibility);
     if(stillExists){
       portalMode = saved.portalMode || stillExists.portal || 'supplies';
       adminViewSoc = saved.adminViewSoc || '';
-      session = {id:stillExists.id, username:stillExists.username, fullName:stillExists.fullName, role:stillExists.role, portal:stillExists.portal, department:stillExists.department||null, departmentSoc:stillExists.departmentSoc||null, site:stillExists.site||null, processAccess:stillExists.processAccess||null};
+      session = {id:stillExists.id, username:stillExists.username, fullName:stillExists.fullName, role:stillExists.role, portal:stillExists.portal, department:stillExists.department||null, departmentSoc:stillExists.departmentSoc||null, site:stillExists.site||null, hubName:stillExists.hubName||null, processAccess:stillExists.processAccess||null};
       route = saved.route || (portalMode==='department' ? 'ddashboard' : 'dashboard');
       subroute = saved.subroute || '';
       document.getElementById('login-screen').style.display='none';
