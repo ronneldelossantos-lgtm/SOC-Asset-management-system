@@ -1831,22 +1831,40 @@ async function logAudit(action, detail){
   }catch(e){ console.error('logAudit failed (non-fatal):', e); }
 }
 
-/* ============================= FOCUSED REFRESH ============================= */
-let cageStatusAutoRefreshTimer=null;
+/* ============================= FOCUSED REFRESH =============================
+   This polled both the dashboard's stock section and all three cage-loading
+   sections every 4 seconds, any time the tab was visible on either route -
+   reintroducing, in new feature code, the exact "every open tab costs reads
+   on a fixed clock regardless of whether anything changed" problem an
+   earlier fix already removed from the old __meta-based cross-tab sync
+   (since removed from this file entirely - window.storage has no live-
+   listener method anymore, so a dashboard/cage status board, exactly the
+   kind of screen staff leave open and visible for a whole shift, is now the
+   only place in the app that polls at all). Rather than reintroduce the
+   listener infrastructure this codebase has since moved away from
+   everywhere else (see syncOpsIdSheetOnce's throttled pull), this keeps the
+   same plain-poll approach already used throughout, just far less
+   aggressive: 30s instead of 4s (7.5x fewer reads for the same "feels
+   live" effect) and the interval itself now only runs while a relevant
+   route is actually open - see syncLiveListenersForVisibility(), called
+   from navigate() on every route change and from visibilitychange - instead
+   of always ticking and relying on each callback to bail out early. */
+const FOCUSED_REFRESH_MS = 30000;
+let focusedRefreshTimer=null;
 let cageStatusRefreshInFlight=false;
 let dashboardStockRefreshInFlight=false;
 function startAutoRefresh(){
-  if(cageStatusAutoRefreshTimer||!session) return;
-  cageStatusAutoRefreshTimer=setInterval(()=>{
-    refreshCageLoadingStatus();
-    refreshDashboardStock();
-  },4000);
+  if(focusedRefreshTimer||!session) return;
+  focusedRefreshTimer=setInterval(()=>{
+    if(route==='dashboard') refreshDashboardStock();
+    else if(route==='cageloading') refreshCageLoadingStatus();
+  },FOCUSED_REFRESH_MS);
 }
 function stopAutoRefresh(){
-  if(cageStatusAutoRefreshTimer){clearInterval(cageStatusAutoRefreshTimer);cageStatusAutoRefreshTimer=null;}
+  if(focusedRefreshTimer){clearInterval(focusedRefreshTimer);focusedRefreshTimer=null;}
 }
 function syncLiveListenersForVisibility(){
-  if(!session||document.hidden) stopAutoRefresh();
+  if(!session||document.hidden||!['dashboard','cageloading'].includes(route)) stopAutoRefresh();
   else startAutoRefresh();
 }
 async function refreshDashboardStock(){
@@ -2794,6 +2812,7 @@ async function navigate(r, sub){
   (map[r]||fallback)();
   renderAppFontControls();
   renderNotifBell();
+  syncLiveListenersForVisibility(); // (re)attaches/detaches the dashboard/cage-loading listeners for whichever route this navigation just landed on
   if(session) saveUiSession();
 }
 
