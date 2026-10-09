@@ -533,6 +533,42 @@ if(!window.storage){
           throw e;
         }
       },
+      /* Live-updates callers via a Firestore listener instead of a poll:
+         Firestore bills a listener for its initial attach plus actual
+         changes to the watched document, not on a fixed clock, so a screen
+         that nobody is touching costs ~0 reads/hour instead of
+         (ticks/hour) regardless of whether anything changed - see
+         CLAUDE.md's "Live data must use listeners, not polling" section for
+         why this is the required approach for any auto-refreshing UI in
+         this app, not setInterval. Returns an unsubscribe function; callers
+         MUST call it when the relevant screen is no longer visible (route
+         change, tab hidden, logout) - an attached listener left running
+         forever is exactly the kind of leak this pattern exists to avoid.
+         includeMetadataChanges + the version/ticket bookkeeping below
+         dedupes the callback so a local pending write doesn't re-deliver
+         the same value twice, and an in-flight read that's superseded by a
+         newer one before it resolves is discarded rather than overwriting
+         fresher data with stale data that happens to finish later. */
+      subscribe(key, shared, onValue, onError){
+        let request = 0, loadingVersion = null, deliveredVersion = null;
+        return docRef(key, shared).onSnapshot({includeMetadataChanges:true}, async snap=>{
+          const data = snap.exists ? snap.data() : null;
+          const version = data ? String(data.updatedAt||'')+':'+(data.chunked?('chunked:'+data.chunks):String(data.value||'')) : '(missing)';
+          if(version===loadingVersion || version===deliveredVersion) return;
+          const ticket = ++request;
+          loadingVersion = version;
+          try{
+            const value = data ? await readValue(key, shared, snap) : null;
+            if(ticket!==request) return;
+            onValue(data ? {key, value, shared:!!shared} : null);
+            deliveredVersion = version;
+          }catch(error){
+            if(ticket===request && onError) onError(error);
+          }finally{
+            if(ticket===request) loadingVersion = null;
+          }
+        }, onError);
+      },
       async getRecords(section, includeArchived){
         try{
           const query = includeArchived
@@ -1832,97 +1868,101 @@ async function logAudit(action, detail){
 }
 
 /* ============================= FOCUSED REFRESH =============================
-   This polled both the dashboard's stock section and all three cage-loading
-   sections every 4 seconds, any time the tab was visible on either route -
-   reintroducing, in new feature code, the exact "every open tab costs reads
-   on a fixed clock regardless of whether anything changed" problem an
-   earlier fix already removed from the old __meta-based cross-tab sync
-   (since removed from this file entirely - window.storage has no live-
-   listener method anymore, so a dashboard/cage status board, exactly the
-   kind of screen staff leave open and visible for a whole shift, is now the
-   only place in the app that polls at all). Rather than reintroduce the
-   listener infrastructure this codebase has since moved away from
-   everywhere else (see syncOpsIdSheetOnce's throttled pull), this keeps the
-   same plain-poll approach already used throughout, just far less
-   aggressive: 30s instead of 4s (7.5x fewer reads for the same "feels
-   live" effect) and the interval itself now only runs while a relevant
-   route is actually open - see syncLiveListenersForVisibility(), called
-   from navigate() on every route change and from visibilitychange - instead
-   of always ticking and relying on each callback to bail out early. */
-const FOCUSED_REFRESH_MS = 30000;
-let focusedRefreshTimer=null;
-let cageStatusRefreshInFlight=false;
+   This used to be a setInterval polling both the dashboard's stock section
+   and all three cage-loading sections every 4 seconds, any time the tab was
+   visible on either route - reintroducing, in new feature code, the exact
+   "every open tab costs reads on a fixed clock regardless of whether
+   anything changed" problem an earlier fix had already removed from the
+   old cross-tab sync path. A dashboard or cage status board is exactly the
+   kind of screen staff leave open and visible for a whole shift, so a 4s
+   poll there was one of the most expensive places this pattern could hide -
+   see CLAUDE.md's "Live data must use listeners, not polling" section.
+
+   Both now use window.storage.subscribe() - a Firestore listener - instead
+   of loadSections() on a timer. Firestore only bills a listener for its
+   initial attach plus actual changes to the watched document, so a
+   dashboard nobody is touching costs ~0 reads/hour instead of ~900.
+   Listeners are only attached while the relevant route is actually open
+   (see syncLiveListenersForVisibility(), called from navigate() on every
+   route change and from visibilitychange) and detached the moment you
+   navigate away or the tab is hidden - watching 'stock' or the cage
+   sections from an unrelated screen, or leaving a listener attached after
+   leaving the screen, would be pure waste. */
+let dashboardStockUnsub=null;
 let dashboardStockRefreshInFlight=false;
-function startAutoRefresh(){
-  if(focusedRefreshTimer||!session) return;
-  focusedRefreshTimer=setInterval(()=>{
-    if(route==='dashboard') refreshDashboardStock();
-    else if(route==='cageloading') refreshCageLoadingStatus();
-  },FOCUSED_REFRESH_MS);
+let cageSectionUnsubs=null;
+let cageStatusRefreshInFlight=false;
+function stopDashboardLiveSync(){
+  if(dashboardStockUnsub){ dashboardStockUnsub(); dashboardStockUnsub=null; }
+}
+function startDashboardLiveSync(){
+  if(dashboardStockUnsub || !session || !window.storage || typeof window.storage.subscribe!=='function' || !loadedSections.has('stock')) return;
+  dashboardStockUnsub = window.storage.subscribe('stock', true, async snapshot=>{
+    if(!session||document.hidden||route!=='dashboard'||actionInFlight||dashboardStockRefreshInFlight) return;
+    if(!snapshot || snapshot.value===lastKnownSnapshot.stock) return;
+    dashboardStockRefreshInFlight=true;
+    try{
+      DB.stock=JSON.parse(snapshot.value);
+      lastKnownSnapshot.stock=snapshot.value;
+      if(recordModeActive){
+        await Promise.all(['receiving','issuance','returns','repairs'].filter(key=>loadedRecordSections.has(key)).map(key=>loadRecordSection(key,loadedRecordArchives.has(key))));
+        if(!session||document.hidden||route!=='dashboard'||actionInFlight) return;
+        migrateDB();
+      }
+      renderDashboard();
+    }catch(e){
+      console.error('Dashboard stock live sync failed:',e);
+    }finally{
+      dashboardStockRefreshInFlight=false;
+    }
+  }, e=>console.error('Dashboard stock listener failed:', e));
+}
+function stopCageLiveSync(){
+  if(cageSectionUnsubs){ Object.values(cageSectionUnsubs).forEach(unsub=>unsub()); cageSectionUnsubs=null; }
+}
+function startCageLiveSync(){
+  if(cageSectionUnsubs || !session || !window.storage || typeof window.storage.subscribe!=='function') return;
+  cageSectionUnsubs={};
+  ['cages','cageMasterlist','cageCycleCounts'].forEach(key=>{
+    cageSectionUnsubs[key] = window.storage.subscribe(key, true, async snapshot=>{
+      if(!session||document.hidden||route!=='cageloading'||actionInFlight||cageStatusRefreshInFlight) return;
+      const tab=subroute||'dashboard';
+      if(!['dashboard','list','masterlist','receive','cyclecount'].includes(tab)) return;
+      if(!snapshot || snapshot.value===lastKnownSnapshot[key]) return;
+      cageStatusRefreshInFlight=true;
+      try{
+        DB[key]=JSON.parse(snapshot.value);
+        lastKnownSnapshot[key]=snapshot.value;
+        migrateDB();
+        if(tab==='cyclecount'){
+          refreshCageCycleCountView();
+          refreshCageAmsCycleCountView();
+          return;
+        }
+        const scan=document.getElementById('receive-cage-asset-scan');
+        const scanValue=tab==='receive'&&scan?scan.value:'';
+        const restoreFocus=tab==='receive'&&scan&&document.activeElement===scan;
+        renderCageLoading();
+        if(tab==='receive'){
+          const refreshedScan=document.getElementById('receive-cage-asset-scan');
+          if(refreshedScan){refreshedScan.value=scanValue;if(restoreFocus)refreshedScan.focus();}
+        }
+      }catch(e){
+        console.error('Cage status live sync failed:',e);
+      }finally{
+        cageStatusRefreshInFlight=false;
+      }
+    }, e=>console.error('Cage status listener failed:', e));
+  });
 }
 function stopAutoRefresh(){
-  if(focusedRefreshTimer){clearInterval(focusedRefreshTimer);focusedRefreshTimer=null;}
+  stopDashboardLiveSync();
+  stopCageLiveSync();
 }
 function syncLiveListenersForVisibility(){
-  if(!session||document.hidden||!['dashboard','cageloading'].includes(route)) stopAutoRefresh();
-  else startAutoRefresh();
-}
-async function refreshDashboardStock(){
-  if(!session||document.hidden||route!=='dashboard'||actionInFlight||dashboardStockRefreshInFlight||!loadedSections.has('stock')) return;
-  dashboardStockRefreshInFlight=true;
-  try{
-    const sections=await loadSections(['stock']);
-    if(!session||document.hidden||route!=='dashboard'||actionInFlight) return;
-    if(sections.data.stock===null||sections.snap.stock===lastKnownSnapshot.stock) return;
-    DB.stock=sections.data.stock;
-    lastKnownSnapshot.stock=sections.snap.stock;
-    if(recordModeActive){
-      await Promise.all(['receiving','issuance','returns','repairs'].filter(key=>loadedRecordSections.has(key)).map(key=>loadRecordSection(key,loadedRecordArchives.has(key))));
-      if(!session||document.hidden||route!=='dashboard'||actionInFlight) return;
-      migrateDB();
-    }
-    renderDashboard();
-  }catch(e){
-    console.error('Dashboard stock auto-refresh failed:',e);
-  }finally{
-    dashboardStockRefreshInFlight=false;
-  }
-}
-async function refreshCageLoadingStatus(){
-  if(!session||document.hidden||route!=='cageloading'||actionInFlight||cageStatusRefreshInFlight) return;
-  const tab=subroute||'dashboard';
-  if(!['dashboard','list','masterlist','receive','cyclecount'].includes(tab)) return;
-  cageStatusRefreshInFlight=true;
-  try{
-    const keys=['cages','cageMasterlist','cageCycleCounts'];
-    const sections=await loadSections(keys);
-    let changed=false;
-    keys.forEach(key=>{
-      if(sections.data[key]===null||sections.snap[key]===lastKnownSnapshot[key]) return;
-      DB[key]=sections.data[key];
-      lastKnownSnapshot[key]=sections.snap[key];
-      changed=true;
-    });
-    if(!changed) return;
-    migrateDB();
-    if(tab==='cyclecount'){
-      refreshCageCycleCountView();
-      refreshCageAmsCycleCountView();
-      return;
-    }
-    const scan=document.getElementById('receive-cage-asset-scan');
-    const scanValue=tab==='receive'&&scan?scan.value:'';
-    const restoreFocus=tab==='receive'&&scan&&document.activeElement===scan;
-    renderCageLoading();
-    if(tab==='receive'){
-      const refreshedScan=document.getElementById('receive-cage-asset-scan');
-      if(refreshedScan){refreshedScan.value=scanValue;if(restoreFocus)refreshedScan.focus();}
-    }
-  }catch(e){
-    console.error('Cage status auto-refresh failed:',e);
-  }finally{
-    cageStatusRefreshInFlight=false;
-  }
+  if(!session||document.hidden){ stopAutoRefresh(); return; }
+  if(route==='dashboard') startDashboardLiveSync(); else stopDashboardLiveSync();
+  if(route==='cageloading') startCageLiveSync(); else stopCageLiveSync();
 }
 function isFormScreenActive(){
   if(route==='settings') return true;
