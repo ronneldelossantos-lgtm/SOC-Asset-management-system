@@ -2506,11 +2506,22 @@ function requestSoc(r){
   return recordedSoc;
 }
 function requestVisible(r){
+  if(session && session.role==='department') return departmentRequestVisible(r);
   const soc = requestSoc(r);
   if(soc===null) return !!session && session.role==='admin' && !adminViewSoc;
+  if(!soc) return !!session && session.role==='admin' && !adminViewSoc;
   return socVisible(soc);
 }
 function socFilterRequests(arr){ return (arr||[]).filter(requestVisible); }
+function departmentPortalSoc(){
+  if(!session || session.role!=='department') return '';
+  return String(session.departmentSoc||resolvedDepartmentSoc(session.department,'')||'').trim();
+}
+function departmentRequestVisible(r){
+  if(!session || session.role!=='department' || !r || r.department!==session.department) return false;
+  const site=requestSoc(r);
+  return site!==null && socKey(site)===socKey(departmentPortalSoc());
+}
 function resolvedDepartmentSoc(name, preferredSoc){
   const preferred = preferredSoc||'';
   const matches = departmentEntries(name);
@@ -2788,16 +2799,21 @@ async function navigate(r, sub){
 
 /* ============================= NOTIFICATIONS ============================= */
 let notifPanelOpen = false;
-function addNotification(message, forPortal, route, sub, forDept){
+function addNotification(message, forPortal, route, sub, forDept, forSoc){
   if(!DB.notifications) DB.notifications = [];
   const id = 'N'+Date.now()+Math.floor(Math.random()*1000);
-  DB.notifications.push({id, message, forPortal, route: route||'', sub: sub||'', forDept: forDept||null, date: nowISO(), read:false});
+  DB.notifications.push({id, message, forPortal, route: route||'', sub: sub||'', forDept: forDept||null, forSoc: forSoc||null, date: nowISO(), read:false});
 }
 function notifsForSession(){
   if(!DB.notifications) return [];
   return DB.notifications.filter(n=>{
     if(n.forPortal!==portalMode) return false;
     if(portalMode==='department' && n.forDept && n.forDept!==session.department) return false;
+    if(n.forSoc && portalMode==='department' && socKey(n.forSoc)!==socKey(departmentPortalSoc())) return false;
+    if(n.forSoc && portalMode==='supplies'){
+      if(session.role==='admin' && adminViewSoc && socKey(n.forSoc)!==socKey(adminViewSoc)) return false;
+      if(session.role!=='admin' && socKey(n.forSoc)!==socKey(currentSoc())) return false;
+    }
     return true;
   }).slice().reverse();
 }
@@ -3101,7 +3117,7 @@ function renderRequest(){
   const c = document.getElementById('content');
   const tab = subroute || 'new';
   const routeKey = portalMode==='department' ? 'drequest' : 'request';
-  const visibleReqs = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilterRequests(DB.requests);
+  const visibleReqs = portalMode==='department' ? DB.requests.filter(departmentRequestVisible) : socFilterRequests(DB.requests);
   c.innerHTML = `
     <div class="tabs">
       <div class="tab ${tab==='new'?'active':''}" onclick="navigate('${routeKey}','new')">File a request</div>
@@ -3112,30 +3128,18 @@ function renderRequest(){
   document.getElementById('req-body').innerHTML = tab==='new' ? requestFormHtml() : requestListHtml();
   if(tab==='new'){ refreshReqItemsTable(); }
 }
-function requestDepartmentSocFieldHtml(){
-  const matches = departmentEntries(session.department);
-  if(matches.length<2){
-    const soc = matches.length ? (matches[0].soc||'') : resolvedDepartmentSoc(session.department, session.departmentSoc);
-    return '<div class="field"><label>Supply site (SOC)</label><input value="'+esc(soc||'Not site-specific')+'" disabled class="autofill"></div>';
-  }
-  const preferred = session.departmentSoc||'';
-  const hasAssigned = matches.some(d=>(d.soc||'')===preferred);
-  const placeholder = hasAssigned ? '' : '<option value="" selected disabled>Choose the department SOC</option>';
-  const options = matches.map(d=>'<option value="'+esc(deptKey(d))+'" '+(hasAssigned && (d.soc||'')===preferred?'selected':'')+'>'+esc(deptLabel(d))+'</option>').join('');
-  return '<div class="field"><label>Supply site (SOC)</label><select id="req-dept-soc">'+placeholder+options+'</select><div class="hint">This SOC determines which Supplies portal receives the request.</div></div>';
-}
 function requestFormHtml(){
-  const deptSocField = portalMode==='department' ? requestDepartmentSocFieldHtml() : '';
+  const routingNote = portalMode==='department' && departmentPortalSoc() ? ` Requests will route automatically to ${esc(departmentPortalSoc())}.` : '';
   const deptField = portalMode==='department'
     ? `<div class="field"><label>Department</label><input value="${esc(session.department)}" disabled class="autofill"></div>`
     : `<div class="field"><label>Department</label><select id="req-dept">${deptOptionsHtml()}</select></div>`;
   return `
   <div class="card">
     <h3>Replenishment request</h3>
-    <div class="card-sub">Add the supplies you need, then submit for approval. Asset tags are provided from inventory when Supplies approves the request, in first-come, first-served order.</div>
+    <div class="card-sub">Add the supplies you need, then submit for approval. Asset tags are provided from inventory when Supplies approves the request, in first-come, first-served order.${routingNote}</div>
     <div class="form-row">
       <div class="field"><label>Requested by</label><input value="${esc(session.fullName)}" disabled class="autofill"></div>
-      ${deptField}${deptSocField}
+      ${deptField}
     </div>
     <div class="section-title">Add item</div>
     <div class="form-row3">
@@ -3214,7 +3218,7 @@ function reqDescPick(sku){
   if(!info) return;
   document.getElementById('req-desc').value = info.description;
   document.getElementById('req-sku').value = info.sku;
-  const onHandPart = portalMode==='department' ? '' : ` &middot; On hand: ${stockOf(info.sku)}`;
+  const onHandPart = portalMode==='department' ? '' : ` &middot; On hand: ${info.type==='Asset' ? dashboardAssetOnHand(info.sku) : stockOf(info.sku)}`;
   document.getElementById('req-sku-hint').innerHTML = `${info.type} &middot; UOM: ${info.uom}${onHandPart}`;
   const box = document.getElementById('req-desc-suggest');
   box.innerHTML=''; box.style.display='none';
@@ -3260,10 +3264,9 @@ async function submitRequest(){
   if(reqDraftItems.length===0){ toast('Add at least one item before submitting.'); return; }
   let deptSel;
   if(portalMode==='department'){
-    const socSelect = document.getElementById('req-dept-soc');
-    if(socSelect && !socSelect.value){ toast('Choose the department SOC so the request reaches the correct Supplies portal.'); return; }
-    const selectedSoc = socSelect ? parseDeptKey(socSelect.value).soc : session.departmentSoc||'';
-    deptSel = {name:session.department, soc:resolvedDepartmentSoc(session.department, selectedSoc)};
+    const assignedSoc = departmentPortalSoc();
+    if(!assignedSoc){ toast('This department login has no SOC assigned. Ask an administrator to assign its SOC before filing a request.'); return; }
+    deptSel = {name:session.department, soc:assignedSoc};
   } else {
     deptSel = parseDeptKey(document.getElementById('req-dept').value);
   }
@@ -3291,10 +3294,10 @@ async function submitRequest(){
     });
     syncOpenRequestAssetCodes();
     if(approverUsername){
-      addNotification(session.fullName+' filed a request ('+id+') that needs your approval before it goes to Supplies.', 'department', 'dapprovals', 'list', dept);
-      addNotification('New request ('+id+') from '+dept+' is awaiting department approval by '+approverUsername+'.', 'supplies', 'request', 'list');
+      addNotification(session.fullName+' filed a request ('+id+') that needs your approval before it goes to Supplies.', 'department', 'dapprovals', 'list', dept, deptSel.soc);
+      addNotification('New request ('+id+') from '+dept+' is awaiting department approval by '+approverUsername+'.', 'supplies', 'request', 'list', null, deptSel.soc);
     } else {
-      addNotification(dept+' filed a new supply request ('+id+') by '+session.fullName+'.', 'supplies', 'request', 'list');
+      addNotification(dept+' filed a new supply request ('+id+') by '+session.fullName+'.', 'supplies', 'request', 'list', null, deptSel.soc);
     }
   });
   if(!saved) return;
@@ -3305,7 +3308,7 @@ async function submitRequest(){
 const REQ_NEXT_STATUS = {'Preparing':['Ready for Pull-out','Ready for pull out'], 'Ready for Pull-out':['Issued','Issue request']};
 function renderDeptApprovals(){
   const c = document.getElementById('content');
-  const rows = DB.requests.filter(r=>r.department===session.department && r.requiresApprovalFrom && r.requiresApprovalFrom.toLowerCase()===session.username.toLowerCase());
+  const rows = DB.requests.filter(r=>departmentRequestVisible(r) && r.requiresApprovalFrom && r.requiresApprovalFrom.toLowerCase()===session.username.toLowerCase());
   const pending = rows.filter(r=>r.status==='Dept Approval');
   const decided = rows.filter(r=>r.status!=='Dept Approval');
   c.innerHTML = `
@@ -3366,10 +3369,10 @@ async function decideDeptApproval(id, decision){
     current.deptApprovedDate = decidedAt;
     syncOpenRequestAssetCodes();
     if(decision==='Pending'){
-      addNotification(current.department+' filed a new supply request ('+id+') by '+current.requestedBy+'.', 'supplies', 'request', 'list');
-      addNotification('Your request '+id+' was approved by '+session.fullName+' and sent to Supplies.', 'department', 'drequest', 'list', current.department);
+      addNotification(current.department+' filed a new supply request ('+id+') by '+current.requestedBy+'.', 'supplies', 'request', 'list', null, current.soc);
+      addNotification('Your request '+id+' was approved by '+session.fullName+' and sent to Supplies.', 'department', 'drequest', 'list', current.department, current.soc);
     } else {
-      addNotification('Your request '+id+' was rejected by '+session.fullName+'.', 'department', 'drequest', 'list', current.department);
+      addNotification('Your request '+id+' was rejected by '+session.fullName+'.', 'department', 'drequest', 'list', current.department, current.soc);
     }
     applied = true;
   });
@@ -3445,7 +3448,7 @@ function requestAssetLabelRows(r){
   return labels;
 }
 function requestListHtml(){
-  const rows = portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilterRequests(DB.requests);
+  const rows = portalMode==='department' ? DB.requests.filter(departmentRequestVisible) : socFilterRequests(DB.requests);
   const header = `<div class="list-head"><h3>${portalMode==='department'?'My department requests':'All requests'} (${rows.length})</h3>${dlBtn('exportRequests')}</div>`;
   if(rows.length===0) return '<div class="card">'+header+'<div class="empty"><div class="ic">&#9998;</div>No requests filed yet.</div></div>';
   return '<div class="card">'+header+'<div class="tbl-wrap"><table>' +
@@ -3501,7 +3504,7 @@ function requestListHtml(){
         const tagsReleased = ['Preparing','Ready for Pull-out','Approved','Issued','Received'].includes(r.status);
         const assigned = it.type==='Asset' && r.status!=='Rejected' ? (tagsReleased ? ' ('+codes.length+'/'+Math.max(0,approvedQtyOf(it))+' asset tags'+(codes.length?': '+esc(codes.join(', ')):' assigned')+')' : ' (asset tags provided after Supplies approval)') : '';
         if(portalMode!=='supplies') return esc(it.sku)+' — '+esc(it.description)+' &times;'+it.qty+assigned;
-        const onHand = stockOf(it.sku, r.soc);
+        const onHand = it.type==='Asset' ? dashboardAssetOnHand(it.sku,requestSoc(r)||currentSoc()) : stockOf(it.sku,requestSoc(r)||currentSoc());
         const short = onHand < it.qty;
         return esc(it.sku)+' — '+esc(it.description)+' &times;'+it.qty+' <span style="'+(short?'color:var(--danger);font-weight:600;':'color:var(--muted);')+'">(on hand: '+onHand+')</span>'+assigned;
       }).join('<br>')}</div></td>
@@ -3833,7 +3836,7 @@ function downloadTransmittal(id){
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
 }
 function exportRequests(){
-  const rows = (portalMode==='department' ? DB.requests.filter(r=>r.department===session.department) : socFilterRequests(DB.requests)).map(r=>[
+  const rows = (portalMode==='department' ? DB.requests.filter(departmentRequestVisible) : socFilterRequests(DB.requests)).map(r=>[
     r.id, r.requestedBy, r.department,
     r.items.map(it=>it.sku+' x'+it.qty).join('; '),
     r.items.filter(it=>it.type==='Asset' && requestAssetCodesArr(it).some(t=>t)).map(it=>it.sku+': '+requestAssetCodesArr(it).filter(t=>t).join(', ')).join(' | '),
@@ -3858,7 +3861,7 @@ async function confirmRequestReceived(id){
   r.receivedBy = session.fullName;
   r.receivedDate = nowISO();
   syncRequestReceipts();
-  addNotification('Request '+id+' was confirmed received by '+session.fullName+' ('+r.department+').', 'supplies', 'request', 'list');
+  addNotification('Request '+id+' was confirmed received by '+session.fullName+' ('+r.department+').', 'supplies', 'request', 'list', null, r.soc);
   if(!await saveDB()) return;
   toast('Request '+id+' confirmed as received.');
   navigate('drequest','list');
@@ -3867,7 +3870,7 @@ async function finalizeApproveRequest(r){
   r.status = 'Preparing';
   syncOpenRequestAssetCodes();
   r.approvedBy = session.fullName; r.approvedDate = nowISO();
-  addNotification('Your request '+r.id+' was approved by '+session.fullName+' — now preparing.', 'department', 'drequest', 'list', r.department);
+  addNotification('Your request '+r.id+' was approved by '+session.fullName+' — now preparing.', 'department', 'drequest', 'list', r.department, r.soc);
   if(!await saveDB()) return false;
   toast('Request '+r.id+' approved — now preparing.');
   closeModal();
@@ -3889,29 +3892,26 @@ async function rejectRequest(id){
   r.status = 'Rejected';
   r.decidedBy = session.fullName; r.decidedDate = nowISO();
   syncOpenRequestAssetCodes();
-  addNotification('Your request '+id+' was rejected by '+session.fullName+'.', 'department', 'drequest', 'list', r.department);
+  addNotification('Your request '+id+' was rejected by '+session.fullName+'.', 'department', 'drequest', 'list', r.department, r.soc);
   await saveDB();
   toast('Request '+id+' rejected.');
   navigate('request','list');
 }
 function openApproveRequestModal(r){
   const recordedSite=requestSoc(r);
-  const supplySite=recordedSite || currentSoc() || '';
-  const siteOptions=Array.from(new Set([...(DB.warehouses||[]),supplySite].filter(Boolean)));
+  const supplySite=recordedSite || '';
+  if(!supplySite){ toast('This request has no assigned SOC. Ask an administrator to assign the department login to an SOC.'); return; }
+  if((session.role!=='admin'||adminViewSoc) && socKey(supplySite)!==socKey(currentSoc())){
+    toast('This request is routed to '+supplySite+'. Open it from that SOC Supplies portal.'); return;
+  }
   showModal(`
     <h3>Approve request — ${esc(r.id)}</h3>
-    <div class="field"><label for="approve-supply-soc">Supply site (SOC)</label>
-      <select id="approve-supply-soc" ${recordedSite?'disabled':''}>
-        <option value="" ${!supplySite?'selected':''}>Choose the supplying SOC</option>
-        ${siteOptions.map(site=>'<option value="'+esc(site)+'" '+(site===supplySite?'selected':'')+'>'+esc(site)+'</option>').join('')}
-      </select>
-      <div class="hint">Asset tags and stock will come from this SOC. This site is saved with the approved request.</div>
-    </div>
+    <div class="card-sub">Routed automatically to <b>${esc(supplySite)}</b>. Stock and asset tags will come from this SOC.</div>
     <div class="card-sub">Set the approved quantity for each item — it may differ from what was requested (e.g. a partial approval due to stock). The approved quantity controls automatic asset-tag assignment, issuance, stock deduction, and the transmittal.</div>
     <div class="tbl-wrap" style="margin:14px 0;"><table>
       <tr><th>SKU</th><th>Description</th><th>Requested</th><th>Approved qty</th></tr>
       ${r.items.map((it,i)=>{
-        const onHand = stockOf(it.sku, supplySite);
+        const onHand = it.type==='Asset' ? dashboardAssetOnHand(it.sku,supplySite) : stockOf(it.sku,supplySite);
         const short = onHand < it.qty;
         return `<tr>
           <td class="mono">${esc(it.sku)}</td><td>${esc(it.description)}</td>
@@ -3930,10 +3930,10 @@ async function confirmApproveRequest(id){
   if(actionInFlight) return;
   const r = DB.requests.find(x=>x.id===id);
   if(!r) return;
-  const supplySite=requestSoc(r)||document.getElementById('approve-supply-soc')?.value||'';
-  if(!supplySite){toast('Choose the supplying SOC before approving this request.');return;}
-  if(session.role!=='admin' && socKey(supplySite)!==socKey(currentSoc())){
-    toast('Approve this request from its supplying SOC.');return;
+  const supplySite=requestSoc(r)||'';
+  if(!supplySite){toast('This request has no assigned SOC. Ask an administrator to assign the department login to an SOC.');return;}
+  if((session.role!=='admin'||adminViewSoc) && socKey(supplySite)!==socKey(currentSoc())){
+    toast('This request is routed to '+supplySite+'. Open it from that SOC Supplies portal.');return;
   }
   if(['Preparing','Ready for Pull-out','Approved','Issued','Received','Rejected'].includes(r.status)){
     toast('This request has already been processed.'); return;
@@ -3977,7 +3977,7 @@ async function advanceRequestStatus(id, newStatus){
   r.status = newStatus;
   r.lastUpdatedBy = session.fullName;
   r.lastUpdatedDate = nowISO();
-  addNotification('Your request '+id+' is now "'+newStatus+'".', 'department', 'drequest', 'list', r.department);
+  addNotification('Your request '+id+' is now "'+newStatus+'".', 'department', 'drequest', 'list', r.department, r.soc);
   await saveDB();
   toast('Request '+id+' marked as '+newStatus+'.');
   navigate(portalMode==='department'?'drequest':'request','list');
@@ -3989,7 +3989,8 @@ function requestIssuePreCheck(r){
     return false;
   }
   for(const it of r.items){
-    if(stockOf(it.sku, r.soc) < approvedQtyOf(it)){
+    const onHand=it.type==='Asset' ? dashboardAssetOnHand(it.sku,r.soc) : stockOf(it.sku,r.soc);
+    if(onHand < approvedQtyOf(it)){
       toast('Not enough stock on hand for '+it.sku+' — cannot complete this request.');
       return false;
     }
@@ -4120,7 +4121,7 @@ async function finalizeIssueRequest(){
   r.lastUpdatedBy = session.fullName;
   r.lastUpdatedDate = nowISO();
   syncOpenRequestAssetCodes();
-  addNotification('Your request '+id+' is now "Issued". It has been registered in the Issuance log — please confirm receipt once the items arrive.', 'department', 'drequest', 'list', r.department);
+  addNotification('Your request '+id+' is now "Issued". It has been registered in the Issuance log — please confirm receipt once the items arrive.', 'department', 'drequest', 'list', r.department, r.soc);
   await saveDB();
   closeModal();
   issueFlowReqId = null; issueFlowSignedFile = null;
@@ -4152,20 +4153,24 @@ function receivingFormHtml(){
   return `
   <div class="card">
     <h3>Receive incoming supplies</h3>
-    <div class="card-sub">Asset tags are generated from the selected SOC and item description. Enter the quantity and AMS tag(s). Consumables are added after quantity is entered. Enter the supplier and attach the transmittal before receiving the batch.</div>
+    <div class="card-sub">For assets, scan or enter one AMS tag per unit and generated asset tags will appear automatically. For consumables, enter the quantity received. Enter the supplier and attach the transmittal before receiving the batch.</div>
     <div class="section-title">Add item</div>
-    <div class="form-row" id="recv-sku-row" style="grid-template-columns:repeat(2,minmax(0,1fr));">
+    <div class="form-row" id="recv-sku-row" style="grid-template-columns:minmax(0,1fr);">
       <div class="field" style="position:relative;"><label>Item description</label><input id="recv-desc" placeholder="Type to search item description…" autocomplete="off" oninput="recvDescInput();scheduleRecvAutoAdd();" onfocus="recvDescInput()" onblur="recvDescBlur()"><div id="recv-desc-suggest" class="suggest-dropdown"></div></div>
-      <div class="field"><label>SKU code</label><input id="recv-sku" class="autofill" disabled placeholder="Auto-filled from item description"></div>
+      <input id="recv-sku" type="hidden"><input id="recv-type" type="hidden"><input id="recv-uom" type="hidden">
     </div>
-    <div class="form-row" id="recv-ams-row" style="display:none;grid-template-columns:repeat(2,minmax(0,1fr));">
-      <div class="field" id="recv-asset-code-field"><label>Generated Asset Tag(s)</label><textarea id="recv-asset-code" class="autofill" readonly placeholder="Enter quantity to preview generated tags"></textarea><div id="recv-tag-hint" class="hint">Format: SPX + SOC initials + item initials + sequence number.</div></div>
-      <div class="field" id="recv-ams-tagging-field"><label>AMS Asset Tagging</label><input id="recv-ams-tagging" oninput="scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}" placeholder="Enter AMS tag(s); separate multiple tags with commas"></div>
+    <div class="field" id="recv-ams-tagging-field" style="margin-top:12px;display:none;">
+      <label>AMS Asset Tagging</label>
+      <textarea id="recv-ams-tagging" rows="2" oninput="recvRefreshAssetTagPreview();scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter' && (event.ctrlKey||event.metaKey)){event.preventDefault();addRecvItem();}" placeholder="Scan or enter one AMS tag per unit; separate tags with commas or new lines"></textarea>
     </div>
-    <div class="form-row3" id="recv-meta-row">
-      <div class="field"><label>Type of supply</label><input id="recv-type" class="autofill" disabled></div>
-      <div class="field"><label>UOM</label><input id="recv-uom" class="autofill" disabled></div>
-      <div class="field" id="recv-qty-field"><label>Quantity received</label><input id="recv-qty" type="number" min="1" step="1" placeholder="0" oninput="recvRefreshAssetTagPreview();scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem(true);}"></div>
+    <div class="field" id="recv-qty-field" style="margin-top:12px;display:none;">
+      <label>Quantity received</label>
+      <input id="recv-qty" type="number" min="1" step="1" placeholder="Enter quantity" oninput="scheduleRecvAutoAdd()" onkeydown="if(event.key==='Enter'){event.preventDefault();addRecvItem();}">
+    </div>
+    <div class="field" id="recv-generated-tag-field" style="margin-top:12px;display:none;">
+      <label>Generated Asset Tag(s)</label>
+      <textarea id="recv-asset-code" class="autofill" rows="2" readonly placeholder="Generated tags will appear here"></textarea>
+      <div id="recv-tag-hint" class="hint">Format: SPX + SOC initials + item initials + sequence number.</div>
     </div>
     <div id="recv-sku-hint" class="hint"></div>
 
@@ -4199,13 +4204,15 @@ function recvApplySkuInfo(info, updateDescription){
   document.getElementById('recv-type').value = info?info.type:'';
   document.getElementById('recv-uom').value = info?info.uom:'';
   const isAsset = !!info && info.type==='Asset';
-  document.getElementById('recv-ams-row').style.display = isAsset ? '' : 'none';
-  document.getElementById('recv-qty-field').style.display = '';
-  document.getElementById('recv-meta-row').style.gridTemplateColumns = 'repeat(3,minmax(0,1fr))';
-  if(!isAsset){
-    document.getElementById('recv-asset-code').value = '';
-    document.getElementById('recv-ams-tagging').value = '';
-  }
+  const isConsumable = !!info && info.type!=='Asset';
+  const amsField = document.getElementById('recv-ams-tagging-field');
+  const qtyField = document.getElementById('recv-qty-field');
+  const generatedField = document.getElementById('recv-generated-tag-field');
+  if(amsField) amsField.style.display = isAsset ? '' : 'none';
+  if(qtyField) qtyField.style.display = isConsumable ? '' : 'none';
+  if(generatedField) generatedField.style.display = isAsset ? '' : 'none';
+  if(isAsset) document.getElementById('recv-qty').value = '';
+  if(isConsumable) document.getElementById('recv-ams-tagging').value = '';
   recvRefreshAssetTagPreview();
 }
 function recvDescMatches(q){
@@ -4220,6 +4227,8 @@ function recvDescInput(){
   const hintEl = document.getElementById('recv-sku-hint');
   if(exact.length===1){ recvDescPick(exact[0].sku); return; }
   recvApplySkuInfo(null, false);
+  document.getElementById('recv-ams-tagging').value = '';
+  document.getElementById('recv-qty').value = '';
   if(hintEl) hintEl.innerHTML = exact.length>1 ? 'Several items share this description — choose the correct one from the suggestions.' : '';
   const matches = recvDescMatches(v);
   if(!v.trim() || matches.length===0){ box.innerHTML=''; box.style.display='none'; return; }
@@ -4292,16 +4301,19 @@ function recvRefreshAssetTagPreview(){
   const field = document.getElementById('recv-asset-code');
   if(!field) return;
   const info = skuInfo((document.getElementById('recv-sku')?.value||'').trim());
+  const generatedField = document.getElementById('recv-generated-tag-field');
   const hint = document.getElementById('recv-tag-hint');
+  const isAsset = !!info && info.type==='Asset';
+  if(generatedField) generatedField.style.display = isAsset ? '' : 'none';
   field.value = '';
-  if(!info || info.type!=='Asset') return;
+  if(!isAsset) return;
   const soc = currentSoc();
   if(!soc){ if(hint) hint.textContent='Select an SOC in the site selector before receiving assets.'; return; }
-  const qty = Number(document.getElementById('recv-qty')?.value);
-  if(!Number.isInteger(qty) || qty<1){ if(hint) hint.textContent='Enter the quantity to preview the generated asset tags.'; return; }
+  const qty = recvAssetCodes(document.getElementById('recv-ams-tagging')?.value||'').length;
+  if(qty<1){ if(hint) hint.textContent='Enter AMS tag(s) to preview one generated asset tag per unit.'; return; }
   const tags = recvGeneratedAssetTags(soc,info.description,qty);
   field.value = tags.join('\n');
-  if(hint) hint.textContent=tags.length?'Tags are generated for '+soc+' and this item.':'Could not generate tags; check the SOC and item description.';
+  if(hint) hint.textContent=tags.length?'Generated for '+soc+' and this item.':'Could not generate tags; check the SOC and item description.';
 }
 function scheduleRecvAutoAdd(){
   clearTimeout(recvAutoAddTimer);
@@ -4309,21 +4321,18 @@ function scheduleRecvAutoAdd(){
     const info = skuInfo((document.getElementById('recv-sku')?.value||'').trim());
     if(!info) return;
     if(info.type==='Asset'){
-      const qty = Number(document.getElementById('recv-qty').value);
-      const amsTags = document.getElementById('recv-ams-tagging').value.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean);
-      if(Number.isInteger(qty) && qty>0 && amsTags.length) addRecvItem(true);
-    } else if(Number(document.getElementById('recv-qty').value)>0){
-      addRecvItem(true);
-    }
+      if(recvAssetCodes(document.getElementById('recv-ams-tagging').value).length) addRecvItem(true);
+    } else if(Number(document.getElementById('recv-qty').value)>0) addRecvItem(true);
   }, 650);
 }
 function addRecvItem(automatic=false){
   const sku = document.getElementById('recv-sku').value.trim();
   const info = skuInfo(sku);
   if(!info){ if(!automatic) toast('Select an item description from the matching items.'); return; }
-  const qty = Number(document.getElementById('recv-qty').value);
-  if(info.type==='Asset' && (!Number.isInteger(qty) || qty<1)){ if(!automatic) toast('Enter a whole number quantity greater than 0.'); return; }
-  if(!qty || qty<=0){ if(!automatic) toast('Enter a quantity greater than 0.'); return; }
+  const amsTags = info.type==='Asset' ? recvAssetCodes(document.getElementById('recv-ams-tagging').value) : [];
+  const qty = info.type==='Asset' ? amsTags.length : Number(document.getElementById('recv-qty').value);
+  if(!Number.isInteger(qty) || qty<1){ if(!automatic) toast(info.type==='Asset'?'Enter at least one AMS tag.':'Enter a whole quantity greater than zero.'); return; }
+  if(info.type==='Asset' && amsTags.length===0){ if(!automatic) toast('Enter at least one AMS tag.'); return; }
   const itemSoc = currentSoc();
   if(info.type==='Asset' && !itemSoc){
     const hint=document.getElementById('recv-tag-hint'); if(hint) hint.textContent='Select an SOC in the site selector before receiving assets.';
@@ -4333,8 +4342,6 @@ function addRecvItem(automatic=false){
   const assetCodes = info.type==='Asset' ? recvGeneratedAssetTags(itemSoc,info.description,qty) : [];
   if(info.type==='Asset' && assetCodes.length!==qty){ if(!automatic) toast('Could not generate asset tags for this item.'); return; }
   const assetCode = info.type==='Asset' ? assetCodes.join(', ') : '';
-  const amsTags = info.type==='Asset' ? document.getElementById('recv-ams-tagging').value.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean) : [];
-  if(info.type==='Asset' && amsTags.length===0){ if(!automatic) toast('Enter an AMS Asset Tag.'); return; }
   clearTimeout(recvAutoAddTimer);
   recvAutoAddTimer = null;
   recvDraftItems.push({sku:info.sku, description:info.description, type:info.type, uom:info.uom, qty, assetCode, assetCodes, amsTags, soc:itemSoc});
@@ -4356,8 +4363,8 @@ function refreshRecvItemsTable(){
   if(actions) actions.style.display = recvDraftItems.length ? '' : 'none';
   if(recvDraftItems.length===0){ el.innerHTML = '<div class="empty"><div class="ic">&#8615;</div>No items added yet.</div>'; return; }
   el.innerHTML = '<div class="line-items">' +
-    '<div class="li-row li-head"><span>SKU / Asset details</span><span>Description</span><span>Type</span><span>Qty</span><span></span></div>' +
-    recvDraftItems.map((it,i)=>`<div class="li-row"><span class="mono">${esc(it.sku)}${it.assetCodes&&it.assetCodes.length?'<div class="small-note">Asset Tag(s): '+esc(it.assetCodes.join(', '))+'</div>':''}${it.amsTags&&it.amsTags.length?'<div class="small-note">AMS: '+esc(it.amsTags.join(', '))+'</div>':''}</span><span>${esc(it.description)}</span><span>${esc(it.type)}</span><span>${it.qty} ${esc(it.uom)}</span><span><button class="icon-btn" onclick="removeRecvItem(${i})">&times;</button></span></div>`).join('')
+    '<div class="li-row li-head" style="grid-template-columns:minmax(0,1.2fr) 70px minmax(0,1fr) minmax(0,1fr) 40px;"><span>Item description</span><span>Qty</span><span>Generated Asset Tag(s)</span><span>AMS Asset Tagging</span><span></span></div>' +
+    recvDraftItems.map((it,i)=>`<div class="li-row" style="grid-template-columns:minmax(0,1.2fr) 70px minmax(0,1fr) minmax(0,1fr) 40px;"><span>${esc(it.description)}</span><span>${it.qty}</span><span class="mono">${esc((it.assetCodes||[]).join(', ')||'—')}</span><span class="mono">${esc((it.amsTags||[]).join(', ')||'—')}</span><span><button class="icon-btn" onclick="removeRecvItem(${i})">&times;</button></span></div>`).join('')
   + '</div>';
 }
 function readFileAsDataURL(file){
