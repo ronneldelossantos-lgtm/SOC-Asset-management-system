@@ -1960,7 +1960,16 @@ function stopAutoRefresh(){
   stopCageLiveSync();
 }
 function syncLiveListenersForVisibility(){
-  if(!session||document.hidden){ stopAutoRefresh(); return; }
+  if(!session||document.hidden){
+    stopAutoRefresh();
+    // Tab hidden (backgrounded, screen locked, etc.) is exactly the kind of
+    // interruption cageReceivePendingIds/reusableSackReceivePendingIds exist
+    // to survive - flush now rather than hoping the tab becomes visible
+    // again before the idle timer would have fired anyway.
+    flushCageReceiveBatch();
+    flushReusableSackReceiveBatch();
+    return;
+  }
   if(route==='dashboard') startDashboardLiveSync(); else stopDashboardLiveSync();
   if(route==='cageloading') startCageLiveSync(); else stopCageLiveSync();
 }
@@ -2463,9 +2472,13 @@ async function doLogin(){
   }
   syncLiveListenersForVisibility();
 }
-function doLogout(){
+async function doLogout(){
   stopAutoRefresh();
   stopOpsIdSheetSync();
+  // Must flush (and finish - these mutate using session.fullName) before
+  // session is cleared below, same reasoning as the visibilitychange hook.
+  await flushCageReceiveBatch();
+  await flushReusableSackReceiveBatch();
   clearUiSession();
   session = null;
   portalMode = null;
@@ -2823,6 +2836,18 @@ async function navigate(r, sub){
     toast('You don\'t have access to '+processLabel(ROUTE_PROCESS[r])+'.');
     r = 'dashboard'; sub = '';
   }
+  /* A scan sitting in cageReceivePendingIds/reusableSackReceivePendingIds
+     isn't durable yet (see flushCageReceiveBatch's comment) - flush
+     immediately when actually leaving that screen, not just on the idle
+     timer, so navigating away can't lose a scan that just hasn't hit the
+     1-minute mark yet. Must compare against the OLD route/subroute, not the
+     new one: receiveScannedCage()/receiveScannedReusableSack() re-navigate
+     to this same screen after every scan to refresh it, and that re-render
+     must never itself count as "leaving". */
+  const leavingCageReceive = route==='cageloading' && (subroute||'dashboard')==='receive' && !(r==='cageloading' && (sub||'dashboard')==='receive');
+  const leavingSackReceive = route==='reusablesacks' && (subroute||'dashboard')==='receive' && !(r==='reusablesacks' && (sub||'dashboard')==='receive');
+  if(leavingCageReceive) flushCageReceiveBatch();
+  if(leavingSackReceive) flushReusableSackReceiveBatch();
   document.body.classList.add('app-theme');
   route = r; subroute = sub || '';
   const titles = portalMode==='department' ? TITLES_DEPT : TITLES;
@@ -7700,11 +7725,17 @@ async function submitCageIssuance(){
   navigate('cageloading','list');
 }
 /* ---------- Receive Cage: scan and receive one cage at a time ---------- */
+function cageReceivePendingSaveHtml(){
+  const n=cageReceivePendingIds.length;
+  if(!n) return '';
+  return `<div class="hint" style="margin:12px 0;">${n} scan${n===1?'':'s'} recorded, saving to the server automatically&hellip; stay on this screen until this clears to make sure nothing is lost.</div>`;
+}
 function cageReceiveHtml(){
   const pending = cagePendingList();
   return `<div class="card">
     <h3>Receive one cage at a time</h3>
-    <div class="card-sub">Scan each cage asset tag separately. Each scanned cage is recorded as received immediately, and the trip batch is complete when every cage in it has been received.</div>
+    <div class="card-sub">Scan each cage asset tag separately. Each scan is recorded right away and the trip batch updates instantly; scans are saved to the server automatically a short while after you stop scanning, or right away if you navigate away or close this tab.</div>
+    <div id="cage-receive-pending">${cageReceivePendingSaveHtml()}</div>
     <div id="cage-receive-result">${cageReceiveResultHtml()}</div>
     <div class="form-row">
       <div class="field"><label>Cage asset tag</label><input id="receive-cage-asset-scan" placeholder="Scan cage asset tag" oninput="onCageReceiveScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();scanCageAssetTagToReceive();}"></div>
@@ -7795,27 +7826,83 @@ function returnCageToMasterlist(shipment,receivedLocation,receivedAt){
   item.lastReceivedAt=receivedAt;
   item.location=destinationName||ownerSoc||item.location||'';
 }
+/* Cage receiving used to save to Firestore on every single physical scan -
+   correct for instant cross-device conflict detection, but each receiving
+   session of N cages cost N writes against the free-tier's 20K/day cap
+   (cages is a single blob document, so unlike a per-record section, write
+   COUNT - not size - is what scales with how many separate saves happen,
+   regardless of how many cages each one touches). See CLAUDE.md's
+   "Live data must use listeners, not polling" section for the matching
+   reads-side lesson this mirrors on the writes side.
+
+   Scans are now applied to local DB state immediately (identical
+   validation, identical instant toast/progress feedback - nothing about
+   the moment-of-scan experience changes) and queued in
+   cageReceivePendingIds; the actual Firestore save is deferred and batches
+   however many scans happened together into ONE write instead of one per
+   scan. The flush fires on whichever happens first: CAGE_RECEIVE_FLUSH_IDLE_MS
+   of no new scans, navigating away from this screen, the tab being hidden,
+   or logout - see scheduleCageReceiveFlush/flushCageReceiveBatch and their
+   call sites. A scan sitting in the pending queue is not yet durable - if
+   the tab crashes before a flush trigger fires, that scan is lost, which is
+   why every exit path (not just the idle timer) forces an immediate flush,
+   and why the Receive Cage screen shows how many scans are still pending. */
+let cageReceivePendingIds = [];
+let cageReceiveFlushTimer = null;
+const CAGE_RECEIVE_FLUSH_IDLE_MS = 60000;
+function scheduleCageReceiveFlush(){
+  if(cageReceiveFlushTimer) clearTimeout(cageReceiveFlushTimer);
+  cageReceiveFlushTimer = setTimeout(()=>{ flushCageReceiveBatch(); }, CAGE_RECEIVE_FLUSH_IDLE_MS);
+}
+/* Re-applies every still-pending scan onto whatever DB.cages currently looks
+   like. In the common (no-conflict) case this callback is never even
+   invoked - DB.cages already has the scans applied from scan time, so
+   saveDBWithRetry sees a diff on its first attempt and saves it directly.
+   It only runs when a conflict forces DB.cages to be reset to the fresh
+   server value and the change must be replayed: if a pending cage is
+   already 'Received' at that point, someone else's save already received
+   it (maybe this exact cage, scanned on another device in the same
+   window) - leaving it alone is correct, not a bug, since the physical
+   cage genuinely has been received either way. */
+function applyPendingCageReceives(ids){
+  ids.forEach(id=>{
+    const current=DB.cages.find(cg=>cg.id===id);
+    if(!current||current.status==='Received'||!cageMatchesCurrentDestination(current)) return;
+    const destinationName=cageDestinationName(current)||currentSoc()||'';
+    current.status='Received';current.receivedBy=session.fullName;current.receivedByRole=session.role;current.receivedAt=current.receivedAt||nowISO();current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=destinationName;
+    returnCageToMasterlist(current,destinationName,current.receivedAt);
+    updateCageBatchReceiptProgress(current);
+  });
+}
+async function flushCageReceiveBatch(){
+  if(cageReceiveFlushTimer){ clearTimeout(cageReceiveFlushTimer); cageReceiveFlushTimer=null; }
+  if(!cageReceivePendingIds.length) return;
+  const ids=cageReceivePendingIds.slice();
+  const saved=await saveDBWithRetry(()=>applyPendingCageReceives(ids));
+  cageReceivePendingIds=cageReceivePendingIds.filter(id=>!ids.includes(id));
+  const onReceiveScreen=route==='cageloading'&&(subroute||'dashboard')==='receive';
+  if(!saved){
+    restoreCageSectionsAfterFailedSave();
+    toast(ids.length>1?ids.length+' pending cage receipts could not be saved — rescan them.':'A pending cage receipt could not be saved — rescan it.');
+    if(onReceiveScreen) navigate('cageloading','receive');
+  }else if(onReceiveScreen && !cageReceivePendingIds.length){
+    const pendingEl=document.getElementById('cage-receive-pending');
+    if(pendingEl) pendingEl.innerHTML='';
+  }
+}
 async function receiveScannedCage(cageId){
   const now=nowISO();
-  let receipt=null;
-  let outcome='pending';
-  const applyReceive=()=>{
-    receipt=null;
-    const current=DB.cages.find(cg=>cg.id===cageId);
-    if(!current){outcome='missing';return;}
-    if(current.status==='Received'){outcome='received';return;}
-    if(!cageMatchesCurrentDestination(current)){outcome='notAllowed';return;}
-    const destinationName=cageDestinationName(current)||currentSoc()||'';
-    current.status='Received';current.receivedBy=session.fullName;current.receivedByRole=session.role;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=destinationName;
-    returnCageToMasterlist(current,destinationName,now);
-    const progress=updateCageBatchReceiptProgress(current);
-    receipt={cageAssetTag:current.cageAssetTag||current.cageId,lhTripNumber:current.lhTripNumber||'',plateNumber:current.plateNumber||'',destinationName,receivedAt:now,batchReceivedCount:progress.received,batchCageCount:progress.total,batchComplete:progress.complete};
-  };
-  const saved=await saveDBWithRetry(applyReceive);
-  if(!saved){restoreCageSectionsAfterFailedSave();navigate('cageloading','receive');return;}
-  if(outcome==='missing'){toast('This cage record no longer exists. Refreshing the list.');navigate('cageloading','receive');return;}
-  if(outcome==='notAllowed'){toast('This cage is assigned to a different destination.');navigate('cageloading','receive');return;}
-  if(!receipt){toast('This cage was already received. Refreshing the list.');navigate('cageloading','receive');return;}
+  const current=DB.cages.find(cg=>cg.id===cageId);
+  if(!current){toast('This cage record no longer exists. Refreshing the list.');navigate('cageloading','receive');return;}
+  if(current.status==='Received'){toast('This cage was already received. Refreshing the list.');navigate('cageloading','receive');return;}
+  if(!cageMatchesCurrentDestination(current)){toast('This cage is assigned to a different destination.');navigate('cageloading','receive');return;}
+  const destinationName=cageDestinationName(current)||currentSoc()||'';
+  current.status='Received';current.receivedBy=session.fullName;current.receivedByRole=session.role;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=destinationName;
+  returnCageToMasterlist(current,destinationName,now);
+  const progress=updateCageBatchReceiptProgress(current);
+  const receipt={cageAssetTag:current.cageAssetTag||current.cageId,lhTripNumber:current.lhTripNumber||'',plateNumber:current.plateNumber||'',destinationName,receivedAt:now,batchReceivedCount:progress.received,batchCageCount:progress.total,batchComplete:progress.complete};
+  cageReceivePendingIds.push(cageId);
+  scheduleCageReceiveFlush();
   cageReceiveLastReceipt=receipt;
   toast(receipt.batchCageCount>1?(receipt.batchComplete?'Batch receipt complete — all '+receipt.batchCageCount+' cages received.':'Cage '+receipt.cageAssetTag+' received ('+receipt.batchReceivedCount+'/'+receipt.batchCageCount+'). Batch is still awaiting '+(receipt.batchCageCount-receipt.batchReceivedCount)+' cage(s).'):'Cage '+receipt.cageAssetTag+' received. LH Trip '+(receipt.lhTripNumber||'—')+' · Destination '+(receipt.destinationName||'—')+'.');
   navigate('cageloading','receive');
@@ -8488,11 +8575,17 @@ async function submitReusableSackIssuance(){
   navigate('reusablesacks','list');
 }
 /* ---------- Receive Sacks: scan and receive one sack at a time ---------- */
+function reusableSackReceivePendingSaveHtml(){
+  const n=reusableSackReceivePendingIds.length;
+  if(!n) return '';
+  return `<div class="hint" style="margin:12px 0;">${n} scan${n===1?'':'s'} recorded, saving to the server automatically&hellip; stay on this screen until this clears to make sure nothing is lost.</div>`;
+}
 function reusableSackReceiveHtml(){
   const pending = reusableSackPendingList();
   return `<div class="card">
     <h3>Receive one sack at a time</h3>
-    <div class="card-sub">Scan one physical sack asset tag to receive that sack immediately. Its LH Trip # and plate number from issuance will display below. The current login is recorded as receiver.</div>
+    <div class="card-sub">Scan one physical sack asset tag to receive that sack; its LH Trip # and plate number from issuance will display below. The current login is recorded as receiver. Scans are saved to the server automatically a short while after you stop scanning, or right away if you navigate away or close this tab.</div>
+    <div id="sack-receive-pending">${reusableSackReceivePendingSaveHtml()}</div>
     <div id="sack-receive-result">${reusableSackReceiveResultHtml()}</div>
     <div class="form-row">
       <div class="field"><label>Sack asset tag</label><input id="receive-reusable-sack-asset-scan" placeholder="Scan sack asset tag" oninput="onReusableSackReceiveScanInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();scanReusableSackAssetTagToReceive();}"></div>
@@ -8555,26 +8648,54 @@ function returnReusableSackToMasterlist(shipment,receivedHubName,receivedAt){
   const destinationSoc=(DB.warehouses||[]).find(site=>reusableSackTagKey(site)===reusableSackTagKey(receivedHubName));
   if(destinationSoc) item.soc=destinationSoc;
 }
+/* Same batching as receiveScannedCage/flushCageReceiveBatch above (see that
+   comment for the full reasoning): scans apply to local state and get live
+   feedback immediately, the actual Firestore save is deferred and batched
+   via reusableSackReceivePendingIds so a receiving session of N sacks costs
+   ~1 write instead of N. */
+let reusableSackReceivePendingIds = [];
+let reusableSackReceiveFlushTimer = null;
+const REUSABLE_SACK_RECEIVE_FLUSH_IDLE_MS = 60000;
+function scheduleReusableSackReceiveFlush(){
+  if(reusableSackReceiveFlushTimer) clearTimeout(reusableSackReceiveFlushTimer);
+  reusableSackReceiveFlushTimer = setTimeout(()=>{ flushReusableSackReceiveBatch(); }, REUSABLE_SACK_RECEIVE_FLUSH_IDLE_MS);
+}
+function applyPendingReusableSackReceives(ids){
+  ids.forEach(id=>{
+    const current=DB.reusableSacks.find(cg=>cg.id===id);
+    if(!current||current.status==='Received') return;
+    const receivedHubName=current.hubName||currentSoc()||'';
+    current.status='Received';current.receivedBy=session.fullName;current.receivedAt=current.receivedAt||nowISO();current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=receivedHubName;
+    returnReusableSackToMasterlist(current,receivedHubName,current.receivedAt);
+  });
+}
+async function flushReusableSackReceiveBatch(){
+  if(reusableSackReceiveFlushTimer){ clearTimeout(reusableSackReceiveFlushTimer); reusableSackReceiveFlushTimer=null; }
+  if(!reusableSackReceivePendingIds.length) return;
+  const ids=reusableSackReceivePendingIds.slice();
+  const saved=await saveDBWithRetry(()=>applyPendingReusableSackReceives(ids));
+  reusableSackReceivePendingIds=reusableSackReceivePendingIds.filter(id=>!ids.includes(id));
+  const onReceiveScreen=route==='reusablesacks'&&(subroute||'dashboard')==='receive';
+  if(!saved){
+    restoreReusableSackSectionsAfterFailedSave();
+    toast(ids.length>1?ids.length+' pending sack receipts could not be saved — rescan them.':'A pending sack receipt could not be saved — rescan it.');
+    if(onReceiveScreen) navigate('reusablesacks','receive');
+  }else if(onReceiveScreen && !reusableSackReceivePendingIds.length){
+    const pendingEl=document.getElementById('sack-receive-pending');
+    if(pendingEl) pendingEl.innerHTML='';
+  }
+}
 async function receiveScannedReusableSack(sackId){
   const now=nowISO();
-  let receipt=null;
-  let outcome='pending';
-  const applyReceive=()=>{
-    receipt=null;
-    const current=DB.reusableSacks.find(cg=>cg.id===sackId);
-    if(!current){outcome='missing';return;}
-    if(current.status==='Received'){outcome='received';return;}
-    outcome='pending';
-    const receivedHubName=current.hubName||currentSoc()||'';
-    current.status='Received';current.receivedBy=session.fullName;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=receivedHubName;
-    returnReusableSackToMasterlist(current,receivedHubName,now);
-    receipt={sackAssetTag:current.sackAssetTag||current.sackId,lhTripNumber:current.lhTripNumber||'',plateNumber:current.plateNumber||'',hubName:current.hubName||'',receivedAt:now};
-  };
-  applyReceive();
-  const saved=await saveDBWithRetry(applyReceive);
-  if(!saved){restoreReusableSackSectionsAfterFailedSave();navigate('reusablesacks','receive');return;}
-  if(outcome==='missing'){toast('This sack record no longer exists. Refreshing the list.');navigate('reusablesacks','receive');return;}
-  if(!receipt){toast('This sack was already received. Refreshing the list.');navigate('reusablesacks','receive');return;}
+  const current=DB.reusableSacks.find(cg=>cg.id===sackId);
+  if(!current){toast('This sack record no longer exists. Refreshing the list.');navigate('reusablesacks','receive');return;}
+  if(current.status==='Received'){toast('This sack was already received. Refreshing the list.');navigate('reusablesacks','receive');return;}
+  const receivedHubName=current.hubName||currentSoc()||'';
+  current.status='Received';current.receivedBy=session.fullName;current.receivedAt=now;current.receivedLhTripNumber=current.lhTripNumber||'';current.receivedHubName=receivedHubName;
+  returnReusableSackToMasterlist(current,receivedHubName,now);
+  const receipt={sackAssetTag:current.sackAssetTag||current.sackId,lhTripNumber:current.lhTripNumber||'',plateNumber:current.plateNumber||'',hubName:current.hubName||'',receivedAt:now};
+  reusableSackReceivePendingIds.push(sackId);
+  scheduleReusableSackReceiveFlush();
   reusableSackReceiveLastReceipt=receipt;
   toast('Sack '+receipt.sackAssetTag+' received. LH Trip '+(receipt.lhTripNumber||'—')+' · Plate '+(receipt.plateNumber||'—')+'.');
   navigate('reusablesacks','receive');
