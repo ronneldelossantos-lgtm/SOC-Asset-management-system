@@ -55,6 +55,15 @@ function computeBelowSafetyStock(sku, stock, issuanceMetrics) {
   return { soh, safety, below: soh <= safety };
 }
 
+/* Mirrors index.html's recordIsArchived(): terminal statuses. The run that
+   sees a record become closed still reports it (old vs new status is compared
+   before this pruning), but it is then dropped from the saved state. Before,
+   every record that had ever closed stayed tracked forever, so each run
+   re-read the entire closed history one document at a time - an
+   ever-growing read cost on every scheduled run. */
+const CLOSED_REQUEST_STATUSES = ['Rejected', 'Received'];
+const CLOSED_RETURN_STATUSES = ['Received', 'Asset Received'];
+
 async function readCurrentRecords(section, previousStatuses) {
   const open = await fetchOpenCollection(section);
   const openIds = new Set(open.map(record => record.id));
@@ -135,7 +144,7 @@ async function main() {
   const nextNotifiedApprovals = new Set(prevNotifiedApprovals);
 
   (requests || []).forEach(r => {
-    nextRequestStatuses[r.id] = r.status;
+    if (!CLOSED_REQUEST_STATUSES.includes(r.status)) nextRequestStatuses[r.id] = r.status;
     if (!firstRun) {
       const old = prevRequestStatuses[r.id];
       if (old !== r.status) requestChanges.push({ r, oldStatus: old });
@@ -149,7 +158,7 @@ async function main() {
   const returnChanges = [];
   const nextReturnStatuses = {};
   (returns || []).forEach(r => {
-    nextReturnStatuses[r.id] = r.status;
+    if (!CLOSED_RETURN_STATUSES.includes(r.status)) nextReturnStatuses[r.id] = r.status;
     if (!firstRun) {
       const old = prevReturnStatuses[r.id];
       if (old !== r.status) returnChanges.push({ r, oldStatus: old });

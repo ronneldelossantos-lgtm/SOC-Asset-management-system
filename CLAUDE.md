@@ -57,6 +57,27 @@ exactly how outage #2 above happened.
   screen's already gone (see the `actionInFlight`/`route!==X` checks inside
   the existing `subscribe()` callbacks for the pattern).
 
+**A listener callback must never re-read whole record collections.** The
+dashboard's stock listener fires for every stock change by any user, and it used
+to reload all of receiving/issuance/returns/repairs each time (thousands of
+docs x every open dashboard x every change - the biggest read cost measured on
+2026-10-13/14: 73K reads vs 5.4K writes in one quota period). It now calls
+`loadRecordDelta()`, which reads only records with a newer `updatedAt`.
+`scripts/test-dashboard-delta-sync.js` guards this. Also remember every save
+transaction re-reads the old doc AND all old chunks of each blob section it
+writes (compare-and-swap), so big chunked blobs cost reads on every save too.
+
+**Record loads go through a per-browser cache** (`recordCacheSync`, IndexedDB):
+cache + a delta query on `updatedAt` + a REST COUNT to detect deletions, full
+read only on a miss, a mismatch, an error, or after 12h. A login/F5 that used to
+read the whole history now reads ~1 doc. Don't bypass `getRecords()` with a
+raw collection read. **Chunked docs carry a content `sig` on their manifest**, so
+a save's compare-and-swap reads one manifest instead of every old chunk
+(documents written before this fall back to reading chunks until rewritten).
+Tests: `scripts/test-record-cache.js`, `scripts/test-allocator/verify-setmulti.js`,
+and the browser harness in `scripts/storage-harness/` (real storage block vs a
+fake Firestore, asserts read counts).
+
 `scripts/test-live-listener-lifecycle.js` enforces the "no `setInterval`,
 `subscribe` must exist, `visibilitychange` must exist" part of this
 mechanically — if you add a poll loop, that test will fail. Don't delete or
@@ -77,6 +98,15 @@ file attachments as base64) will eventually hit one of those limits and
 start failing *every* save to it outright — this already happened twice
 (`requests` in September, `receiving` in October, both while still a single
 blob; both fixed by moving to one-document-per-record).
+
+`pdaIrFiles` is also a record section: the base64 Incident Report attachments for
+PDAs/PDA logs live there (see `pdaIrData()`/`pdaIrSet()`), not inline on the
+`pdas`/`pdaLogs` rows. Those two are still blobs, rewritten whole on every PDA
+issue/return (~7 Firestore writes at current size), so **never put file data or
+other bulky fields back on a `pdas`/`pdaLogs` row**. Next step if writes are
+still too high: move `pdaLogs` to per-record, but its scan page renders the
+full history, so that needs a "recent window" load first or reads jump by ~1,300
+per page load.
 
 **If a blob section (anything not in `RECORD_SECTION_KEYS`) starts
 accumulating a lot of records or large embedded data (file uploads,

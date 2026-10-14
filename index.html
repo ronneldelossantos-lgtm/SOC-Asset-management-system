@@ -430,6 +430,59 @@ body.app-theme .modal .hint:not(.hint-error):not(.hint-active):not([id]):not(#pd
    every device and browser sees. If Firebase fails to load (offline, ad
    blocker, blocked domain), it falls back to the old localStorage-only
    behavior further below so the app still works solo rather than breaking. */
+/* ============================= RECORD CACHE =============================
+   Every session (login, F5) used to re-read ALL of receiving/issuance/returns/
+   repairs from Firestore (one billed read per document plus one per chunk).
+   Records now live in a per-browser IndexedDB cache. A load = cache + a delta
+   query (only docs with a newer updatedAt) + one cheap server-side COUNT to
+   detect deletions; the cache is trusted only if the counts match, otherwise
+   (or after RECORD_CACHE_TTL_MS, or on any error) it falls back to the full
+   read. updatedAt is the WRITER's clock, so cut-offs back off by
+   RECORD_DELTA_SKEW_MS, future-dated stamps never advance the watermark, and
+   the TTL bounds how long a badly-skewed writer's edit could stay invisible.
+   This block is pure logic over injected deps so it can be unit tested
+   (scripts/test-record-cache.js). */
+const RECORD_DELTA_SKEW_MS = 2*60*1000;
+const RECORD_CACHE_TTL_MS = 12*60*60*1000;
+function recordCacheMaxMark(rows, base, now){
+  let mark = base;
+  rows.forEach(r=>{ if(r.updatedAt>mark && r.updatedAt<=now+RECORD_DELTA_SKEW_MS) mark = r.updatedAt; });
+  return mark;
+}
+async function recordCacheSync(deps, section, includeArchived){
+  const now = deps.now();
+  const meta = deps.cache ? await deps.cache.getMeta(section).catch(()=>null) : null;
+  if(meta && meta.mark && (meta.scope==='all' || !includeArchived) && now-meta.fullAt<RECORD_CACHE_TTL_MS){
+    try{
+      const rows = await deps.cache.getRows(section);
+      const delta = await deps.fetchDelta(section, meta.mark-RECORD_DELTA_SKEW_MS);
+      const puts = [], dels = [];
+      delta.forEach(d=>{
+        if(meta.scope==='open' && d.archived){ rows.delete(d.id); dels.push(d.id); }
+        else { rows.set(d.id, d); puts.push(d); }
+      });
+      const serverCount = await deps.countServer(section, meta.scope==='open');
+      if(serverCount===rows.size){
+        const mark = recordCacheMaxMark(delta, meta.mark, now);
+        if(puts.length || dels.length || mark!==meta.mark){
+          try{ await deps.cache.applyDelta(section, puts, dels, mark); }catch(e){ /* cache is best-effort */ }
+        }
+        const list = Array.from(rows.values()).filter(r=>includeArchived || !r.archived);
+        return {rows:list, mark, source:'cache', deltaCount:delta.length};
+      }
+    }catch(e){
+      if(deps.warn) deps.warn('record cache unusable for '+section+', doing a full load', e);
+    }
+  }
+  const startedAt = deps.now();
+  const docs = await deps.fetchFull(section, includeArchived);
+  const mark = recordCacheMaxMark(docs, startedAt-2*RECORD_DELTA_SKEW_MS, now);
+  if(deps.cache){
+    try{ await deps.cache.replace(section, docs, {scope:includeArchived?'all':'open', mark, fullAt:startedAt}); }catch(e){ /* best-effort */ }
+  }
+  return {rows:docs.filter(r=>includeArchived || !r.archived), mark, source:'full'};
+}
+
 if(!window.storage){
   const firebaseConfig = {
     apiKey: "AIzaSyC9NknHkluFaWdqQnZWW5--HreG-w7fTZ8",
@@ -517,6 +570,116 @@ if(!window.storage){
       if(chunks.some(part=>!part.exists || typeof part.data().value!=='string')) throw new Error('Incomplete '+section+' record chunks for '+id+'.');
       return chunks.map(part=>part.data().value).join('');
     }
+    const recordWatermarks = {}; // section -> watermark of the data this tab currently holds in DB[section]
+    /* Per-browser IndexedDB cache of record documents (see RECORD_CACHE above).
+       Any failure (no IndexedDB, private mode, quota) just means "no cache". */
+    let recordCacheDbPromise = null;
+    function recordCacheDb(){
+      if(!recordCacheDbPromise){
+        recordCacheDbPromise = new Promise((resolve, reject)=>{
+          try{
+            if(!window.indexedDB) throw new Error('IndexedDB unavailable');
+            const req = indexedDB.open('spx_record_cache__'+STORAGE_VERSION, 1);
+            req.onupgradeneeded = ()=>{
+              const db = req.result;
+              db.createObjectStore('meta', {keyPath:'section'});
+              db.createObjectStore('rows', {keyPath:'key'}).createIndex('section','section');
+            };
+            req.onsuccess = ()=>resolve(req.result);
+            req.onerror = ()=>reject(req.error);
+            req.onblocked = ()=>reject(new Error('IndexedDB open blocked'));
+          }catch(e){ reject(e); }
+        });
+      }
+      return recordCacheDbPromise;
+    }
+    const idbDone = tx=>new Promise((resolve, reject)=>{ tx.oncomplete = resolve; tx.onerror = ()=>reject(tx.error); tx.onabort = ()=>reject(tx.error||new Error('IndexedDB transaction aborted')); });
+    const idbReq = req=>new Promise((resolve, reject)=>{ req.onsuccess = ()=>resolve(req.result); req.onerror = ()=>reject(req.error); });
+    const rowKey = (section, id)=>section+'\u0000'+id;
+    const toRow = (section, d)=>({key:rowKey(section,d.id), section, id:d.id, value:d.value, archived:!!d.archived, updatedAt:Number(d.updatedAt)||0});
+    const fromRow = r=>({id:r.id, value:r.value, archived:!!r.archived, updatedAt:r.updatedAt});
+    const recordCache = {
+      async getMeta(section){ const db = await recordCacheDb(); const m = await idbReq(db.transaction('meta').objectStore('meta').get(section)); return m||null; },
+      async getRows(section){
+        const db = await recordCacheDb();
+        const rows = await idbReq(db.transaction('rows').objectStore('rows').index('section').getAll(IDBKeyRange.only(section)));
+        return new Map(rows.map(r=>[r.id, fromRow(r)]));
+      },
+      async replace(section, docs, meta){
+        const db = await recordCacheDb();
+        const tx = db.transaction(['meta','rows'], 'readwrite');
+        const rows = tx.objectStore('rows');
+        // one range delete issued BEFORE the puts, so it can never remove a row we are about to write
+        rows.delete(IDBKeyRange.bound(section+'\u0000', section+'\u0001'));
+        docs.forEach(d=>rows.put(toRow(section,d)));
+        tx.objectStore('meta').put({section, scope:meta.scope, mark:meta.mark, fullAt:meta.fullAt});
+        await idbDone(tx);
+      },
+      async applyDelta(section, puts, dels, mark){
+        const db = await recordCacheDb();
+        const tx = db.transaction(['meta','rows'], 'readwrite');
+        const rows = tx.objectStore('rows');
+        puts.forEach(d=>rows.put(toRow(section,d)));
+        dels.forEach(id=>rows.delete(rowKey(section,id)));
+        const metaStore = tx.objectStore('meta');
+        const got = metaStore.get(section);
+        got.onsuccess = ()=>{ if(got.result) metaStore.put({...got.result, mark:Math.max(got.result.mark, mark||0)}); };
+        await idbDone(tx);
+      }
+    };
+    async function readDeltaDocs(section, sinceMs){
+      const snap = await fsDB.collection(STORAGE_VERSION+'_'+section).where('updatedAt','>',sinceMs).get();
+      return Promise.all(snap.docs.map(async doc=>({id:doc.id, value:await readRecordValue(section,doc.id,doc), archived:!!doc.data().archived, updatedAt:Number(doc.data().updatedAt)||0})));
+    }
+    const cacheDeps = {
+      cache: recordCache,
+      now: ()=>Date.now(),
+      warn: (msg, e)=>console.warn(msg, e),
+      fetchDelta: readDeltaDocs,
+      async fetchFull(section, includeArchived){
+        const col = fsDB.collection(STORAGE_VERSION+'_'+section);
+        const snap = await (includeArchived ? col : col.where('archived','==',false)).get();
+        return Promise.all(snap.docs.map(async doc=>({id:doc.id, value:await readRecordValue(section,doc.id,doc), archived:!!doc.data().archived, updatedAt:Number(doc.data().updatedAt)||0})));
+      },
+      /* Server-side COUNT aggregation over REST (the compat SDK has no
+         count()): billed ~1 read per 1000 index entries, far cheaper than
+         reading the documents. Rules allow open reads, same as the SDK. */
+      async countServer(section, openOnly){
+        const structuredQuery = {from:[{collectionId:STORAGE_VERSION+'_'+section}]};
+        if(openOnly) structuredQuery.where = {fieldFilter:{field:{fieldPath:'archived'}, op:'EQUAL', value:{booleanValue:false}}};
+        const res = await fetch('https://firestore.googleapis.com/v1/projects/'+firebaseConfig.projectId+'/databases/(default)/documents:runAggregationQuery', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({structuredAggregationQuery:{aggregations:[{alias:'n', count:{}}], structuredQuery}})
+        });
+        if(!res.ok) throw new Error('count query failed: HTTP '+res.status);
+        const body = await res.json();
+        const n = body && body[0] && body[0].result && body[0].result.aggregateFields && body[0].result.aggregateFields.n;
+        if(!n) throw new Error('count query returned no result');
+        return Number(n.integerValue);
+      }
+    };
+    /* After this tab's own successful save, keep the cache in step with it so
+       a reload never shows this user's own edit reverted (their clock could
+       be skewed relative to the delta watermark). Best-effort. */
+    async function cacheApplyOwnSave(records){
+      try{
+        const bySection = {};
+        records.forEach(r=>{ (bySection[r.section] = bySection[r.section] || []).push(r); });
+        for(const section of Object.keys(bySection)){
+          const meta = await recordCache.getMeta(section);
+          if(!meta) continue;
+          const puts = [], dels = [];
+          bySection[section].forEach(r=>{
+            if(r.value===null){ dels.push(r.id); return; }
+            const rec = JSON.parse(r.value);
+            const archived = recordIsArchived(section, rec);
+            if(meta.scope==='open' && archived) dels.push(r.id);
+            else puts.push({id:r.id, value:r.value, archived, updatedAt:Date.now()});
+          });
+          await recordCache.applyDelta(section, puts, dels, 0);
+        }
+      }catch(e){ /* cache is best-effort */ }
+    }
     window.storage = {
       supportsRecordCollections: true,
       async get(key, shared){
@@ -571,13 +734,40 @@ if(!window.storage){
       },
       async getRecords(section, includeArchived){
         try{
-          const query = includeArchived
-            ? fsDB.collection(STORAGE_VERSION+'_'+section)
-            : fsDB.collection(STORAGE_VERSION+'_'+section).where('archived','==',false);
-          const snap = await query.get();
-          return Promise.all(snap.docs.map(async doc=>JSON.parse(await readRecordValue(section,doc.id,doc))));
+          const res = await recordCacheSync(cacheDeps, section, !!includeArchived);
+          recordWatermarks[section] = res.mark;
+          return res.rows.map(row=>JSON.parse(row.value));
         }catch(e){
           console.error('storage.getRecords failed:', e);
+          throw e;
+        }
+      },
+      /* Delta fetch for the dashboard live sync: only the records written
+         since this tab last read the section, instead of re-reading the whole
+         collection on every stock change by anyone. Billed per document
+         returned (1 minimum per query). Does not see deletions (those show up
+         on the next full load or the manual refresh button). Also keeps the
+         browser cache current. */
+      async getRecordsUpdatedSince(section){
+        try{
+          const mark = recordWatermarks[section];
+          if(mark===undefined) return null; // never loaded here: caller must do a full load
+          const delta = await readDeltaDocs(section, mark-RECORD_DELTA_SKEW_MS);
+          const newMark = recordCacheMaxMark(delta, mark, Date.now());
+          recordWatermarks[section] = newMark;
+          if(delta.length){
+            try{
+              const meta = await recordCache.getMeta(section);
+              if(meta){
+                const puts = delta.filter(d=>!(meta.scope==='open' && d.archived));
+                const dels = delta.filter(d=>meta.scope==='open' && d.archived).map(d=>d.id);
+                await recordCache.applyDelta(section, puts, dels, 0);
+              }
+            }catch(e){ /* best-effort */ }
+          }
+          return delta.map(d=>({id:d.id, value:d.value}));
+        }catch(e){
+          console.error('storage.getRecordsUpdatedSince failed:', e);
           throw e;
         }
       },
@@ -755,6 +945,28 @@ if(!window.storage){
       async setMulti(entries, shared, recordEntries){
         const MAX_GROUP_BYTES = 8*1024*1024; // safe margin under Firestore's ~10MiB per-commit cap
         const records = recordEntries || [];
+        /* Content signature stored on every chunked manifest. The
+           compare-and-swap below used to re-read ALL old chunks of every
+           changed blob just to compare the whole value (1+chunks reads per
+           section per save, on top of the same number of writes). With a
+           signature, one manifest read proves "unchanged since I loaded it";
+           chunks are only read when the signature is missing (documents
+           written before this change) or does not match (a real conflict,
+           where the current value is needed anyway). Four independent 32-bit
+           lanes + length: not cryptographic, but an accidental collision is
+           astronomically unlikely, which is all a concurrent-edit check needs. */
+        const valueSig = v=>{
+          let a = 0x9e3779b1, b = 0x85ebca6b, c = 0xc2b2ae35, d = 0x27d4eb2f;
+          for(let i = 0; i < v.length; i++){
+            const ch = v.charCodeAt(i);
+            a = Math.imul(a ^ ch, 2654435761); b = Math.imul(b ^ ch, 1597334677);
+            c = Math.imul(c ^ ch, 2246822507); d = Math.imul(d ^ ch, 3266489909);
+            a ^= a >>> 15; b ^= b >>> 13; c ^= c >>> 16; d ^= d >>> 11;
+          }
+          const hex = n=>(n >>> 0).toString(16).padStart(8, '0');
+          return hex(a)+hex(b)+hex(c)+hex(d)+':'+v.length;
+        };
+        const sigMatches = (data, expected)=>!!data && typeof data.sig === 'string' && typeof expected === 'string' && data.sig === valueSig(expected);
         try{
           let conflicts = null, recordConflicts = null;
           const pendingWrites = []; // {ref, data, size} that didn't fit in the transaction
@@ -768,26 +980,37 @@ if(!window.storage){
             /* Every read must happen before any write in a Firestore
                transaction.  Read the old chunks now so the compare-and-swap
                still compares complete values, not manifests. */
-            const oldChunkSnaps = await Promise.all(snaps.map((snap, i)=>{
+            const oldCounts = snaps.map((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const count = data && data.chunked ? data.chunks : 0;
               if(!Number.isInteger(count) || count < 0) throw new Error('Invalid Firestore chunk manifest for '+entries[i].key+'.');
-              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(docRef(chunkKey(entries[i].key, n), shared))));
-            }));
-            const oldRecordChunkSnaps = await Promise.all(recordSnaps.map((snap, i)=>{
+              return count;
+            });
+            const oldRecordCounts = recordSnaps.map((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const count = data && data.chunked ? data.chunks : 0;
               if(!Number.isInteger(count) || count<0) throw new Error('Invalid '+records[i].section+' record chunk manifest for '+records[i].id+'.');
-              return Promise.all(Array.from({length:count}, (_, n)=>tx.get(recordChunkRef(records[i].section,records[i].id,n))));
-            }));
+              return count;
+            });
+            // chunks are only read when the manifest signature cannot vouch for the expected value
+            const entryReadsChunks = snaps.map((snap, i)=>oldCounts[i]>0 && !sigMatches(snap.data(), entries[i].expectedPrevious));
+            const recordReadsChunks = recordSnaps.map((snap, i)=>oldRecordCounts[i]>0 && !sigMatches(snap.data(), records[i].expectedPrevious));
+            const oldChunkSnaps = await Promise.all(snaps.map((snap, i)=>entryReadsChunks[i]
+              ? Promise.all(Array.from({length:oldCounts[i]}, (_, n)=>tx.get(docRef(chunkKey(entries[i].key, n), shared))))
+              : []));
+            const oldRecordChunkSnaps = await Promise.all(recordSnaps.map((snap, i)=>recordReadsChunks[i]
+              ? Promise.all(Array.from({length:oldRecordCounts[i]}, (_, n)=>tx.get(recordChunkRef(records[i].section,records[i].id,n))))
+              : []));
             const localConflicts = {};
             snaps.forEach((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const cur = !snap.exists ? null : (data.chunked
-                ? oldChunkSnaps[i].map(part=>{
-                    if(!part.exists || typeof part.data().value !== 'string') throw new Error('Incomplete Firestore chunks for '+entries[i].key+'.');
-                    return part.data().value;
-                  }).join('')
+                ? (entryReadsChunks[i]
+                    ? oldChunkSnaps[i].map(part=>{
+                        if(!part.exists || typeof part.data().value !== 'string') throw new Error('Incomplete Firestore chunks for '+entries[i].key+'.');
+                        return part.data().value;
+                      }).join('')
+                    : entries[i].expectedPrevious) // signature already proved it equals the expected value
                 : data.value);
               if(cur !== entries[i].expectedPrevious) localConflicts[entries[i].key] = cur;
             });
@@ -795,10 +1018,12 @@ if(!window.storage){
             recordSnaps.forEach((snap, i)=>{
               const data = snap.exists ? snap.data() : null;
               const cur = !snap.exists ? null : (data.chunked
-                ? oldRecordChunkSnaps[i].map(part=>{
-                    if(!part.exists || typeof part.data().value!=='string') throw new Error('Incomplete '+records[i].section+' record chunks for '+records[i].id+'.');
-                    return part.data().value;
-                  }).join('')
+                ? (recordReadsChunks[i]
+                    ? oldRecordChunkSnaps[i].map(part=>{
+                        if(!part.exists || typeof part.data().value!=='string') throw new Error('Incomplete '+records[i].section+' record chunks for '+records[i].id+'.');
+                        return part.data().value;
+                      }).join('')
+                    : records[i].expectedPrevious)
                 : data.value);
               if(cur !== records[i].expectedPrevious) localRecordConflicts[records[i].section+'__'+records[i].id] = cur;
             });
@@ -825,17 +1050,17 @@ if(!window.storage){
               const chunks = splitValue(entry.value);
               if(chunks.length === 1){
                 spend(refs[i], {value: entry.value, updatedAt}, utf8Bytes(entry.value));
-                oldChunkSnaps[i].forEach((part, n)=>spendDelete(docRef(chunkKey(entry.key, n), shared)));
+                for(let n = 0; n < oldCounts[i]; n++) spendDelete(docRef(chunkKey(entry.key, n), shared));
               }else{
-                tx.set(refs[i], {chunked:true, chunks:chunks.length, updatedAt}); // manifest: always transactional, claims this update
+                tx.set(refs[i], {chunked:true, chunks:chunks.length, sig:valueSig(entry.value), updatedAt}); // manifest: always transactional, claims this update
                 chunks.forEach((value, n)=>spend(docRef(chunkKey(entry.key, n), shared), {value, updatedAt}, utf8Bytes(value)));
-                oldChunkSnaps[i].slice(chunks.length).forEach((part, n)=>spendDelete(docRef(chunkKey(entry.key, chunks.length+n), shared)));
+                for(let n = chunks.length; n < oldCounts[i]; n++) spendDelete(docRef(chunkKey(entry.key, n), shared));
               }
             });
             records.forEach((entry, i)=>{
               if(entry.value===null){
                 tx.delete(recordRefs[i]);
-                oldRecordChunkSnaps[i].forEach((part, n)=>spendDelete(recordChunkRef(entry.section,entry.id,n)));
+                for(let n = 0; n < oldRecordCounts[i]; n++) spendDelete(recordChunkRef(entry.section,entry.id,n));
                 return;
               }
               const record = JSON.parse(entry.value);
@@ -847,11 +1072,11 @@ if(!window.storage){
               };
               if(chunks.length===1){
                 spend(recordRefs[i], {...data, value:entry.value}, utf8Bytes(entry.value));
-                oldRecordChunkSnaps[i].forEach((part,n)=>spendDelete(recordChunkRef(entry.section,entry.id,n)));
+                for(let n = 0; n < oldRecordCounts[i]; n++) spendDelete(recordChunkRef(entry.section,entry.id,n));
               }else{
-                tx.set(recordRefs[i], {...data, chunked:true, chunks:chunks.length}); // manifest: always transactional, claims this update
+                tx.set(recordRefs[i], {...data, chunked:true, chunks:chunks.length, sig:valueSig(entry.value)}); // manifest: always transactional, claims this update
                 chunks.forEach((value,n)=>spend(recordChunkRef(entry.section,entry.id,n), {value,updatedAt}, utf8Bytes(value)));
-                oldRecordChunkSnaps[i].slice(chunks.length).forEach((part,n)=>spendDelete(recordChunkRef(entry.section,entry.id,chunks.length+n)));
+                for(let n = chunks.length; n < oldRecordCounts[i]; n++) spendDelete(recordChunkRef(entry.section,entry.id,n));
               }
             });
           });
@@ -881,6 +1106,7 @@ if(!window.storage){
             }
             await batch.commit();
           }
+          cacheApplyOwnSave(records);
           return {ok:true, updatedAt: Date.now()};
         }catch(e){ console.error('storage.setMulti failed:', e); throw e; }
       },
@@ -1042,6 +1268,7 @@ function defaultDB(){
     reusableSackCycleCounts: [],
     pdas: [],
     pdaLogs: [],
+    pdaIrFiles: [],
     itAssetIssuances: [],
     itAssetReturns: [],
     pdaCycleCounts: [],
@@ -1071,7 +1298,13 @@ const SECTION_KEYS = Object.keys(defaultDB());
    so there's no longer any ceiling tied to how much history has
    accumulated - see scripts/migrate-receiving-repairs.js for the one-time
    migration that moved existing data over. */
-const RECORD_SECTION_KEYS = ['requests','returns','issuance','receiving','repairs'];
+/* pdaIrFiles holds the base64 Incident Report attachments that used to sit
+   inline on pdas/pdaLogs rows. Four files made up ~1.6MB of the ~4.2MB those
+   two blob sections held, and because a blob is rewritten whole on every
+   save, each PDA issue/return rewrote ~20 Firestore docs (chunks) to change
+   one row. With the attachments out, the pdas/pdaLogs blobs are ~1MB total
+   (~7 writes per scan) - see scripts/migrate-pda-ir-files.js. */
+const RECORD_SECTION_KEYS = ['requests','returns','issuance','receiving','repairs','pdaIrFiles'];
 const CORE_SECTION_KEYS = ['users','notifications','counters','issuanceMetrics'];
 const ROUTE_SECTIONS = {
   dashboard: ['sku','stock','reorderPoint'],
@@ -1101,6 +1334,7 @@ const ROUTE_RECORD_SECTIONS = {
   returns: ['returns','issuance','repairs'],
   cyclecount: ['issuance'],
   repair: ['returns','issuance','repairs'],
+  itassets: ['pdaIrFiles'],
   ddashboard: ['requests','returns','issuance'],
   dapprovals: ['requests'],
   drequest: ['requests','issuance'],
@@ -1249,6 +1483,7 @@ function migrateDB(){
   if(!DB.counters.itcc) DB.counters.itcc = 100;
   DB.pdas.forEach(p=>{ if(p.soc===undefined) p.soc=''; if(p.exceptionStatus===undefined) p.exceptionStatus=''; if(p.remarks===undefined) p.remarks=''; if(p.irFile===undefined) p.irFile=''; if(p.irFileData===undefined) p.irFileData=''; });
   if(!DB.pdaLogs) DB.pdaLogs = [];
+  if(!DB.pdaIrFiles) DB.pdaIrFiles = [];
   if(!DB.pdaAllocations) DB.pdaAllocations = {};
   if(!DB.pdaAllocationsBySoc || typeof DB.pdaAllocationsBySoc!=='object' || Array.isArray(DB.pdaAllocationsBySoc)) DB.pdaAllocationsBySoc = {};
   if(!DB.pdaDeptBuckets || !DB.pdaDeptBuckets.length) DB.pdaDeptBuckets = ['SOC Inbound','SOC Sort Pack','SOC Outbound','SOC RC'];
@@ -1383,6 +1618,21 @@ async function loadRecordSection(key, includeArchived){
   normalizeRecordSection(key, await window.storage.getRecords(key, !!includeArchived));
   if(includeArchived) loadedRecordArchives.add(key);
 }
+/* Merges only the records written since this tab last read the section (see
+   storage.getRecordsUpdatedSince). Falls back to a full load if the storage
+   layer has no watermark for the section. */
+async function loadRecordDelta(key){
+  const rows = await window.storage.getRecordsUpdatedSince(key);
+  if(rows===null) return loadRecordSection(key, loadedRecordArchives.has(key));
+  if(!rows.length) return;
+  const byId = new Map((DB[key]||[]).map(record=>[record.id,record]));
+  rows.forEach(row=>{
+    const record = JSON.parse(row.value);
+    if(recordIsArchived(key,record) && !loadedRecordArchives.has(key)) byId.delete(record.id);
+    else byId.set(record.id,record);
+  });
+  normalizeRecordSection(key, Array.from(byId.values()));
+}
 async function loadRecordChanges(key, ids){
   if(!ids || !ids.length) return loadRecordSection(key, loadedRecordArchives.has(key));
   const byId = new Map((DB[key]||[]).map(record=>[record.id,record]));
@@ -1435,8 +1685,19 @@ async function ensureRouteData(routeKey, routeSub){
   await hydrateSections([...CORE_SECTION_KEYS, ...(ROUTE_SECTIONS[routeKey]||[])]);
   if(recordModeActive){
     const records = ROUTE_RECORD_SECTIONS[routeKey] || [];
-    await Promise.all(records.filter(key=>!loadedRecordSections.has(key)).map(key=>loadRecordSection(key,false)));
-    await Promise.all(routeArchiveSections(routeKey,routeSub).filter(key=>!loadedRecordArchives.has(key)).map(key=>loadRecordSection(key,true)));
+    const archiveKeys = routeArchiveSections(routeKey,routeSub).filter(key=>!loadedRecordArchives.has(key));
+    // a section that also needs its archive is read once, in full - not open-only first and then all again
+    await Promise.all(records.filter(key=>!loadedRecordSections.has(key) && !archiveKeys.includes(key)).map(key=>
+      loadRecordSection(key,false).catch(e=>{
+        /* pdaIrFiles is an add-on collection (attachments only). If its
+           Firestore rules aren't deployed yet, or the read fails, the PDA
+           screens must still work: treat it as empty and fall back to any
+           inline attachment data on the rows. */
+        if(key!=='pdaIrFiles') throw e;
+        console.warn('pdaIrFiles unavailable, continuing without it:', e);
+        normalizeRecordSection(key, []);
+      })));
+    await Promise.all(archiveKeys.map(key=>loadRecordSection(key,true)));
   }
   await syncOpsIdSheetOnce();
 }
@@ -1905,7 +2166,11 @@ function startDashboardLiveSync(){
       DB.stock=JSON.parse(snapshot.value);
       lastKnownSnapshot.stock=snapshot.value;
       if(recordModeActive){
-        await Promise.all(['receiving','issuance','returns','repairs'].filter(key=>loadedRecordSections.has(key)).map(key=>loadRecordSection(key,loadedRecordArchives.has(key))));
+        /* Delta fetch, not a full reload: this callback fires for every
+           stock change by ANY user while this tab sits on the dashboard, and
+           it used to re-read all of receiving+issuance+returns+repairs
+           (thousands of docs) each time - the largest single read cost. */
+        await Promise.all(['receiving','issuance','returns','repairs'].filter(key=>loadedRecordSections.has(key)).map(key=>loadRecordDelta(key)));
         if(!session||document.hidden||route!=='dashboard'||actionInFlight) return;
         migrateDB();
       }
@@ -10076,13 +10341,20 @@ async function savePdaEdit(i){
   const soc = (session.role==='admin' && socEl) ? socEl.value : DB.pdas[i].soc;
   if(!pdaNo){ toast('Enter a PDA number.'); return; }
   if(pdaNoConflict(pdaNo, soc, i)){ toast('That PDA number already exists for this SOC.'); return; }
+  const oldIrId = pdaIrMasterId(DB.pdas[i]);
   DB.pdas[i].pdaNo = pdaNo; DB.pdas[i].serial = serial; DB.pdas[i].condition = condition; DB.pdas[i].remarks = remarks; DB.pdas[i].soc = soc;
+  const newIrId = pdaIrMasterId(DB.pdas[i]);
+  if(newIrId!==oldIrId){
+    const irRec = (DB.pdaIrFiles||[]).find(r=>r.id===oldIrId);
+    if(irRec){ pdaIrClear(oldIrId); pdaIrSet(newIrId, irRec.irFile, irRec.irFileData); }
+  }
   await saveDB();
   closeModal();
   toast('Updated.');
   renderITAssets();
 }
 async function removePda(i){
+  if(DB.pdas[i]) pdaIrClear(pdaIrMasterId(DB.pdas[i]));
   DB.pdas.splice(i,1);
   await saveDB();
   toast('Removed.');
@@ -10094,7 +10366,7 @@ async function updatePdaCondition(i, value){
   const p = DB.pdas[i];
   if(!p || !socVisible(p.soc)) return;
   p.condition = value;
-  if(value==='Good'){ p.remarks = ''; p.irFile = ''; p.irFileData = ''; }
+  if(value==='Good'){ p.remarks = ''; p.irFile = ''; p.irFileData = ''; pdaIrClear(pdaIrMasterId(p)); }
   await saveDB();
   toast(p.pdaNo+' condition set to "'+pdaConditionLabel(value)+'".');
   renderITAssets();
@@ -10130,13 +10402,34 @@ async function importPdaCsv(inputEl){
   toast('Imported '+added+' PDA'+(added===1?'':'s')+(skipped?(', skipped '+skipped+' (blank/duplicate for that SOC).'):'.'));
   renderITAssets();
 }
+/* IR attachment storage: one small record per attachment in pdaIrFiles,
+   keyed by the masterlist row (PDA~soc~pdaNo) or the log entry (LOG~id). The
+   rows themselves keep only irFile (the file name). Rows written before the
+   migration may still carry irFileData inline, so reads fall back to it. */
+function pdaIrKeyPart(v){ return String(v==null?'':v).replace(/[\/\s]+/g,'_'); }
+function pdaIrMasterId(p){ return 'PDA~'+pdaIrKeyPart(p.soc)+'~'+pdaIrKeyPart(p.pdaNo); }
+function pdaIrLogId(l){ return 'LOG~'+pdaIrKeyPart(l.id); }
+function pdaIrData(id, inline){
+  const rec = (DB.pdaIrFiles||[]).find(r=>r.id===id);
+  return rec ? (rec.irFileData||'') : (inline||'');
+}
+function pdaIrSet(id, irFile, irFileData){
+  if(!DB.pdaIrFiles) DB.pdaIrFiles = [];
+  const rec = DB.pdaIrFiles.find(r=>r.id===id);
+  if(rec){ rec.irFile = irFile; rec.irFileData = irFileData; }
+  else DB.pdaIrFiles.push({id, irFile, irFileData});
+}
+function pdaIrClear(id){
+  if(DB.pdaIrFiles) DB.pdaIrFiles = DB.pdaIrFiles.filter(r=>r.id!==id);
+}
 function viewPdaLogIR(id){
   const l = DB.pdaLogs.find(x=>x.id===id);
-  if(!l || !l.irFileData){ toast('No IR document attached to this record.'); return; }
-  showFileModal(l.irFile||l.id, l.irFileData);
+  const data = l ? pdaIrData(pdaIrLogId(l), l.irFileData) : '';
+  if(!data){ toast('No IR document attached to this record.'); return; }
+  showFileModal(l.irFile||l.id, data);
 }
 function pdaMasterlistIRCell(p, i){
-  if(p.irFileData) return `<a href="javascript:void(0)" onclick="viewPdaMasterIR(${i})" class="icon-btn-view" title="View IR: ${esc(p.irFile||'')}">&#128206;</a> <button class="icon-btn-view" onclick="openPdaMasterIRUpload(${i})" title="Replace IR">&#8635;</button>`;
+  if(pdaIrData(pdaIrMasterId(p), p.irFileData)) return `<a href="javascript:void(0)" onclick="viewPdaMasterIR(${i})" class="icon-btn-view" title="View IR: ${esc(p.irFile||'')}">&#128206;</a> <button class="icon-btn-view" onclick="openPdaMasterIRUpload(${i})" title="Replace IR">&#8635;</button>`;
   if(p.irFile) return `<span class="icon-btn-view" title="${esc(p.irFile)}">&#128206;</span> <button class="icon-btn-view" onclick="openPdaMasterIRUpload(${i})" title="Replace IR">&#8635;</button>`;
   if(pdaConditionNeedsIR(p.condition)){
     return `<button class="icon-btn-view" style="color:var(--danger);border-color:var(--danger-bd);" onclick="openPdaMasterIRUpload(${i})" title="Upload IR — pending">&#8613;</button>`;
@@ -10145,22 +10438,23 @@ function pdaMasterlistIRCell(p, i){
 }
 function viewPdaMasterIR(i){
   const p = DB.pdas[i];
-  if(!p || !p.irFileData){ toast('No IR document attached to this PDA.'); return; }
-  showFileModal(p.irFile||p.pdaNo, p.irFileData);
+  const data = p ? pdaIrData(pdaIrMasterId(p), p.irFileData) : '';
+  if(!data){ toast('No IR document attached to this PDA.'); return; }
+  showFileModal(p.irFile||p.pdaNo, data);
 }
 function openPdaMasterIRUpload(i){
   const p = DB.pdas[i];
   if(!p) return;
   showModal(`
     <div class="list-head" style="margin-bottom:14px;">
-      <h3 style="margin:0;">${p.irFileData?'Replace':'Upload'} Incident Report — ${esc(p.pdaNo)}</h3>
+      <h3 style="margin:0;">${pdaIrData(pdaIrMasterId(p), p.irFileData)?'Replace':'Upload'} Incident Report — ${esc(p.pdaNo)}</h3>
       <button class="btn btn-sm" onclick="closeModal()">Close</button>
     </div>
     <div class="card-sub" style="margin-bottom:10px;">Current condition: ${esc(pdaConditionLabel(p.condition)).toLowerCase()}${p.remarks?' — '+esc(p.remarks):''}</div>
     <div class="field"><label>Incident Report file</label><input type="file" id="pda-master-ir-upload-file"></div>
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="submitPdaMasterIRUpload(${i})">${p.irFileData?'Replace':'Upload'}</button>
+      <button class="btn btn-primary" onclick="submitPdaMasterIRUpload(${i})">${pdaIrData(pdaIrMasterId(p), p.irFileData)?'Replace':'Upload'}</button>
     </div>
   `);
 }
@@ -10173,18 +10467,19 @@ async function submitPdaMasterIRUpload(i){
   let irFileData = '';
   try{ irFileData = await readFileAsDataURL(irFileObj); }
   catch(e){ console.error('File read error', e); toast('Could not read that file — try again.'); return; }
-  p.irFile = irFileObj.name; p.irFileData = irFileData;
+  p.irFile = irFileObj.name; p.irFileData = '';
+  pdaIrSet(pdaIrMasterId(p), p.irFile, irFileData);
   // Keep the matching Borrow / return log entry (the one that set this PDA's
   // current condition) in sync so both views show the same attached report.
   const log = DB.pdaLogs.slice().reverse().find(l=>l.pdaNo===p.pdaNo && l.soc===p.soc && l.status==='Returned' && l.conditionOnReturn===p.condition);
-  if(log){ log.irFile = p.irFile; log.irFileData = p.irFileData; }
+  if(log){ log.irFile = p.irFile; log.irFileData = ''; pdaIrSet(pdaIrLogId(log), log.irFile, irFileData); }
   await saveDB();
   closeModal();
   toast('Incident Report uploaded for '+p.pdaNo+'.');
   renderITAssets();
 }
 function pdaLogIRCell(l){
-  if(l.irFileData) return `<a href="javascript:void(0)" onclick="viewPdaLogIR('${esc(l.id)}')" class="icon-btn-view" title="View IR: ${esc(l.irFile||'')}">&#128206;</a> <button class="icon-btn-view" onclick="openPdaLogIRUpload('${esc(l.id)}')" title="Replace IR">&#8635;</button>`;
+  if(pdaIrData(pdaIrLogId(l), l.irFileData)) return `<a href="javascript:void(0)" onclick="viewPdaLogIR('${esc(l.id)}')" class="icon-btn-view" title="View IR: ${esc(l.irFile||'')}">&#128206;</a> <button class="icon-btn-view" onclick="openPdaLogIRUpload('${esc(l.id)}')" title="Replace IR">&#8635;</button>`;
   if(l.irFile) return `<span class="icon-btn-view" title="${esc(l.irFile)}">&#128206;</span> <button class="icon-btn-view" onclick="openPdaLogIRUpload('${esc(l.id)}')" title="Replace IR">&#8635;</button>`;
   if(l.status==='Returned' && pdaConditionNeedsIR(l.conditionOnReturn)){
     return `<button class="icon-btn-view" style="color:var(--danger);border-color:var(--danger-bd);" onclick="openPdaLogIRUpload('${esc(l.id)}')" title="Upload IR — pending">&#8613;</button>`;
@@ -10196,14 +10491,14 @@ function openPdaLogIRUpload(id){
   if(!l) return;
   showModal(`
     <div class="list-head" style="margin-bottom:14px;">
-      <h3 style="margin:0;">${l.irFileData?'Replace':'Upload'} Incident Report — ${esc(l.pdaNo)}</h3>
+      <h3 style="margin:0;">${pdaIrData(pdaIrLogId(l), l.irFileData)?'Replace':'Upload'} Incident Report — ${esc(l.pdaNo)}</h3>
       <button class="btn btn-sm" onclick="closeModal()">Close</button>
     </div>
     <div class="card-sub" style="margin-bottom:10px;">Returned as ${esc(pdaConditionLabel(l.conditionOnReturn))} — borrowed by ${esc(l.borrowerName||'—')}. Attach the report to clear the pending status.</div>
     <div class="field"><label>Incident Report file</label><input type="file" id="pda-log-ir-upload-file"></div>
     <div class="footer-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="submitPdaLogIRUpload('${esc(id)}')">${l.irFileData?'Replace':'Upload'}</button>
+      <button class="btn btn-primary" onclick="submitPdaLogIRUpload('${esc(id)}')">${pdaIrData(pdaIrLogId(l), l.irFileData)?'Replace':'Upload'}</button>
     </div>
   `);
 }
@@ -10216,11 +10511,12 @@ async function submitPdaLogIRUpload(id){
   let irFileData = '';
   try{ irFileData = await readFileAsDataURL(irFileObj); }
   catch(e){ console.error('File read error', e); toast('Could not read that file — try again.'); return; }
-  l.irFile = irFileObj.name; l.irFileData = irFileData;
+  l.irFile = irFileObj.name; l.irFileData = '';
+  pdaIrSet(pdaIrLogId(l), l.irFile, irFileData);
   // Keep the PDA masterlist row's IR in sync when this log entry is the one
   // that set the PDA's current condition.
   const p = DB.pdas.find(x=>x.pdaNo===l.pdaNo && x.soc===l.soc);
-  if(p && p.condition===l.conditionOnReturn){ p.irFile = l.irFile; p.irFileData = l.irFileData; }
+  if(p && p.condition===l.conditionOnReturn){ p.irFile = l.irFile; p.irFileData = ''; pdaIrSet(pdaIrMasterId(p), p.irFile, irFileData); }
   await saveDB();
   closeModal();
   toast('Incident Report uploaded for '+l.pdaNo+'.');

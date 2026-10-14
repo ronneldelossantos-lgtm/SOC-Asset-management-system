@@ -40,5 +40,10 @@ service cloud.firestore {
     match /pilot_v2_repairs/{document=**} {
       allow read, write: if true;
     }
+    // PDA Incident Report attachments (base64) live here, one document per
+    // attachment, instead of inline on the pdas/pdaLogs blob rows.
+    match /pilot_v2_pdaIrFiles/{document=**} {
+      allow read, write: if true;
+    }
   }
 }

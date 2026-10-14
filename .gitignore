@@ -1,3 +1,5 @@
 .firebase/
 public/
 *.log
+pda-ir-backup-*.json
+scripts/storage-harness/storage-under-test.js
